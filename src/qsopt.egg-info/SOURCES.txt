@@ -1,0 +1,17 @@
+README.md
+setup.py
+src/qsopt/__init__.py
+src/qsopt.egg-info/PKG-INFO
+src/qsopt.egg-info/SOURCES.txt
+src/qsopt.egg-info/dependency_links.txt
+src/qsopt.egg-info/requires.txt
+src/qsopt.egg-info/top_level.txt
+src/qsopt/core/__init__.py
+src/qsopt/core/experiment.py
+src/qsopt/core/experimental_parameters.py
+src/qsopt/core/trainable_parameters.py
+src/qsopt/optimization/__init__.py
+src/qsopt/optimization/optimizer.py
+src/qsopt/tests/__init__.py
+src/qsopt/tests/conftest.py
+src/qsopt/tests/test_experimental_parameters.py

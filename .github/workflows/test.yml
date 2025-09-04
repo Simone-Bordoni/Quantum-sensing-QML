@@ -1,0 +1,117 @@
+name: Tests and Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', '**/setup.py') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        python -m pip install --upgrade pip
+        
+        # Install test requirements
+        if [ -f requirements-test.txt ]; then pip install -r requirements-test.txt; fi
+        
+        # Install package in development mode
+        pip install -e .
+    
+    - name: Install dependencies (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        python -m pip install --upgrade pip
+        
+        # Install test requirements
+        if (Test-Path requirements-test.txt) { pip install -r requirements-test.txt }
+        
+        # Install package in development mode
+        pip install -e .
+    
+    - name: Run basic validation test
+      run: |
+        python ci_test.py
+    
+    - name: Run tests with coverage (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        # Run tests with coverage, excluding problematic imports during testing
+        python -m pytest src/qsopt/tests/ \
+          --cov=src/qsopt \
+          --cov-report=xml \
+          --cov-report=term-missing \
+          --cov-report=html \
+          --cov-config=.coveragerc \
+          -v
+    
+    - name: Run tests with coverage (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        # Run tests with coverage, excluding problematic imports during testing
+        python -m pytest src/qsopt/tests/ --cov=src/qsopt --cov-report=xml --cov-report=term-missing --cov-report=html --cov-config=.coveragerc -v
+    
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    
+    - name: Upload coverage to GitHub
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-report-${{ matrix.os }}-python${{ matrix.python-version }}
+        path: htmlcov/
+  
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.13"
+    
+    - name: Install linting dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort mypy
+    
+    - name: Run flake8
+      run: flake8 src/qsopt --count --select=E9,F63,F7,F82 --show-source --statistics
+    
+    - name: Run black check
+      run: black --check src/qsopt
+    
+    - name: Run isort check
+      run: isort --check-only src/qsopt
+    
+    - name: Run mypy
+      run: mypy src/qsopt --ignore-missing-imports
+      continue-on-error: true  # Don't fail CI on mypy errors initially

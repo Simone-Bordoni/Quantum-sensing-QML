@@ -1,0 +1,17 @@
+# Core dependencies
+jax>=0.4.35
+jaxlib>=0.4.35
+numpy>=2.3.0
+qutip>=5.2.0
+qutip-jax>=0.1.1
+
+# Testing dependencies
+pytest>=8.4.0
+pytest-cov>=6.0.0
+coverage>=6.0.0
+
+# Optional development dependencies (for linting in CI)
+flake8>=7.0.0
+black>=24.0.0
+isort>=5.13.0
+mypy>=1.11.0

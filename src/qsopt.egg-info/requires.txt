@@ -1,0 +1,11 @@
+numpy
+jax[cpu]
+qutip>=5.0
+optax
+matplotlib
+scipy
+
+[dev]
+pytest
+jupyter
+ipykernel
