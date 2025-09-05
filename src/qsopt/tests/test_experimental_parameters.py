@@ -10,37 +10,31 @@ This module tests all aspects of the ExperimentalParameters class including:
 - String representations
 """
 
-import pytest
 import numpy as np
+import pytest
 
-from qsopt.core.experimental_parameters import (
-    ExperimentalParameters,
-    PhysicalConstants,
-    SystemDimensions,
-    MeasurementProtocol,
-    InitialStateConfig,
-    NoiseConfiguration,
-    InitialStateType
-)
+from qsopt.core.experimental_parameters import (ExperimentalParameters,
+                                                InitialStateConfig,
+                                                InitialStateType,
+                                                MeasurementProtocol,
+                                                NoiseConfiguration,
+                                                PhysicalConstants,
+                                                SystemDimensions)
 
 
 class TestPhysicalConstants:
     """Test the PhysicalConstants dataclass."""
-    
+
     def test_default_initialization(self):
         """Test default initialization of PhysicalConstants."""
         constants = PhysicalConstants()
         assert constants.chi == 0.5
         assert constants.photon_cavity_coupling == 1.0
         assert constants.inverse_pulse_width == 0.1
-    
+
     def test_custom_initialization(self):
         """Test custom initialization of PhysicalConstants."""
-        constants = PhysicalConstants(
-            chi=1.0,
-            photon_cavity_coupling=2.0,
-            inverse_pulse_width=0.2
-        )
+        constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=2.0, inverse_pulse_width=0.2)
         assert constants.chi == 1.0
         assert constants.photon_cavity_coupling == 2.0
         assert constants.inverse_pulse_width == 0.2
@@ -48,21 +42,17 @@ class TestPhysicalConstants:
 
 class TestSystemDimensions:
     """Test the SystemDimensions dataclass."""
-    
+
     def test_default_initialization(self):
         """Test default initialization of SystemDimensions."""
         dims = SystemDimensions()
         assert dims.cavity_levels == 2
         assert dims.qubit_levels == 2
         assert dims.field_levels == 2
-    
+
     def test_custom_initialization(self):
         """Test custom initialization of SystemDimensions."""
-        dims = SystemDimensions(
-            cavity_levels=8,
-            qubit_levels=2,
-            field_levels=10
-        )
+        dims = SystemDimensions(cavity_levels=8, qubit_levels=2, field_levels=10)
         assert dims.cavity_levels == 8
         assert dims.qubit_levels == 2
         assert dims.field_levels == 10
@@ -70,12 +60,12 @@ class TestSystemDimensions:
 
 class TestMeasurementProtocol:
     """Test the MeasurementProtocol dataclass."""
-    
+
     def test_default_initialization(self):
         """Test default initialization of MeasurementProtocol."""
         protocol = MeasurementProtocol()
         assert protocol.measurement_times == [-5.0, 5.0]
-    
+
     def test_custom_initialization(self):
         """Test custom initialization of MeasurementProtocol."""
         times = [-10.0, -5.0, 0.0, 5.0, 10.0]
@@ -85,7 +75,7 @@ class TestMeasurementProtocol:
 
 class TestInitialStateConfig:
     """Test the InitialStateConfig dataclass."""
-    
+
     def test_default_initialization(self):
         """Test default initialization of InitialStateConfig."""
         config = InitialStateConfig()
@@ -93,31 +83,26 @@ class TestInitialStateConfig:
         assert config.coherent_alpha is None
         assert config.thermal_n_bar is None
         assert config.custom_amplitudes is None
-    
+
     def test_coherent_state_config(self):
         """Test configuration for coherent states."""
         config = InitialStateConfig(
-            state_type=InitialStateType.COHERENT_GROUND,
-            coherent_alpha=1.0 + 0.5j
+            state_type=InitialStateType.COHERENT_GROUND, coherent_alpha=1.0 + 0.5j
         )
         assert config.state_type == InitialStateType.COHERENT_GROUND
         assert config.coherent_alpha == 1.0 + 0.5j
-    
+
     def test_thermal_state_config(self):
         """Test configuration for thermal states."""
-        config = InitialStateConfig(
-            state_type=InitialStateType.THERMAL_GROUND,
-            thermal_n_bar=2.5
-        )
+        config = InitialStateConfig(state_type=InitialStateType.THERMAL_GROUND, thermal_n_bar=2.5)
         assert config.state_type == InitialStateType.THERMAL_GROUND
         assert config.thermal_n_bar == 2.5
-    
+
     def test_custom_state_config(self):
         """Test configuration for custom states."""
         amplitudes = {(0, 0, 0): 0.7 + 0.0j, (1, 0, 0): 0.3 + 0.0j}
         config = InitialStateConfig(
-            state_type=InitialStateType.CUSTOM,
-            custom_amplitudes=amplitudes
+            state_type=InitialStateType.CUSTOM, custom_amplitudes=amplitudes
         )
         assert config.state_type == InitialStateType.CUSTOM
         assert config.custom_amplitudes == amplitudes
@@ -125,7 +110,7 @@ class TestInitialStateConfig:
 
 class TestNoiseConfiguration:
     """Test the NoiseConfiguration dataclass."""
-    
+
     def test_default_initialization(self):
         """Test default initialization of NoiseConfiguration."""
         config = NoiseConfiguration()
@@ -133,14 +118,10 @@ class TestNoiseConfiguration:
         assert config.dephasing == 0.0
         assert config.relaxation == 0.0
         assert config.custom_operators is None
-    
+
     def test_custom_initialization(self):
         """Test custom initialization of NoiseConfiguration."""
-        config = NoiseConfiguration(
-            depolarizing=0.1,
-            dephasing=0.05,
-            relaxation=0.02
-        )
+        config = NoiseConfiguration(depolarizing=0.1, dephasing=0.05, relaxation=0.02)
         assert config.depolarizing == 0.1
         assert config.dephasing == 0.05
         assert config.relaxation == 0.02
@@ -148,243 +129,250 @@ class TestNoiseConfiguration:
 
 class TestExperimentalParameters:
     """Test the ExperimentalParameters class."""
-    
+
     def test_default_initialization(self):
         """Test default initialization with all default parameters."""
         params = ExperimentalParameters()
-        
+
         # Check that all components are initialized
         assert isinstance(params.physical_constants, PhysicalConstants)
         assert isinstance(params.system_dims, SystemDimensions)
         assert isinstance(params.measurement, MeasurementProtocol)
         assert isinstance(params.noise_config, NoiseConfiguration)
         assert isinstance(params.initial_state, InitialStateConfig)
-        
+
         # Check that measurement times are computed
         assert params._measurement_times is not None
         assert isinstance(params._measurement_times, np.ndarray)
-        
+
         # Check default measurement results
         assert params._measurement_results == [0, 1]
-    
+
     def test_custom_initialization(self):
         """Test initialization with custom parameters."""
         constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=2.0)
         dims = SystemDimensions(cavity_levels=8, qubit_levels=2, field_levels=10)
         measurement = MeasurementProtocol(measurement_times=[-10.0, -5.0, 0.0, 5.0, 10.0])
-        
+
         params = ExperimentalParameters(
-            physical_constants=constants,
-            system_dims=dims,
-            measurement=measurement
+            physical_constants=constants, system_dims=dims, measurement=measurement
         )
-        
+
         assert params.physical_constants.chi == 1.0
         assert params.physical_constants.photon_cavity_coupling == 2.0
         assert params.system_dims.cavity_levels == 8
         assert params.system_dims.field_levels == 10
         assert len(params.measurement.measurement_times) == 5
-    
+
     def test_measurement_times_computation(self):
         """Test that measurement times are correctly computed."""
         constants = PhysicalConstants(inverse_pulse_width=0.2)
         measurement = MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0])
-        
-        params = ExperimentalParameters(
-            physical_constants=constants,
-            measurement=measurement
-        )
-        
+
+        params = ExperimentalParameters(physical_constants=constants, measurement=measurement)
+
         expected_times = np.array([-5.0, 0.0, 5.0]) * 0.2
         assert params._measurement_times is not None
         np.testing.assert_array_almost_equal(params._measurement_times, expected_times)
-    
+
     def test_update_measurement_times(self):
         """Test that measurement times are updated when parameters change."""
         params = ExperimentalParameters()
         assert params._measurement_times is not None
         original_times = params._measurement_times.copy()
-        
+
         # Change the inverse_pulse_width
         params.physical_constants.inverse_pulse_width = 0.2
         params._update_measurement_times()
-        
+
         # Times should be different now
         assert params._measurement_times is not None
         assert not np.array_equal(params._measurement_times, original_times)
-    
+
     # ==================== VALIDATION TESTS ====================
-    
+
     def test_validation_cavity_levels_too_low(self):
         """Test validation error when cavity levels < 2."""
         dims = SystemDimensions(cavity_levels=1)
-        
+
         with pytest.raises(ValueError, match="Cavity levels \\(cavity_levels\\) must be >= 2"):
             ExperimentalParameters(system_dims=dims)
-    
+
     def test_validation_field_levels_too_low(self):
         """Test validation error when field levels < 2."""
         dims = SystemDimensions(field_levels=1)
-        
-        with pytest.raises(ValueError, match="External field levels \\(field_levels\\) must be >= 2"):
+
+        with pytest.raises(
+            ValueError, match="External field levels \\(field_levels\\) must be >= 2"
+        ):
             ExperimentalParameters(system_dims=dims)
-    
+
     def test_validation_qubit_levels_too_low(self):
         """Test validation error when qubit levels < 2."""
         dims = SystemDimensions(qubit_levels=1)
-        
+
         with pytest.raises(ValueError, match="Qubit levels \\(qubit_levels\\) must be >= 2"):
             ExperimentalParameters(system_dims=dims)
-    
+
     def test_validation_chi_non_positive(self):
         """Test validation error when chi <= 0."""
         constants = PhysicalConstants(chi=0.0)
-        
+
         with pytest.raises(ValueError, match="Dispersive coupling \\(chi\\) must be > 0"):
             ExperimentalParameters(physical_constants=constants)
-    
+
     def test_validation_photon_cavity_coupling_non_positive(self):
         """Test validation error when photon_cavity_coupling <= 0."""
         constants = PhysicalConstants(photon_cavity_coupling=-1.0)
-        
-        with pytest.raises(ValueError, match="Photon-cavity coupling \\(photon_cavity_coupling\\) must be > 0"):
+
+        with pytest.raises(
+            ValueError, match="Photon-cavity coupling \\(photon_cavity_coupling\\) must be > 0"
+        ):
             ExperimentalParameters(physical_constants=constants)
-    
+
     def test_validation_inverse_pulse_width_non_positive(self):
         """Test validation error when inverse_pulse_width <= 0."""
         constants = PhysicalConstants(inverse_pulse_width=0.0)
-        
-        with pytest.raises(ValueError, match="Pulse width parameter \\(inverse_pulse_width\\) must be > 0"):
+
+        with pytest.raises(
+            ValueError, match="Pulse width parameter \\(inverse_pulse_width\\) must be > 0"
+        ):
             ExperimentalParameters(physical_constants=constants)
-    
+
     def test_validation_negative_depolarizing_rate(self):
         """Test validation error when depolarizing rate < 0."""
         noise = NoiseConfiguration(depolarizing=-0.1)
-        
+
         with pytest.raises(ValueError, match="Depolarization rate must be >= 0"):
             ExperimentalParameters(noise_config=noise)
-    
+
     def test_validation_negative_dephasing_rate(self):
         """Test validation error when dephasing rate < 0."""
         noise = NoiseConfiguration(dephasing=-0.1)
-        
+
         with pytest.raises(ValueError, match="Dephasing rate must be >= 0"):
             ExperimentalParameters(noise_config=noise)
-    
+
     def test_validation_negative_relaxation_rate(self):
         """Test validation error when relaxation rate < 0."""
         noise = NoiseConfiguration(relaxation=-0.1)
-        
+
         with pytest.raises(ValueError, match="Relaxation rate must be >= 0"):
             ExperimentalParameters(noise_config=noise)
-    
+
     def test_validation_insufficient_measurement_times(self):
         """Test validation error when fewer than 2 measurement times."""
         measurement = MeasurementProtocol(measurement_times=[0.0])
-        
+
         with pytest.raises(ValueError, match="At least two measurement times must be specified"):
             ExperimentalParameters(measurement=measurement)
-    
+
     def test_validation_unsorted_measurement_times(self):
         """Test validation error when measurement times are not sorted."""
         measurement = MeasurementProtocol(measurement_times=[5.0, -5.0, 0.0])
-        
-        with pytest.raises(ValueError, match="Measurement times \\(measurement_times\\) must be in ascending order"):
+
+        with pytest.raises(
+            ValueError, match="Measurement times \\(measurement_times\\) must be in ascending order"
+        ):
             ExperimentalParameters(measurement=measurement)
-    
+
     def test_primary_properties_cavity_levels(self):
         """Test primary cavity_levels property."""
         params = ExperimentalParameters()
-        
+
         # Test getter
         assert params.cavity_levels == params.system_dims.cavity_levels
-        
+
         # Test setter
         params.cavity_levels = 8
         assert params.system_dims.cavity_levels == 8
         assert params.cavity_levels == 8
-    
+
     def test_primary_properties_qubit_levels(self):
         """Test primary qubit_levels property."""
         params = ExperimentalParameters()
-        
+
         # Test getter
         assert params.qubit_levels == params.system_dims.qubit_levels
-        
+
         # Test setter
         params.qubit_levels = 3
         assert params.system_dims.qubit_levels == 3
         assert params.qubit_levels == 3
-        
+
     def test_primary_properties_field_levels(self):
         """Test primary field_levels property."""
         params = ExperimentalParameters()
-        
+
         # Test getter
         assert params.field_levels == params.system_dims.field_levels
-        
+
         # Test setter
         params.field_levels = 15
         assert params.system_dims.field_levels == 15
         assert params.field_levels == 15
-    
+
     def test_primary_properties_chi(self):
         """Test primary chi property."""
         params = ExperimentalParameters()
-        
+
         # Test getter
         assert params.chi == params.physical_constants.chi
-        
+
         # Test setter
         params.chi = 1.5
         assert params.physical_constants.chi == 1.5
         assert params.chi == 1.5
-    
+
     def test_primary_properties_photon_cavity_coupling(self):
         """Test primary photon_cavity_coupling property."""
         params = ExperimentalParameters()
-        
+
         # Test getter
         assert params.photon_cavity_coupling == params.physical_constants.photon_cavity_coupling
-        
+
         # Test setter
         params.photon_cavity_coupling = 2.5
         assert params.physical_constants.photon_cavity_coupling == 2.5
         assert params.photon_cavity_coupling == 2.5
-    
+
     def test_primary_properties_inverse_pulse_width(self):
         """Test primary inverse_pulse_width property."""
         params = ExperimentalParameters()
-        
+
         # Test getter
         assert params.inverse_pulse_width == params.physical_constants.inverse_pulse_width
-        
+
         # Test setter
         params.inverse_pulse_width = 0.3
         assert params.physical_constants.inverse_pulse_width == 0.3
         assert params.inverse_pulse_width == 0.3
-    
+
     def test_primary_properties_measurement_times(self):
         """Test primary measurement_times property."""
         params = ExperimentalParameters()
-        
+
         # Test getter - should return computed measurement times
         times = params.measurement_times
         assert isinstance(times, np.ndarray)
-        expected = np.array(params.measurement.measurement_times) * params.physical_constants.inverse_pulse_width
+        expected = (
+            np.array(params.measurement.measurement_times)
+            * params.physical_constants.inverse_pulse_width
+        )
         np.testing.assert_array_almost_equal(times, expected)
-        
+
         # Test setter
         new_times = np.array([-10.0, -5.0, 0.0, 5.0, 10.0])
         params.measurement_times = new_times
-        
+
         # Check that the measurement protocol was updated correctly
         expected_protocol_times = list(new_times / params.physical_constants.inverse_pulse_width)
         assert params.measurement.measurement_times == expected_protocol_times
-        
+
         # Check that _measurement_times was updated
         assert params._measurement_times is not None
         np.testing.assert_array_almost_equal(params._measurement_times, new_times)
+
 
 if __name__ == "__main__":
     # Run tests if executed directly

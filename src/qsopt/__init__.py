@@ -12,8 +12,16 @@ __email__ = "simone.bordoni@uniroma1.it"
 
 # Core experimental framework
 from .core.experiment import Experiment
-from .core.trainable_parameters import TrainableParameters, ParameterConstraints, OptimizationConfig, ParameterType
-from .core.experimental_parameters import ExperimentalParameters, PhysicalConstants, SystemDimensions, MeasurementProtocol, InitialStateConfig, InitialStateType, NoiseConfiguration
+from .core.experimental_parameters import (ExperimentalParameters,
+                                           InitialStateConfig,
+                                           InitialStateType,
+                                           MeasurementProtocol,
+                                           NoiseConfiguration,
+                                           PhysicalConstants, SystemDimensions)
+from .core.trainable_parameters import (OptimizationConfig,
+                                        ParameterConstraints, ParameterGroup,
+                                        ParameterType, TrainableParameters)
 # Optimization components
-from .optimization.optimizer import Optimizer, OptimizationConfig as OptimizerConfig, OptimizationResult, OptimizerType, create_optimizer
-
+from .optimization.optimizer import OptimizationConfig as OptimizerConfig
+from .optimization.optimizer import (OptimizationResult, Optimizer,
+                                     OptimizerType, create_optimizer)
