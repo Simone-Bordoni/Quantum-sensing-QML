@@ -1,0 +1,101 @@
+Pylint Analysis Report
+==================================================
+
+
+File: src\qsopt\core\experiment.py
+----------------------------------
+  320:4 REFACTOR R0917: Too many positional arguments (7/5)
+  375:8 WARNING W0101: Unreachable code
+  388:8 REFACTOR R1705: Unnecessary "elif" after "return", remove the leading "el" from "elif"
+  397:8 REFACTOR R1705: Unnecessary "elif" after "return", remove the leading "el" from "elif"
+
+File: src\qsopt\core\experimental_parameters.py
+-----------------------------------------------
+  125:4 REFACTOR R0917: Too many positional arguments (6/5)
+  274:4 REFACTOR R0915: Too many statements (53/50)
+
+File: src\qsopt\core\trainable_parameters.py
+--------------------------------------------
+  70:4 REFACTOR R0917: Too many positional arguments (7/5)
+  165:8 REFACTOR R1705: Unnecessary "else" after "return", remove the "else" and de-indent the code inside it
+  267:4 REFACTOR R0917: Too many positional arguments (7/5)
+
+File: src\qsopt\optimization\optimizer.py
+-----------------------------------------
+  274:18 WARNING W1309: Using an f-string that does not have any interpolated variables
+  132:4 REFACTOR R0915: Too many statements (64/50)
+  11:0 WARNING W0611: Unused Callable imported from typing
+
+File: src\qsopt\tests\conftest.py
+---------------------------------
+  16:4 CONVENTION C0415: Import outside toplevel (qsopt.core.experimental_parameters.ExperimentalParameters)
+  24:4 CONVENTION C0415: Import outside toplevel (qsopt.core.experimental_parameters.ExperimentalParameters, qsopt.core.experimental_parameters.PhysicalConstants, qsopt.core.experimental_parameters.SystemDimensions, qsopt.core.experimental_parameters.MeasurementProtocol, qsopt.core.experimental_parameters.InitialStateConfig, qsopt.core.experimental_parameters.InitialStateType, qsopt.core.experimental_parameters.NoiseConfiguration)
+
+File: src\qsopt\tests\test_experimental_parameters.py
+-----------------------------------------------------
+  147:15 WARNING W0212: Access to a protected member _measurement_times of a client class
+  148:26 WARNING W0212: Access to a protected member _measurement_times of a client class
+  151:15 WARNING W0212: Access to a protected member _measurement_results of a client class
+  177:15 WARNING W0212: Access to a protected member _measurement_times of a client class
+  178:45 WARNING W0212: Access to a protected member _measurement_times of a client class
+  183:15 WARNING W0212: Access to a protected member _measurement_times of a client class
+  184:25 WARNING W0212: Access to a protected member _measurement_times of a client class
+  188:8 WARNING W0212: Access to a protected member _update_measurement_times of a client class
+  191:15 WARNING W0212: Access to a protected member _measurement_times of a client class
+  192:34 WARNING W0212: Access to a protected member _measurement_times of a client class
+  375:15 WARNING W0212: Access to a protected member _measurement_times of a client class
+  376:45 WARNING W0212: Access to a protected member _measurement_times of a client class
+  132:0 REFACTOR R0904: Too many public methods (22/20)
+
+File: src\qsopt\tests\test_trainable_parameters.py
+--------------------------------------------------
+  79:15 WARNING W0212: Access to a protected member _update_count of a client class
+  160:24 WARNING W0212: Access to a protected member _update_count of a client class
+  164:15 WARNING W0212: Access to a protected member _update_count of a client class
+  165:19 WARNING W0212: Access to a protected member _history of a client class
+  167:27 WARNING W0212: Access to a protected member _history of a client class
+  229:15 WARNING W0212: Access to a protected member _update_count of a client class
+  230:19 WARNING W0212: Access to a protected member _history of a client class
+  233:15 WARNING W0212: Access to a protected member _update_count of a client class
+  234:19 WARNING W0212: Access to a protected member _history of a client class
+
+File: src\qsopt\tests\__init__.py
+---------------------------------
+  1:0 REFACTOR R0801: Similar lines in 2 files
+==qsopt.tests.conftest:[24:33]
+==qsopt:[22:32]
+        ExperimentalParameters,
+        PhysicalConstants,
+        SystemDimensions,
+        MeasurementProtocol,
+        InitialStateConfig,
+        InitialStateType,
+        NoiseConfiguration,
+    )
+
+  1:0 REFACTOR R0801: Similar lines in 2 files
+==qsopt.tests.conftest:[23:29]
+==qsopt.tests.test_experimental_parameters:[15:21]
+    from qsopt.core.experimental_parameters import (
+        ExperimentalParameters,
+        PhysicalConstants,
+        SystemDimensions,
+        MeasurementProtocol,
+        InitialStateConfig,
+  1:0 REFACTOR R0801: Similar lines in 2 files
+==qsopt.core.__init__:[10:16]
+==qsopt:[15:21]
+    TrainableParameters,
+    ParameterGroup,
+    ParameterConstraints,
+    OptimizationConfig,
+    ParameterType,
+)
+  1:0 REFACTOR R0801: Similar lines in 2 files
+==qsopt.tests.test_experimental_parameters:[16:21]
+==qsopt:[22:27]
+    ExperimentalParameters,
+    PhysicalConstants,
+    SystemDimensions,
+    MeasurementProtocol,
+    InitialStateConfig,

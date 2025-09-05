@@ -11,17 +11,11 @@ __author__ = "Simone Bordoni, Nathan Gargioni"
 __email__ = "simone.bordoni@uniroma1.it"
 
 # Core experimental framework
-from .core.experiment import Experiment
 from .core.experimental_parameters import (ExperimentalParameters,
                                            InitialStateConfig,
                                            InitialStateType,
                                            MeasurementProtocol,
                                            NoiseConfiguration,
                                            PhysicalConstants, SystemDimensions)
-from .core.trainable_parameters import (OptimizationConfig,
-                                        ParameterConstraints, ParameterGroup,
+from .core.trainable_parameters import (ParameterConstraints, ParameterGroup,
                                         ParameterType, TrainableParameters)
-# Optimization components
-from .optimization.optimizer import OptimizationConfig as OptimizerConfig
-from .optimization.optimizer import (OptimizationResult, Optimizer,
-                                     OptimizerType, create_optimizer)

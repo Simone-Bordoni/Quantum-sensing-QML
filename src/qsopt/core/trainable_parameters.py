@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import jax.numpy as jnp
 import numpy as np
+import optax
 
 
 class ParameterType(Enum):
@@ -32,31 +33,12 @@ class ParameterConstraints:
         max_value: Maximum allowed value (can be array for vector parameters)
         periodic: Whether parameter is periodic (e.g., angles)
         period: Period for periodic parameters (e.g., 2π for angles)
-        fixed_indices: Indices of parameters that should remain fixed
     """
 
     min_value: Optional[Union[float, np.ndarray]] = None
     max_value: Optional[Union[float, np.ndarray]] = None
     periodic: bool = False
     period: Optional[float] = None
-
-
-@dataclass
-class OptimizationConfig:
-    """
-    Optimization configuration for specific parameter groups.
-
-    Attributes:
-        learning_rate: Learning rate for this parameter group
-        optimizer_type: Type of optimizer ('adam', 'sgd', 'rmsprop', etc.)
-        update_frequency: How often to update these parameters (1 = every step)
-        lr_scheduler: Optional learning rate scheduler function
-    """
-
-    learning_rate: float = 0.01
-    optimizer_type: str = "sgd"
-    update_frequency: int = 1
-    lr_scheduler: Optional[Callable[[jnp.ndarray, int], jnp.ndarray]] = None
 
 
 class ParameterGroup:
@@ -73,7 +55,7 @@ class ParameterGroup:
         param_type: ParameterType,
         initial_values: Union[float, List[float], np.ndarray],
         constraints: Optional[ParameterConstraints] = None,
-        optimization_config: Optional[OptimizationConfig] = None,
+        optimizer: Optional[optax.GradientTransformation] = None,
         fixed_indices: Optional[List[int]] = None,
     ):
         """
@@ -84,14 +66,14 @@ class ParameterGroup:
             param_type: Type of parameters in this group
             initial_values: Initial parameter values
             constraints: Constraints for optimization
-            optimization_config: Optimization configuration
+            optimizer: JAX optimizer (defaults to Adam with 0.01 learning rate)
             fixed_indices: Indices of parameters to keep fixed
         """
         self.name = name
         self.param_type = param_type
         self.values = jnp.array(initial_values, dtype=float)
         self.constraints = constraints or ParameterConstraints()
-        self.optimization_config = optimization_config or OptimizationConfig()
+        self.optimizer = optimizer or optax.adam(0.01)
 
         # Internal state for optimization
         self._optimizer_state = None
@@ -140,7 +122,6 @@ class ParameterGroup:
         self.values = self.apply_constraints(new_values)
         self._update_count += 1
 
-        # Store complete parameter history (more informative than mean)
         # Each history entry is a copy of all parameter values at this update
         self._history.append(np.array(self.values).copy())
 
@@ -228,7 +209,6 @@ class ParameterGroup:
 
     def __str__(self) -> str:
         """Concise string representation with key information."""
-        value_range = f"[{float(jnp.min(self.values)):.3f}, {float(jnp.max(self.values)):.3f}]"
         fixed_info = f", fixed={len(self.fixed_indices)}" if self.fixed_indices else ""
         constraint_info = ""
         if self.constraints.min_value is not None or self.constraints.max_value is not None:
@@ -237,7 +217,7 @@ class ParameterGroup:
             constraint_info += ", periodic"
 
         return (
-            f"{self.name}: {self.param_type.value}({len(self.values)}) = {value_range}"
+            f"{self.name}: {self.param_type.value}({len(self.values)}) = {self.values}"
             f"{fixed_info}{constraint_info}"
         )
 
@@ -270,7 +250,7 @@ class TrainableParameters:
         param_type: Optional[ParameterType] = None,
         initial_values: Optional[Union[float, List[float], np.ndarray]] = None,
         constraints: Optional[ParameterConstraints] = None,
-        optimization_config: Optional[OptimizationConfig] = None,
+        optimizer: Optional[optax.GradientTransformation] = None,
         fixed_indices: Optional[List[int]] = None,
     ) -> None:
         """
@@ -282,7 +262,7 @@ class TrainableParameters:
             param_type: Type of parameters (required if name_or_group is a string)
             initial_values: Initial parameter values (required if name_or_group is a string)
             constraints: Parameter constraints
-            optimization_config: Optimization configuration
+            optimizer: JAX optimizer (defaults to Adam with 0.01 learning rate)
             fixed_indices: Indices of parameters to keep fixed
 
         Raises:
@@ -305,7 +285,7 @@ class TrainableParameters:
 
             # Create new ParameterGroup
             group = ParameterGroup(
-                name, param_type, initial_values, constraints, optimization_config, fixed_indices
+                name, param_type, initial_values, constraints, optimizer, fixed_indices
             )
 
         # Check for duplicate names
@@ -320,7 +300,7 @@ class TrainableParameters:
         self,
         name: str,
         initial_angles: Union[List[float], np.ndarray],
-        optimization_config: Optional[OptimizationConfig] = None,
+        optimizer: Optional[optax.GradientTransformation] = None,
     ) -> None:
         """
         Convenience method to add rotation angle parameters.
@@ -328,7 +308,7 @@ class TrainableParameters:
         Args:
             name: Name for the rotation angle group
             initial_angles: Initial rotation angles in radians
-            optimization_config: Optional optimization configuration
+            optimizer: JAX optimizer (defaults to Adam with 0.01 learning rate)
         """
         constraints = ParameterConstraints(periodic=True, period=2 * np.pi)
         self.add_parameter_group(
@@ -336,7 +316,7 @@ class TrainableParameters:
             param_type=ParameterType.ROTATION_ANGLE,
             initial_values=initial_angles,
             constraints=constraints,
-            optimization_config=optimization_config,
+            optimizer=optimizer,
         )
 
     def add_measurement_times(
@@ -458,7 +438,7 @@ class TrainableParameters:
                 param_type=group.param_type,
                 initial_values=np.array(group.values),
                 constraints=group.constraints,
-                optimization_config=group.optimization_config,
+                optimizer=group.optimizer,
                 fixed_indices=group.fixed_indices.copy() if group.fixed_indices else None,
             )
 

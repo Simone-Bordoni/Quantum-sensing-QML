@@ -29,6 +29,10 @@ setup(
             "pytest>=8.4.0",
             "pytest-cov>=6.0.0",
             "coverage>=6.0.0",
+            "pylint>=3.0.0",
+            "black>=24.0.0",
+            "isort>=5.13.0",
+            "mypy>=1.11.0",
             "jupyter",
             "ipykernel"
         ],

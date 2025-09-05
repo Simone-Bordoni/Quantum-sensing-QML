@@ -10,8 +10,11 @@ pytest>=8.4.0
 pytest-cov>=6.0.0
 coverage>=6.0.0
 
-# Optional development dependencies (for linting in CI)
-flake8>=7.0.0
+# Code quality and linting
+pylint>=3.0.0
 black>=24.0.0
 isort>=5.13.0
 mypy>=1.11.0
+
+# Optional development dependencies (for linting in CI)
+flake8>=7.0.0

@@ -101,7 +101,23 @@ jobs:
     - name: Install linting dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 black isort mypy
+        pip install flake8 black isort mypy pylint
+        # Install project dependencies needed for pylint analysis
+        if [ -f requirements-test.txt ]; then pip install -r requirements-test.txt; fi
+        pip install -e .
+    
+    - name: Run Pylint analysis (initial)
+      run: python run_pylint.py --report pylint_initial.txt
+      continue-on-error: true
+    
+    - name: Apply automatic formatting fixes
+      run: |
+        python -m black --line-length 100 src/qsopt/
+        python -m isort src/qsopt/
+    
+    - name: Run Pylint analysis (after formatting)
+      run: python run_pylint.py --report pylint_final.txt
+      continue-on-error: true
     
     - name: Run flake8
       run: flake8 src/qsopt --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -115,3 +131,10 @@ jobs:
     - name: Run mypy
       run: mypy src/qsopt --ignore-missing-imports
       continue-on-error: true  # Don't fail CI on mypy errors initially
+    
+    - name: Upload Pylint reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: pylint-reports
+        path: pylint_*.txt
+      if: always()

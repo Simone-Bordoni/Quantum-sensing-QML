@@ -9,10 +9,10 @@ from unittest.mock import Mock
 
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 
-from qsopt.core.trainable_parameters import (OptimizationConfig,
-                                             ParameterConstraints,
+from qsopt.core.trainable_parameters import (ParameterConstraints,
                                              ParameterGroup, ParameterType,
                                              TrainableParameters)
 
@@ -37,29 +37,6 @@ class TestParameterConstraints:
         assert constraints.max_value == 2 * np.pi
         assert constraints.periodic is True
         assert constraints.period == 2 * np.pi
-
-
-class TestOptimizationConfig:
-    """Test OptimizationConfig dataclass."""
-
-    def test_default_initialization(self):
-        """Test default optimization configuration."""
-        config = OptimizationConfig()
-        assert config.learning_rate == 0.01
-        assert config.optimizer_type == "sgd"
-        assert config.update_frequency == 1
-        assert config.lr_scheduler is None
-
-    def test_custom_initialization(self):
-        """Test custom optimization configuration."""
-        scheduler = Mock()
-        config = OptimizationConfig(
-            learning_rate=0.001, optimizer_type="adam", update_frequency=2, lr_scheduler=scheduler
-        )
-        assert config.learning_rate == 0.001
-        assert config.optimizer_type == "adam"
-        assert config.update_frequency == 2
-        assert config.lr_scheduler is scheduler
 
 
 class TestParameterGroup:
@@ -266,6 +243,20 @@ class TestParameterGroup:
         assert "name='test'" in repr_str
         assert "custom" in repr_str
         assert "size=2" in repr_str
+
+    def test_default_optimizer(self):
+        """Test default optimizer initialization."""
+        group = ParameterGroup("test", ParameterType.CUSTOM, [1.0, 2.0])
+        assert group.optimizer is not None
+        # Verify it's an Adam optimizer by checking if it has the expected structure
+        assert hasattr(group.optimizer, 'init')
+        assert hasattr(group.optimizer, 'update')
+
+    def test_custom_optimizer(self):
+        """Test custom optimizer initialization."""
+        custom_optimizer = optax.sgd(0.1)
+        group = ParameterGroup("test", ParameterType.CUSTOM, [1.0, 2.0], optimizer=custom_optimizer)
+        assert group.optimizer is custom_optimizer
 
 
 class TestTrainableParameters:

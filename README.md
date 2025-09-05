@@ -182,7 +182,31 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 Email: [your.email@domain.com]  
 GitHub: [@Simone-Bordoni](https://github.com/Simone-Bordoni)
 
-## 📚 Citation
+## � Code Quality
+
+This project maintains high code quality through automated tools:
+
+- **Pylint**: Static code analysis with scientific Python configuration
+- **Black**: Consistent code formatting (100 characters line length)
+- **isort**: Import statement organization
+- **GitHub Actions**: Automated testing and linting on all PRs
+
+### Running Quality Checks
+
+```bash
+# Run complete analysis with automatic fixes
+python run_pylint.py --fix
+
+# Windows users
+run_pylint.bat
+
+# Unix/Linux users  
+./run_pylint.sh
+```
+
+See [LINTING.md](./LINTING.md) for detailed information about code quality tools and configuration.
+
+## �📚 Citation
 
 If you use this library in your research, please consider citing:
 

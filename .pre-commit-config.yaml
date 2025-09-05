@@ -1,0 +1,12 @@
+# Pre-commit configuration file
+# Install with: pip install pre-commit && pre-commit install
+
+repos:
+  - repo: local
+    hooks:
+      - id: quantum-sensing-quality
+        name: Quantum Sensing Code Quality
+        entry: python pre_commit_hook.py --all
+        language: system
+        files: \.py$
+        pass_filenames: false
