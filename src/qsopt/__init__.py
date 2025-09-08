@@ -17,5 +17,5 @@ from .core.experimental_parameters import (ExperimentalParameters,
                                            MeasurementProtocol,
                                            NoiseConfiguration,
                                            PhysicalConstants, SystemDimensions)
-from .core.trainable_parameters import (ParameterConstraints, ParameterGroup,
+from .core.trainable_parameters import (ParameterConstraints,
                                         ParameterType, TrainableParameters)
