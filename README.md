@@ -49,31 +49,75 @@ pip install -e .
 
 ```python
 import numpy as np
-from qsopt import QuantumSensingOptimizer, standard_protocol
-
-# Initialize optimizer
-optimizer = QuantumSensingOptimizer('adam', learning_rate=0.05)
-
-# Set up initial parameters
-initial_params = [np.pi/2 + 0.01, -np.pi/2 + 0.01]  # θ₁, θ₂
-
-# Run optimization
-result = optimizer.optimize_sensing_contrast(
-    initial_params, 
-    max_iterations=200,
-    tolerance=1e-6
+from qsopt.core import (
+    ExperimentalParameters, PhysicalConstants, SystemDimensions,
+    NoiseConfiguration, MeasurementProtocol, InitialStateConfig,
+    InitialStateType, TrainableParameters, SingleQubitExperiment
 )
 
-print(f"Optimized angles: θ₁={result.theta1:.3f}, θ₂={result.theta2:.3f}")
-print(f"Sensing contrast: {result.contrast:.6f}")
+# Define physical system
+physical_constants = PhysicalConstants(
+    chi=0.5 * 0.03 * 2 * np.pi,  # Dispersive coupling
+    photon_cavity_coupling=0.03 * 2 * np.pi,
+    inverse_pulse_width=0.1 * 0.03 * 2 * np.pi
+)
+
+system_dims = SystemDimensions(
+    cavity_levels=2, qubit_levels=2, field_levels=2
+)
+
+# Configure measurement and noise
+measurement = MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0])
+noise_config = NoiseConfiguration(
+    relaxation=0.0001 * 2 * np.pi,
+    dephasing=0.0001 * 2 * np.pi
+)
+initial_state = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
+
+# Create experimental parameters
+exp_params = ExperimentalParameters(
+    physical_constants=physical_constants,
+    system_dims=system_dims,
+    measurement=measurement,
+    initial_state=initial_state,
+    noise_config=noise_config
+)
+
+# Define trainable parameters
+trainable_params = TrainableParameters()
+trainable_params.add_rotation_angles(
+    names=['theta1', 'theta2'],
+    initial_values=[np.pi/2, -np.pi/2]
+)
+
+# Create and optimize experiment
+experiment = SingleQubitExperiment(exp_params, trainable_params)
+history = experiment.optimize(num_steps=100, learning_rate=0.05, verbose=True)
+
+print(f"Final contrast: {history['contrast'][-1]:.6f}")
+print(f"Optimized θ₁: {trainable_params.parameters[0].value:.3f}")
+print(f"Optimized θ₂: {trainable_params.parameters[1].value:.3f}")
 ```
+
+For a complete walkthrough, see the [Example notebook](./examples/Example.ipynb).
 
 ## 📊 Key Features
 
+### ⚡ Completed Implementation
+
+The `SingleQubitExperiment` class provides a complete quantum sensing framework with:
+
+- **Time-Dependent Hamiltonians**: Full support for time-varying coupling using Gaussian pulse functions
+- **JAX Automatic Differentiation**: End-to-end differentiable quantum simulations for gradient-based optimization
+- **Lindblad Master Equation**: Realistic open quantum system dynamics with configurable noise models
+- **Composite Hilbert Space**: Three-subsystem architecture (input cavity ⊗ resonator ⊗ qubit)
+- **Flexible Optimization**: Built-in optax integration with customizable optimizers and learning rates
+
 ### 🎯 Parameter Optimization
-- **Multiple optimizers**: Adam, SGD, RMSprop, AdamW with automatic differentiation
+- **Multiple optimizers**: Adam, SGD, RMSprop, AdamW with automatic differentiation via JAX
 - **Learning rate scheduling**: Exponential decay and adaptive strategies
 - **Convergence monitoring**: Real-time gradient tracking and early stopping
+- **Time-dependent gradients**: Fully differentiable through complex time-evolution operators
 
 ### 📈 Analysis & Visualization
 - **Training dashboards**: 6-panel optimization monitoring with parameter evolution
