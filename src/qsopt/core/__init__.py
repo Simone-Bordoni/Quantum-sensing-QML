@@ -10,6 +10,7 @@ from .experimental_parameters import (ExperimentalParameters,
                                       InitialStateConfig, MeasurementProtocol,
                                       NoiseConfiguration, PhysicalConstants,
                                       SystemDimensions)
-from .trainable_parameters import (Parameter, ParameterCallback, 
-                                   ParameterConstraints, ParameterType,
-                                   TrainableParameters)
+from .trainable_parameters import (Parameter, ParameterConstraints, 
+                                   ParameterType, TrainableParameters)
+from .experiment import SingleQubitExperiment
+from .callback import OptimizationCallback
