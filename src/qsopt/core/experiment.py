@@ -85,60 +85,63 @@ class SingleQubitExperiment:
         - Qubit: Pauli matrices and projection operators
         
         All operators are embedded in the full three-system tensor product space.
+        Uses JAX backend for automatic differentiation compatibility.
         """
         # Get system dimensions
         field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         
-        # Identity operators for each subsystem
-        I_field = qt.identity(field_levels)     # Input field identity
-        I_cavity = qt.identity(cavity_levels)   # Resonator cavity identity  
-        I_qubit = qt.identity(qubit_levels)     # Qubit identity
-        
-        # Individual subsystem operators
-        # Input field operators
-        a_field = qt.destroy(field_levels)      # Field annihilation
-        
-        # Resonator cavity operators
-        a_cavity = qt.destroy(cavity_levels)    # Cavity annihilation
-        
-        # Qubit operators
-        sigma_z = qt.sigmaz()                   # Pauli-Z
-        sigma_x = qt.sigmax()                   # Pauli-X
-        sigma_y = qt.sigmay()                   # Pauli-Y
-        sigma_minus = qt.destroy(qubit_levels)  # Qubit lowering
-        
-        # Qubit measurement projectors
-        P0 = qt.Qobj([[1, 0], [0, 0]])         # Ground state |0⟩⟨0|
-        P1 = qt.Qobj([[0, 0], [0, 1]])         # Excited state |1⟩⟨1|
-        
-        # Composite system operators (input_field ⊗ resonator_cavity ⊗ qubit)
-        self.operators = {
-            # Input field operators in composite space
-            'a_in': qt.tensor(a_field, I_cavity, I_qubit),
-            'a_in_dag': qt.tensor(a_field.dag(), I_cavity, I_qubit),
+        # Generate all operators with JAX backend for autodiff compatibility
+        with qt.CoreOptions(default_dtype="jax"):
+            # Identity operators for each subsystem
+            I_field = qt.identity(field_levels)     # Input field identity
+            I_cavity = qt.identity(cavity_levels)   # Resonator cavity identity  
+            I_qubit = qt.identity(qubit_levels)     # Qubit identity
             
-            # Resonator cavity operators in composite space
-            'a': qt.tensor(I_field, a_cavity, I_qubit),
-            'a_dag': qt.tensor(I_field, a_cavity.dag(), I_qubit),
+            # Individual subsystem operators
+            # Input field operators
+            a_field = qt.destroy(field_levels)      # Field annihilation
             
-            # Qubit operators in composite space
-            'sigma_z': qt.tensor(I_field, I_cavity, sigma_z),
-            'sigma_x': qt.tensor(I_field, I_cavity, sigma_x),
-            'sigma_y': qt.tensor(I_field, I_cavity, sigma_y),
-            'sigma_minus': qt.tensor(I_field, I_cavity, sigma_minus),
-            'sigma_plus': qt.tensor(I_field, I_cavity, sigma_minus.dag()),
+            # Resonator cavity operators
+            a_cavity = qt.destroy(cavity_levels)    # Cavity annihilation
             
-            # Qubit measurement projectors in composite space
-            'P0': qt.tensor(I_field, I_cavity, P0),
-            'P1': qt.tensor(I_field, I_cavity, P1),
+            # Qubit operators
+            sigma_z = qt.sigmaz()                   # Pauli-Z
+            sigma_x = qt.sigmax()                   # Pauli-X
+            sigma_y = qt.sigmay()                   # Pauli-Y
+            sigma_minus = qt.destroy(qubit_levels)  # Qubit lowering
             
-            # Identity operators for reference
-            'I_field': I_field,
-            'I_cavity': I_cavity,
-            'I_qubit': I_qubit,
-        }
+            # Qubit measurement projectors
+            P0 = qt.Qobj([[1, 0], [0, 0]])         # Ground state |0⟩⟨0|
+            P1 = qt.Qobj([[0, 0], [0, 1]])         # Excited state |1⟩⟨1|
+            
+            # Composite system operators (input_field ⊗ resonator_cavity ⊗ qubit)
+            self.operators = {
+                # Input field operators in composite space
+                'a_in': qt.tensor(a_field, I_cavity, I_qubit),
+                'a_in_dag': qt.tensor(a_field.dag(), I_cavity, I_qubit),
+                
+                # Resonator cavity operators in composite space
+                'a': qt.tensor(I_field, a_cavity, I_qubit),
+                'a_dag': qt.tensor(I_field, a_cavity.dag(), I_qubit),
+                
+                # Qubit operators in composite space
+                'sigma_z': qt.tensor(I_field, I_cavity, sigma_z),
+                'sigma_x': qt.tensor(I_field, I_cavity, sigma_x),
+                'sigma_y': qt.tensor(I_field, I_cavity, sigma_y),
+                'sigma_minus': qt.tensor(I_field, I_cavity, sigma_minus),
+                'sigma_plus': qt.tensor(I_field, I_cavity, sigma_minus.dag()),
+                
+                # Qubit measurement projectors in composite space
+                'P0': qt.tensor(I_field, I_cavity, P0),
+                'P1': qt.tensor(I_field, I_cavity, P1),
+                
+                # Identity operators for reference
+                'I_field': I_field,
+                'I_cavity': I_cavity,
+                'I_qubit': I_qubit,
+            }
 
     def _generate_hamiltonian(self):
         """
