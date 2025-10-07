@@ -42,48 +42,6 @@ class Parameter:
     value: float
 
 
-class ParameterCallback:
-    """Simple callback for parameter history and best parameter tracking."""
-    
-    def __init__(self, save_every: int = 10, save_best: bool = True):
-        self.save_every = save_every
-        self.save_best = save_best
-        self.epoch = 0
-        self.history = []
-        self.best_parameters = None
-        self.best_loss = float('inf')
-    
-    def __call__(self, parameters: np.ndarray, loss: Optional[float] = None):
-        """Called after each optimization step."""
-        self.epoch += 1
-        
-        # Save history every N epochs
-        if self.epoch % self.save_every == 0:
-            entry = {
-                'epoch': self.epoch,
-                'parameters': parameters.copy(),
-                'loss': loss
-            }
-            self.history.append(entry)
-        
-        # Track best parameters if loss provided
-        if self.save_best and loss is not None:
-            if loss < self.best_loss:
-                self.best_loss = loss
-                self.best_parameters = parameters.copy()
-    
-    def get_best_parameters(self):
-        """Get the best parameters found so far."""
-        return self.best_parameters
-    
-    def reset(self):
-        """Reset callback state."""
-        self.epoch = 0
-        self.history.clear()
-        self.best_parameters = None
-        self.best_loss = float('inf')
-
-
 class TrainableParameters:
     """Simplified parameter manager for quantum sensing optimization."""
     
@@ -167,6 +125,12 @@ class TrainableParameters:
                 angles[param.name] = np.array([param.value])
         return angles
     
+    def set_rotation_angles(self, angles: Dict[str, float]) -> None:
+        """Set rotation angle parameters."""
+        for param in self.parameters:
+            if param.param_type == ParameterType.ROTATION_ANGLE and param.name in angles:
+                param.value = angles[param.name]
+    
     def get_measurement_times(self) -> Dict[str, np.ndarray]:
         """Get all measurement time parameters."""
         times = {}
@@ -174,6 +138,12 @@ class TrainableParameters:
             if param.param_type == ParameterType.MEASUREMENT_TIME:
                 times[param.name] = np.array([param.value])
         return times
+    
+    def set_measurement_times(self, times: Dict[str, float]) -> None:
+        """Set measurement time parameters."""
+        for param in self.parameters:
+            if param.param_type == ParameterType.MEASUREMENT_TIME and param.name in times:
+                param.value = times[param.name]
     
     def get_optimizer(self, parameter_index: int) -> optax.GradientTransformation:
         """Get the optimizer for a specific parameter."""

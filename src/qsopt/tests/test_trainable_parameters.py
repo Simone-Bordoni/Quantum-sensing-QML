@@ -9,7 +9,7 @@ import numpy as np
 import optax
 import pytest
 
-from qsopt.core.trainable_parameters import (Parameter, ParameterCallback, ParameterConstraints,
+from qsopt.core.trainable_parameters import (Parameter, ParameterConstraints,
                                              ParameterType, TrainableParameters)
 
 
@@ -45,69 +45,6 @@ class TestParameter:
         assert param.name == "test_angle"
         assert param.param_type == ParameterType.ROTATION_ANGLE
         assert param.value == 1.57
-
-
-class TestParameterCallback:
-    """Test ParameterCallback class."""
-
-    def test_initialization(self):
-        """Test callback initialization."""
-        callback = ParameterCallback(save_every=5, save_best=True)
-        assert callback.save_every == 5
-        assert callback.save_best is True
-        assert callback.epoch == 0
-        assert len(callback.history) == 0
-        assert callback.best_parameters is None
-
-    def test_call_without_loss(self):
-        """Test calling callback without loss."""
-        callback = ParameterCallback(save_every=1)
-        params = np.array([1.0, 2.0, 3.0])
-        
-        callback(params)
-        
-        assert callback.epoch == 1
-        assert len(callback.history) == 1
-        assert np.allclose(callback.history[0]['parameters'], params)
-        assert callback.history[0]['loss'] is None
-
-    def test_call_with_loss(self):
-        """Test calling callback with loss."""
-        callback = ParameterCallback(save_every=1, save_best=True)
-        params1 = np.array([1.0, 2.0, 3.0])
-        params2 = np.array([1.5, 2.5, 3.5])
-        
-        callback(params1, loss=10.0)
-        callback(params2, loss=5.0)
-        
-        assert callback.epoch == 2
-        assert len(callback.history) == 2
-        assert callback.best_loss == 5.0
-        assert np.allclose(callback.get_best_parameters(), params2)
-
-    def test_save_every(self):
-        """Test save_every functionality."""
-        callback = ParameterCallback(save_every=3)
-        params = np.array([1.0, 2.0])
-        
-        for i in range(5):
-            callback(params, loss=float(i))
-        
-        assert callback.epoch == 5
-        assert len(callback.history) == 1  # Only epoch 3 saved
-        assert callback.history[0]['epoch'] == 3
-
-    def test_reset(self):
-        """Test callback reset."""
-        callback = ParameterCallback()
-        callback(np.array([1.0]), loss=5.0)
-        
-        callback.reset()
-        
-        assert callback.epoch == 0
-        assert len(callback.history) == 0
-        assert callback.best_parameters is None
-        assert callback.best_loss == float('inf')
 
 
 class TestTrainableParameters:
