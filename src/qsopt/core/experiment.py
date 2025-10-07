@@ -245,7 +245,7 @@ class SingleQubitExperiment:
         return qt.MESolver(
             self.hamiltonians['total'], 
             self.lindblad_operators['interaction'],
-            options={"method": "adams", "normalize_output": False}
+            options={"method": "diffrax", "normalize_output": False}
         )
     
     def get_solver_no_interaction(self) -> qt.MESolver:
@@ -261,7 +261,7 @@ class SingleQubitExperiment:
         return qt.MESolver(
             self.hamiltonians['dispersive'], 
             self.lindblad_operators['no_interaction'],
-            options={"method": "adams", "normalize_output": False}
+            options={"method": "diffrax", "normalize_output": False}
         )
     
     def ry_rotation(self, rho: qt.Qobj, theta: float) -> qt.Qobj:
@@ -306,7 +306,7 @@ class SingleQubitExperiment:
         P0 = self.operators['P0']
         return P0 * rho * P0.dag()  # type: ignore
     
-    def prob0(self, rho: qt.Qobj) -> float:
+    def prob0(self, rho: qt.Qobj):
         """
         Calculate probability of measuring qubit in |0⟩ state.
         
@@ -314,11 +314,11 @@ class SingleQubitExperiment:
             rho: QuTiP Qobj density matrix in composite space
             
         Returns:
-            float: Real probability value Tr(P₀ρ) ∈ [0,1]
+            JAX array: Real probability value Tr(P₀ρ) ∈ [0,1]
         """
-        return float(jnp.real(self.proj0(rho).tr()))
+        return jnp.real(self.proj0(rho).tr())
     
-    def prob1(self, rho: qt.Qobj) -> float:
+    def prob1(self, rho: qt.Qobj):
         """
         Calculate probability of measuring qubit in |1⟩ state.
         
@@ -326,12 +326,12 @@ class SingleQubitExperiment:
             rho: QuTiP Qobj density matrix in composite space
             
         Returns:
-            float: Real probability value Tr(P₁ρ) ∈ [0,1]
+            JAX array: Real probability value Tr(P₁ρ) ∈ [0,1]
         """
         if self.operators is None:
             raise RuntimeError("Operators not initialized")
         P1 = self.operators['P1']
-        return float(jnp.real((P1 * rho * P1.dag()).tr()))  # type: ignore
+        return jnp.real((P1 * rho * P1.dag()).tr())  # type: ignore
     
     def get_initial_state(self) -> qt.Qobj:
         """
@@ -357,7 +357,7 @@ class SingleQubitExperiment:
     def simulation(self, solver: qt.MESolver, rho: qt.Qobj, 
                    theta1: float, theta2: float, 
                    measurements: Dict[float, float],
-                   args: Optional[Dict] = None) -> float:
+                   args: Optional[Dict] = None):
         """
         Complete quantum photon detection simulation workflow.
         
@@ -412,7 +412,7 @@ class SingleQubitExperiment:
         prob_all_ground = jnp.prod(jnp.array(probability_list))
         prob_detection = 1 - prob_all_ground
 
-        return float(prob_detection)
+        return prob_detection
     
     def run_simulation(self, with_interaction: bool = True) -> Dict[str, float]:
         """
