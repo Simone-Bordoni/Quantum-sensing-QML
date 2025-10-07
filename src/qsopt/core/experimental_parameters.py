@@ -280,8 +280,7 @@ class ExperimentalParameters:
         """
         lines = []
         # System Dimensions Group
-        lines.append("\nSYSTEM DIMENSIONS")
-        lines.append("-" * 30)
+        lines.append("SYSTEM DIMENSIONS")
         total_dim = (
             self.system_dims.cavity_levels
             * self.system_dims.qubit_levels
@@ -302,8 +301,7 @@ class ExperimentalParameters:
         lines.append(f"  Status:               {status}")
 
         # Physical Constants Group
-        lines.append("\nPHYSICAL CONSTANTS")
-        lines.append("-" * 30)
+        lines.append("PHYSICAL CONSTANTS")
         lines.append(f"  Chi:                  {self.physical_constants.chi:>8.4f}")
         lines.append(
             f"  Photon cavity coupling: {self.physical_constants.photon_cavity_coupling:>6.4f}"
@@ -320,8 +318,7 @@ class ExperimentalParameters:
         lines.append(f"  Status:               {status}")
 
         # Measurement Protocol Group
-        lines.append("\nMEASUREMENT PROTOCOL")
-        lines.append("-" * 30)
+        lines.append("MEASUREMENT PROTOCOL") 
         n_measurements = len(self.measurement.measurement_times)
         lines.append(f"  Number of measurements: {n_measurements:>6}")
         lines.append(f"  Measurement times: {self.measurement.measurement_times}")
@@ -335,13 +332,11 @@ class ExperimentalParameters:
         lines.append(f"  Status:               {status}")
 
         # Initial State Configuration Group
-        lines.append("\nINITIAL STATE")
-        lines.append("-" * 30)
+        lines.append("INITIAL STATE")
         lines.append(f"  Type:                 {self.initial_state.state_type.value}")
 
         # Noise Configuration Group
-        lines.append("\nNOISE MODEL")
-        lines.append("-" * 30)
+        lines.append("NOISE MODEL")
         lines.append(f"  Depolarizing rate:    {self.noise_config.depolarizing:>8.4f}")
         lines.append(f"  Dephasing rate:       {self.noise_config.dephasing:>8.4f}")
         lines.append(f"  Relaxation rate:      {self.noise_config.relaxation:>8.4f}")
@@ -368,8 +363,7 @@ class ExperimentalParameters:
         lines.append(f"  Status:               {status}")
 
         # Overall System Status
-        lines.append("\nSYSTEM STATUS")
-        lines.append("-" * 30)
+        lines.append("SYSTEM STATUS")
 
         try:
             self._validate_configuration()
@@ -378,7 +372,7 @@ class ExperimentalParameters:
             lines.append("  Configuration:        INVALID")
             lines.append(f"  Error:                {str(e)}")
 
-        return "\n".join(lines)
+        return '\n'.join(lines)
 
     def __repr__(self) -> str:
         """Compact string representation of experimental parameters."""
