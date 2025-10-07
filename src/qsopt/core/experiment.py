@@ -404,6 +404,60 @@ class SingleQubitExperiment:
 
         return float(prob_detection)
     
+    def run_simulation(self, with_interaction: bool = True) -> Dict[str, float]:
+        """
+        Run simulation with current parameter values without updating them.
+        
+        This method provides a convenient way to test the system with the current
+        trainable parameter values, computing detection probabilities both with
+        and without photon interaction.
+        
+        Args:
+            with_interaction: If True, use solver with interaction. If False, use both
+                            solvers to compute contrast.
+        
+        Returns:
+            dict: Dictionary containing:
+                - 'prob_with': Detection probability with interaction
+                - 'prob_without': Detection probability without interaction  
+                - 'contrast': Sensing contrast (prob_with - prob_without)
+                - 'theta1': First rotation angle used
+                - 'theta2': Second rotation angle used
+        
+        Raises:
+            ValueError: If fewer than 2 rotation parameters are defined
+        """
+        # Get rotation parameters
+        rotation_params = [p for p in self.trainable_params.parameters 
+                          if p.param_type.value == 'rotation_angle']
+        
+        if len(rotation_params) < 2:
+            raise ValueError("Need at least 2 rotation angle parameters")
+        
+        theta1 = rotation_params[0].value
+        theta2 = rotation_params[1].value
+        
+        # Get initial state and measurement protocol
+        rho0 = self.get_initial_state()
+        measurement_times = self.experimental_params.measurement.measurement_times
+        measurements = {t: 0.0 for t in measurement_times}
+        
+        # Get solvers
+        solver_with = self.get_solver_with_interaction()
+        solver_without = self.get_solver_no_interaction()
+        
+        # Run simulations
+        prob_with = self.simulation(solver_with, rho0, theta1, theta2, measurements)
+        prob_without = self.simulation(solver_without, rho0, theta1, theta2, measurements)
+        
+        return {
+            'prob_with': float(prob_with),
+            'prob_without': float(prob_without),
+            'contrast': float(prob_with - prob_without),
+            'theta1': float(theta1),
+            'theta2': float(theta2)
+        }
+    
     def optimize(self, num_steps: int = 100, 
                  learning_rate: float = 0.05,
                  tolerance: float = 1e-6,
@@ -437,7 +491,7 @@ class SingleQubitExperiment:
         
         # Get initial parameter values from trainable_params
         rotation_params = [p for p in self.trainable_params.parameters 
-                          if p.param_type == 'rotation_angle']
+                          if p.param_type.value == 'rotation_angle']
         
         if len(rotation_params) < 2:
             raise ValueError("Need at least 2 rotation angle parameters")
@@ -542,8 +596,12 @@ class SingleQubitExperiment:
             # Update parameters
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
+            
+            # Update trainable parameters continuously
+            theta1_param.value = float(params[0])
+            theta2_param.value = float(params[1])
         
-        # Update trainable parameters with best values
+        # Ensure best parameters are set at the end
         theta1_param.value = float(best_params[0])
         theta2_param.value = float(best_params[1])
         
