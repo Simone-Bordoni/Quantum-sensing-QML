@@ -180,11 +180,34 @@ class TrainableParameters:
         return len(self.parameters)
     
     def __repr__(self) -> str:
-        """String representation."""
-        rotation_count = sum(1 for p in self.parameters if p.param_type == ParameterType.ROTATION_ANGLE)
-        time_count = sum(1 for p in self.parameters if p.param_type == ParameterType.MEASUREMENT_TIME)
-        custom_count = sum(1 for p in self.parameters if p.param_type == ParameterType.CUSTOM)
+        """Detailed string representation with parameter values grouped by type."""
+        if not self.parameters:
+            return "TrainableParameters(empty)"
         
-        return (f"TrainableParameters(total={len(self.parameters)}, "
-                f"rotation_angles={rotation_count}, measurement_times={time_count}, "
-                f"custom={custom_count})")
+        # Group parameters by type
+        rotation_angles = [p for p in self.parameters if p.param_type == ParameterType.ROTATION_ANGLE]
+        measurement_times = [p for p in self.parameters if p.param_type == ParameterType.MEASUREMENT_TIME]
+        custom_params = [p for p in self.parameters if p.param_type == ParameterType.CUSTOM]
+        
+        lines = [f"TrainableParameters(total={len(self.parameters)})"]
+        
+        # Rotation angles section
+        if rotation_angles:
+            lines.append("  Rotation Angles:")
+            for param in rotation_angles:
+                angle_deg = np.degrees(param.value)
+                lines.append(f"    {param.name}: {param.value:.4f} rad ({angle_deg:.2f}°)")
+        
+        # Measurement times section
+        if measurement_times:
+            lines.append("  Measurement Times:")
+            for param in measurement_times:
+                lines.append(f"    {param.name}: {param.value:.4f}")
+        
+        # Custom parameters section
+        if custom_params:
+            lines.append("  Custom Parameters:")
+            for param in custom_params:
+                lines.append(f"    {param.name}: {param.value:.4f}")
+        
+        return "\n".join(lines)

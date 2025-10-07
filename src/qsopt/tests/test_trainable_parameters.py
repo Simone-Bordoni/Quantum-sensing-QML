@@ -208,9 +208,15 @@ class TestTrainableParameters:
         params.add_custom_parameters("x", 2.0)
         
         repr_str = repr(params)
-        assert "rotation_angles=1" in repr_str
-        assert "measurement_times=0" in repr_str  # Should be 0 since not implemented
-        assert "custom=1" in repr_str
+        # Check structure
+        assert "TrainableParameters(total=2)" in repr_str
+        assert "Rotation Angles:" in repr_str
+        assert "Custom Parameters:" in repr_str
+        # Check parameter names and values
+        assert "theta:" in repr_str
+        assert "0.0000 rad" in repr_str
+        assert "x:" in repr_str
+        assert "2.0000" in repr_str
 
 
 class TestParameterType:
