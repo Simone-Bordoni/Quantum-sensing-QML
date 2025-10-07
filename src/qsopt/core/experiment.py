@@ -4,9 +4,14 @@ Quantum Sensing Experiment Class
 
 Main experiment class that orchestrates quantum sensing protocols with configurable
 parameters, noise models, and optimization strategies.
+
+Note: This module uses JAX arrays extensively. Type checker warnings about JAX array
+operations (unsubscriptable-object, unsupported-operand-type, etc.) are false positives
+and are disabled in .pylintrc. The code executes correctly at runtime.
 """
 
 """Quantum sensing experiment module."""
+# type: ignore  # Suppress Pylance type warnings for JAX arrays
 import warnings
 from typing import Any, Dict, List, Optional, Union
 
@@ -523,6 +528,7 @@ class SingleQubitExperiment:
             Returns:
                 float: Negative contrast for minimization
             """
+            # pylint: disable=unsubscriptable-object
             theta0, theta1 = theta_params
             
             # Calculate sensing contrast: P(with photon) - P(without photon)
@@ -563,6 +569,7 @@ class SingleQubitExperiment:
             loss_value, grads = jax.value_and_grad(objective_function)(params)
             
             # Calculate metrics
+            # pylint: disable=unsubscriptable-object,unsupported-assignment-operation
             theta0, theta1 = params
             prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurements)
             prob_without = self.simulation(solver_without, rho0, theta0, theta1, measurements)
@@ -596,6 +603,7 @@ class SingleQubitExperiment:
             
             # Progress output
             if verbose and (step % 20 == 0 or grad_norm < tolerance):
+                # pylint: disable=unsubscriptable-object
                 print(f"{step:<6}{params[0]:<12.6f}{params[1]:<12.6f}"
                       f"{sensing_contrast:<12.6f}{loss_value:<12.6f}{grad_norm:<12.2e}")
             
@@ -612,10 +620,12 @@ class SingleQubitExperiment:
             params = optax.apply_updates(params, updates)
             
             # Update trainable parameters continuously
+            # pylint: disable=unsubscriptable-object
             theta1_param.value = float(params[0])
             theta2_param.value = float(params[1])
         
         # Ensure best parameters are set at the end
+        # pylint: disable=unsubscriptable-object
         theta1_param.value = float(best_params[0])
         theta2_param.value = float(best_params[1])
         
