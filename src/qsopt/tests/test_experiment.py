@@ -183,24 +183,27 @@ class TestSingleQubitExperiment:
         assert isinstance(experiment.solver_without, qt.MESolver)
     
     def test_ry_rotation(self, experiment):
-        """Test Y-rotation gate generation."""
+        """Test Y-rotation gate application to density matrix."""
+        rho0 = experiment.get_initial_state()
         theta = np.pi / 4
-        Ry = experiment.ry_rotation(theta)
+        
+        # Apply rotation
+        rho_rotated = experiment.ry_rotation(rho0, theta)
         
         # Should be Qobj
-        assert isinstance(Ry, qt.Qobj)
+        assert isinstance(rho_rotated, qt.Qobj)
         
-        # Should be unitary
-        assert (Ry * Ry.dag() - experiment.operators['identity']).norm() < 1e-10
+        # Should be valid density matrix (trace = 1, positive)
+        assert abs(rho_rotated.tr() - 1.0) < 1e-10, "Trace should be 1"
+        assert rho_rotated.isherm, "Should be Hermitian"
         
-        # Test specific angles
-        Ry_0 = experiment.ry_rotation(0.0)
-        identity = experiment.operators['identity']
-        assert (Ry_0 - identity).norm() < 1e-10, "Ry(0) should be identity"
+        # Test that Ry(0) doesn't change the state
+        rho_unchanged = experiment.ry_rotation(rho0, 0.0)
+        assert (rho_unchanged - rho0).norm() < 1e-10, "Ry(0) should not change state"
         
-        Ry_pi = experiment.ry_rotation(np.pi)
-        # Ry(π) should flip qubit states
-        assert (Ry_pi * Ry_pi - identity).norm() < 1e-10, "Ry(π)^2 should be identity"
+        # Test that applying Ry(θ) then Ry(-θ) returns to original
+        rho_back = experiment.ry_rotation(rho_rotated, -theta)
+        assert (rho_back - rho0).norm() < 1e-8, "Ry(θ) followed by Ry(-θ) should return to original"
     
     def test_probability_sum(self, experiment):
         """Test that prob0 + prob1 = 1 for pure states."""

@@ -281,10 +281,12 @@ class SingleQubitExperiment:
         I_field = self.operators['I_field']
         I_cavity = self.operators['I_cavity']
         
-        Sy_jax = qt.sigmay()
-        ry_gate = (-1j * Sy_jax * theta / 2).expm()
-        r = qt.tensor(I_field, I_cavity, ry_gate)
-        return r * rho * r.dag()  # type: ignore
+        # Use JAX context for automatic differentiation compatibility
+        with qt.CoreOptions(default_dtype="jax"):
+            Sy_jax = qt.sigmay()
+            ry_gate = (-1j * Sy_jax * theta / 2).expm()
+            r = qt.tensor(I_field, I_cavity, ry_gate)
+            return r * rho * r.dag()  # type: ignore
     
     def proj0(self, rho: qt.Qobj) -> qt.Qobj:
         """
