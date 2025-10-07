@@ -108,13 +108,13 @@ class TestSingleQubitExperiment:
     
     def test_sigma_operators_hermitian(self, experiment):
         """Test that Pauli operators are Hermitian."""
-        sx = experiment.operators['sx']
-        sy = experiment.operators['sy']
-        sz = experiment.operators['sz']
+        sigma_x = experiment.operators['sigma_x']
+        sigma_y = experiment.operators['sigma_y']
+        sigma_z = experiment.operators['sigma_z']
         
-        assert (sx - sx.dag()).norm() < 1e-10, "σ_x not Hermitian"
-        assert (sy - sy.dag()).norm() < 1e-10, "σ_y not Hermitian"
-        assert (sz - sz.dag()).norm() < 1e-10, "σ_z not Hermitian"
+        assert (sigma_x - sigma_x.dag()).norm() < 1e-10, "σ_x not Hermitian"
+        assert (sigma_y - sigma_y.dag()).norm() < 1e-10, "σ_y not Hermitian"
+        assert (sigma_z - sigma_z.dag()).norm() < 1e-10, "σ_z not Hermitian"
     
     def test_projector_properties(self, experiment):
         """Test projector operators P0 and P1."""
@@ -132,55 +132,54 @@ class TestSingleQubitExperiment:
         # Projectors should be orthogonal: P0*P1 = 0
         assert (P0 * P1).norm() < 1e-10, "P0 and P1 not orthogonal"
         
-        # Projectors should sum to identity on qubit subspace
-        identity = experiment.operators['identity']
-        # Note: P0 + P1 acts on full space, so we check trace instead
-        assert abs(P0.tr() + P1.tr() - experiment.exp_params.nlev**2) < 1e-10
+        # Projectors should sum to identity on qubit subspace (in full composite space)
+        # P0 + P1 = I_field ⊗ I_cavity ⊗ I_qubit, check by trace
+        total_dim = (experiment.experimental_params.field_levels * 
+                     experiment.experimental_params.cavity_levels * 
+                     experiment.experimental_params.qubit_levels)
+        assert abs(P0.tr() + P1.tr() - total_dim) < 1e-10
     
     def test_hamiltonian_structure(self, experiment):
         """Test Hamiltonian dictionary structure."""
-        h_dict = experiment.hamiltonian_dict
+        h_dict = experiment.hamiltonians
         
         # Check required keys
-        assert 'H_dispersive' in h_dict
-        assert 'H_coupling' in h_dict
-        assert 'H_total' in h_dict
-        assert 'c_ops' in h_dict
+        assert 'dispersive' in h_dict
+        assert 'total' in h_dict
         
         # H_dispersive should be Qobj
-        assert isinstance(h_dict['H_dispersive'], qt.Qobj)
-        
-        # H_coupling should be Qobj
-        assert isinstance(h_dict['H_coupling'], qt.Qobj)
+        assert isinstance(h_dict['dispersive'], qt.Qobj)
         
         # H_total should be QobjEvo (time-dependent)
-        assert isinstance(h_dict['H_total'], qt.QobjEvo)
-        
-        # c_ops should be list
-        assert isinstance(h_dict['c_ops'], list)
+        assert isinstance(h_dict['total'], qt.QobjEvo)
     
     def test_collapse_operators(self, experiment):
         """Test noise collapse operators."""
-        c_ops = experiment.hamiltonian_dict['c_ops']
+        lindblad_ops = experiment.lindblad_operators
+        
+        # Should have interaction and no_interaction keys
+        assert 'interaction' in lindblad_ops
+        assert 'no_interaction' in lindblad_ops
         
         # Should have noise operators if any noise is present
-        if (experiment.exp_params.gamma_relax > 0 or 
-            experiment.exp_params.gamma_deph > 0 or 
-            experiment.exp_params.gamma_depol > 0):
-            assert len(c_ops) > 0, "No collapse operators with nonzero noise"
+        noise_config = experiment.experimental_params.noise_config
+        if (noise_config.relaxation > 0 or 
+            noise_config.dephasing > 0 or 
+            noise_config.depolarizing > 0):
+            assert len(lindblad_ops['no_interaction']) > 0, "No collapse operators with nonzero noise"
         
-        # All should be Qobj
-        for c_op in c_ops:
-            assert isinstance(c_op, qt.Qobj)
+        # All should be Qobj or QobjEvo
+        for c_op in lindblad_ops['interaction']:
+            assert isinstance(c_op, (qt.Qobj, qt.QobjEvo))
     
     def test_solvers_created(self, experiment):
         """Test that MESolver objects are created."""
-        assert experiment.solver_with is not None
-        assert experiment.solver_without is not None
+        solver_with = experiment.get_solver_with_interaction()
+        solver_without = experiment.get_solver_no_interaction()
         
         # Check they are MESolver instances
-        assert isinstance(experiment.solver_with, qt.MESolver)
-        assert isinstance(experiment.solver_without, qt.MESolver)
+        assert isinstance(solver_with, qt.MESolver)
+        assert isinstance(solver_without, qt.MESolver)
     
     def test_ry_rotation(self, experiment):
         """Test Y-rotation gate application to density matrix."""
@@ -233,38 +232,37 @@ class TestSingleQubitExperiment:
     
     def test_simulation_runs(self, experiment):
         """Test that simulation completes without errors."""
-        solver = experiment.solver_with
+        solver = experiment.get_solver_with_interaction()
         rho0 = experiment.get_initial_state()
         theta1 = 0.0
         theta2 = np.pi / 2
-        measurements = [experiment.operators['P0'], experiment.operators['P1']]
+        measurement_times = experiment.experimental_params.measurement_times
+        measurements = {t: 0.0 for t in measurement_times}
         
         # Run simulation
         result = experiment.simulation(solver, rho0, theta1, theta2, measurements)
         
-        # Should return array of probabilities
-        assert isinstance(result, (np.ndarray, jnp.ndarray))
-        assert len(result) == len(measurements)
+        # Should return a single probability value (JAX array or float)
+        assert isinstance(result, (float, np.ndarray, jnp.ndarray))
         
-        # Probabilities should be in [0, 1]
-        assert all(0 <= p <= 1 for p in result), f"Invalid probabilities: {result}"
-        
-        # Should sum to approximately 1
-        assert abs(sum(result) - 1.0) < 1e-6, f"Probabilities sum to {sum(result)}"
+        # Probability should be in [0, 1]
+        prob_val = float(result) if hasattr(result, '__float__') else result
+        assert 0 <= prob_val <= 1, f"Invalid probability: {prob_val}"
     
     def test_simulation_with_different_angles(self, experiment):
         """Test simulation with various rotation angles."""
-        solver = experiment.solver_with
+        solver = experiment.get_solver_with_interaction()
         rho0 = experiment.get_initial_state()
-        measurements = [experiment.operators['P0'], experiment.operators['P1']]
+        measurement_times = experiment.experimental_params.measurement_times
+        measurements = {t: 0.0 for t in measurement_times}
         
         angles = [0.0, np.pi/4, np.pi/2, 3*np.pi/4, np.pi]
         
         for theta1 in angles:
             for theta2 in angles:
                 result = experiment.simulation(solver, rho0, theta1, theta2, measurements)
-                assert len(result) == 2
-                assert abs(sum(result) - 1.0) < 1e-6
+                prob_val = float(result) if hasattr(result, '__float__') else result
+                assert 0 <= prob_val <= 1, f"Invalid probability for θ1={theta1}, θ2={theta2}: {prob_val}"
     
     def test_optimization_initialization(self, experiment):
         """Test optimization setup without running full optimization."""
