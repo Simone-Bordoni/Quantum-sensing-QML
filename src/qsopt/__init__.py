@@ -19,3 +19,5 @@ from .core.experimental_parameters import (ExperimentalParameters,
                                            PhysicalConstants, SystemDimensions)
 from .core.trainable_parameters import (ParameterConstraints,
                                         ParameterType, TrainableParameters)
+from .core.experiment import SingleQubitExperiment
+from .core.callback import OptimizationCallback

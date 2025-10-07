@@ -461,7 +461,8 @@ class SingleQubitExperiment:
     def optimize(self, num_steps: int = 100, 
                  learning_rate: float = 0.05,
                  tolerance: float = 1e-6,
-                 verbose: bool = True) -> Dict[str, Any]:
+                 verbose: bool = True,
+                 callback: Optional[Any] = None) -> Dict[str, Any]:
         """
         Optimize rotation parameters to maximize sensing contrast.
         
@@ -474,6 +475,8 @@ class SingleQubitExperiment:
             learning_rate: Learning rate for gradient descent
             tolerance: Convergence threshold for gradient norm
             verbose: Print progress information
+            callback: Optional callback function to track optimization progress.
+                     Should accept (parameters, loss, prob_with, prob_without, contrast)
             
         Returns:
             dict: Optimization results including optimal parameters and history
@@ -578,6 +581,16 @@ class SingleQubitExperiment:
             history['gradients'].append([float(grads[0]), float(grads[1])])
             history['prob_with'].append(float(prob_with))
             history['prob_without'].append(float(prob_without))
+            
+            # Call callback if provided
+            if callback is not None:
+                callback(
+                    parameters=np.array(params),
+                    loss=float(loss_value),
+                    prob_with=float(prob_with),
+                    prob_without=float(prob_without),
+                    contrast=float(sensing_contrast)
+                )
             
             grad_norm = jnp.linalg.norm(grads)
             

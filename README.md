@@ -101,6 +101,48 @@ print(f"Optimized θ₂: {trainable_params.parameters[1].value:.3f}")
 
 For a complete walkthrough, see the [Example notebook](./examples/Example.ipynb).
 
+### Using Optimization Callbacks
+
+Track detailed optimization metrics including loss, contrast, and detection probabilities:
+
+```python
+from qsopt import OptimizationCallback
+
+# Create callback to track optimization progress
+callback = OptimizationCallback(save_every=1, save_best=True)
+
+# Run optimization with callback
+history = experiment.optimize(
+    num_steps=100,
+    learning_rate=0.05,
+    verbose=True,
+    callback=callback  # Pass callback to track metrics
+)
+
+# Access tracked metrics
+print(f"Best contrast: {callback.best_metrics['contrast']:.6f}")
+print(f"Best parameters: {callback.get_best_parameters()}")
+
+# Save results for later analysis
+callback.save('optimization_results.npz')
+
+# Load and plot results
+import matplotlib.pyplot as plt
+data = OptimizationCallback.load('optimization_results.npz')
+plt.plot(data['epochs'], data['contrast'])
+plt.xlabel('Epoch')
+plt.ylabel('Contrast')
+plt.show()
+```
+
+**Tracked Metrics:**
+- Loss function values
+- Sensing contrast (P_with - P_without)
+- Detection probability with photon
+- Detection probability without photon  
+- Parameter values at each epoch
+- Best parameters and corresponding metrics
+
 ## 📊 Key Features
 
 ### ⚡ Completed Implementation
