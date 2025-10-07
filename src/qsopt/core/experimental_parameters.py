@@ -341,13 +341,6 @@ class ExperimentalParameters:
         lines.append(f"  Dephasing rate:       {self.noise_config.dephasing:>8.4f}")
         lines.append(f"  Relaxation rate:      {self.noise_config.relaxation:>8.4f}")
 
-        total_noise = (
-            self.noise_config.depolarizing
-            + self.noise_config.dephasing
-            + self.noise_config.relaxation
-        )
-        lines.append(f"  Total noise rate:     {total_noise:>8.4f}")
-
         if self.noise_config.custom_operators is not None:
             lines.append(f"  Custom operators:     {len(self.noise_config.custom_operators):>6}")
         else:

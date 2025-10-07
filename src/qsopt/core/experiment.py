@@ -23,6 +23,7 @@ import qutip as qt
 from jax.scipy.special import erfc
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.core.trainable_parameters import TrainableParameters
+from qsopt.core.callback import OptimizationCallback
 
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
@@ -66,6 +67,9 @@ class SingleQubitExperiment:
         self.operators: Optional[Dict[str, qt.Qobj]] = None
         self.hamiltonians: Optional[Dict[str, Union[qt.QobjEvo, qt.Qobj]]] = None
         self.lindblad_operators: Optional[Dict[str, List[Union[qt.Qobj, qt.QobjEvo]]]] = None
+        
+        # Optimization callback (default: save every epoch)
+        self.callback: OptimizationCallback = OptimizationCallback(save_every=1, save_best=True)
         
         # Initialize quantum objects
         self.__post_init__()
@@ -414,7 +418,7 @@ class SingleQubitExperiment:
 
         return prob_detection
     
-    def run_simulation(self, with_interaction: bool = True) -> Dict[str, float]:
+    def run_simulation(self) -> Dict[str, float]:
         """
         Run simulation with current parameter values without updating them.
         
@@ -422,30 +426,28 @@ class SingleQubitExperiment:
         trainable parameter values, computing detection probabilities both with
         and without photon interaction.
         
-        Args:
-            with_interaction: If True, use solver with interaction. If False, use both
-                            solvers to compute contrast.
-        
         Returns:
             dict: Dictionary containing:
                 - 'prob_with': Detection probability with interaction
                 - 'prob_without': Detection probability without interaction  
                 - 'contrast': Sensing contrast (prob_with - prob_without)
-                - 'theta1': First rotation angle used
-                - 'theta2': Second rotation angle used
+                - Parameter names and values from trainable_params (e.g., 'ry1', 'ry2')
         
         Raises:
             ValueError: If fewer than 2 rotation parameters are defined
         """
-        # Get rotation parameters
-        rotation_params = [p for p in self.trainable_params.parameters 
-                          if p.param_type.value == 'rotation_angle']
+        # Get rotation parameters using the dedicated method
+        rotation_angles = self.trainable_params.get_rotation_angles()
         
-        if len(rotation_params) < 2:
+        if len(rotation_angles) < 2:
             raise ValueError("Need at least 2 rotation angle parameters")
         
-        theta1 = rotation_params[0].value
-        theta2 = rotation_params[1].value
+        # Extract first two rotation parameters (order preserved from TrainableParameters)
+        param_names = list(rotation_angles.keys())
+        param1_name = param_names[0]
+        param2_name = param_names[1]
+        theta1 = float(rotation_angles[param1_name][0])
+        theta2 = float(rotation_angles[param2_name][0])
         
         # Get initial state and measurement protocol
         rho0 = self.get_initial_state()
@@ -464,15 +466,15 @@ class SingleQubitExperiment:
             'prob_with': float(prob_with),
             'prob_without': float(prob_without),
             'contrast': float(prob_with - prob_without),
-            'theta1': float(theta1),
-            'theta2': float(theta2)
+            param1_name: float(theta1),
+            param2_name: float(theta2)
         }
     
     def optimize(self, num_steps: int = 100, 
                  learning_rate: float = 0.05,
                  tolerance: float = 1e-6,
                  verbose: bool = True,
-                 callback: Optional[Any] = None) -> Dict[str, Any]:
+                 callback: Optional[OptimizationCallback] = None) -> Dict[str, Any]:
         """
         Optimize rotation parameters to maximize sensing contrast.
         
@@ -485,12 +487,27 @@ class SingleQubitExperiment:
             learning_rate: Learning rate for gradient descent
             tolerance: Convergence threshold for gradient norm
             verbose: Print progress information
-            callback: Optional callback function to track optimization progress.
-                     Should accept (parameters, loss, prob_with, prob_without, contrast)
+            callback: Optional callback to track optimization progress.
+                     If None, uses the experiment's default callback (saves every epoch).
+                     Pass a custom OptimizationCallback for different behavior.
             
         Returns:
-            dict: Optimization results including optimal parameters and history
+            OptimizationCallback: The callback instance containing all optimization data:
+                - callback.epoch: Total number of iterations performed
+                - callback.converged: Whether optimization converged (gradient norm < tolerance)
+                - callback.final_grad_norm: Final gradient norm value
+                - callback.best_contrast: Best contrast value achieved
+                - callback.best_trainable_params: Best parameters found
+                - callback.best_metrics: Metrics at best parameters (epoch, contrast, probs)
+                - callback.history: Complete optimization history (epochs, contrast, probs, params)
         """
+        # Use provided callback or default to self.callback
+        if callback is None:
+            callback = self.callback
+        
+        # Reset callback at start of new optimization
+        callback.reset()
+        
         # Get initial state
         rho0 = self.get_initial_state()
         
@@ -594,15 +611,13 @@ class SingleQubitExperiment:
             history['prob_with'].append(float(prob_with))
             history['prob_without'].append(float(prob_without))
             
-            # Call callback if provided
-            if callback is not None:
-                callback(
-                    parameters=np.array(params),
-                    loss=float(loss_value),
-                    prob_with=float(prob_with),
-                    prob_without=float(prob_without),
-                    contrast=float(sensing_contrast)
-                )
+            # Call callback to track progress
+            callback(
+                trainable_params=self.trainable_params,
+                prob_with=float(prob_with),
+                prob_without=float(prob_without),
+                contrast=float(sensing_contrast)
+            )
             
             grad_norm = jnp.linalg.norm(grads)
             
@@ -634,11 +649,11 @@ class SingleQubitExperiment:
         theta1_param.value = float(best_params[0])
         theta2_param.value = float(best_params[1])
         
-        return {
-            'optimal_params': best_params,
-            'optimal_contrast': best_contrast,
-            'history': history,
-            'converged': float(grad_norm) < tolerance,
-            'iterations': step + 1
-        }
+        # Set convergence information in callback
+        callback.set_convergence_info(
+            converged=float(grad_norm) < tolerance,
+            final_grad_norm=float(grad_norm)
+        )
+        
+        return callback
 

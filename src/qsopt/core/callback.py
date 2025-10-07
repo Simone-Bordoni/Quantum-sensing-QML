@@ -2,13 +2,17 @@
 Callback utilities for tracking optimization progress in quantum sensing experiments.
 
 This module provides callback classes for monitoring and saving optimization metrics
-during quantum sensing experiments, including loss functions, detection probabilities,
-and contrast values.
+during quantum sensing experiments, including detection probabilities,
+contrast values, and trainable parameters.
 """
 
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, TYPE_CHECKING
 import numpy as np
 from pathlib import Path
+import copy
+
+if TYPE_CHECKING:
+    from qsopt.core.trainable_parameters import TrainableParameters
 
 
 class OptimizationCallback:
@@ -16,32 +20,18 @@ class OptimizationCallback:
     Callback for tracking optimization progress with detailed metrics.
     
     This callback tracks:
-    - Loss function values
     - Detection probabilities (with and without photon)
-    - Sensing contrast
-    - Parameter values at each epoch
-    - Best parameters found
+    - Sensing contrast (optimization objective)
+    - Trainable parameters at each epoch
+    - Best parameters found (maximizing contrast)
     
     Attributes:
         save_every (int): Save history every N epochs
-        save_best (bool): Track best parameters based on loss
+        save_best (bool): Track best parameters based on contrast
         epoch (int): Current epoch number
         history (Dict): Complete optimization history
-        best_parameters (Optional[np.ndarray]): Best parameters found
-        best_loss (float): Best loss value found
+        best_trainable_params (Optional): Best trainable parameters found
         best_metrics (Optional[Dict]): Metrics at best parameters
-    
-    Example:
-        >>> callback = OptimizationCallback(save_every=5, save_best=True)
-        >>> # During optimization loop:
-        >>> callback(
-        ...     parameters=params,
-        ...     loss=loss_value,
-        ...     prob_with=0.85,
-        ...     prob_without=0.15,
-        ...     contrast=0.70
-        ... )
-        >>> callback.save('optimization_results.npz')
     """
     
     def __init__(self, save_every: int = 1, save_best: bool = True):
@@ -50,7 +40,7 @@ class OptimizationCallback:
         
         Args:
             save_every: Save metrics every N epochs (default: 1 = every epoch)
-            save_best: Whether to track best parameters (default: True)
+            save_best: Whether to track best parameters based on contrast (default: True)
         """
         self.save_every = save_every
         self.save_best = save_best
@@ -59,21 +49,23 @@ class OptimizationCallback:
         # Initialize history containers
         self.history: Dict[str, List[Any]] = {
             'epochs': [],
-            'loss': [],
             'contrast': [],
             'prob_with': [],
             'prob_without': [],
-            'parameters': []
+            'trainable_params': []
         }
         
-        # Best tracking
-        self.best_parameters: Optional[np.ndarray] = None
-        self.best_loss: float = float('inf')
+        # Best tracking (maximize contrast)
+        self.best_trainable_params: Optional[Any] = None
+        self.best_contrast: float = -float('inf')
         self.best_metrics: Optional[Dict[str, float]] = None
+        
+        # Optimization completion info
+        self.converged: bool = False
+        self.final_grad_norm: Optional[float] = None
     
     def __call__(self, 
-                 parameters: np.ndarray,
-                 loss: float,
+                 trainable_params: 'TrainableParameters',
                  prob_with: float,
                  prob_without: float,
                  contrast: float) -> None:
@@ -81,11 +73,10 @@ class OptimizationCallback:
         Record metrics from current optimization step.
         
         This method is called after each optimization step to record the current
-        state of the optimization, including loss, probabilities, and parameters.
+        state of the optimization, including probabilities, contrast, and parameters.
         
         Args:
-            parameters: Current parameter values
-            loss: Current loss function value
+            trainable_params: Current trainable parameters object
             prob_with: Detection probability with photon interaction
             prob_without: Detection probability without photon interaction
             contrast: Sensing contrast (prob_with - prob_without)
@@ -95,39 +86,38 @@ class OptimizationCallback:
         # Save history every N epochs
         if self.epoch % self.save_every == 0:
             self.history['epochs'].append(self.epoch)
-            self.history['loss'].append(float(loss))
             self.history['contrast'].append(float(contrast))
             self.history['prob_with'].append(float(prob_with))
             self.history['prob_without'].append(float(prob_without))
-            self.history['parameters'].append(parameters.copy())
+            # Save a deep copy of trainable_params to preserve state
+            self.history['trainable_params'].append(copy.deepcopy(trainable_params))
         
-        # Track best parameters if enabled
-        if self.save_best and loss < self.best_loss:
-            self.best_loss = float(loss)
-            self.best_parameters = parameters.copy()
+        # Track best parameters if enabled (maximize contrast)
+        if self.save_best and contrast > self.best_contrast:
+            self.best_contrast = float(contrast)
+            self.best_trainable_params = copy.deepcopy(trainable_params)
             self.best_metrics = {
                 'epoch': self.epoch,
-                'loss': float(loss),
                 'contrast': float(contrast),
                 'prob_with': float(prob_with),
                 'prob_without': float(prob_without)
             }
     
-    def get_best_parameters(self) -> Optional[np.ndarray]:
+    def get_best_trainable_params(self) -> Optional[Any]:
         """
-        Get the best parameters found during optimization.
+        Get the best trainable parameters found during optimization.
         
         Returns:
-            Best parameters array, or None if no parameters recorded yet
+            Best TrainableParameters object, or None if no parameters recorded yet
         """
-        return self.best_parameters
+        return self.best_trainable_params
     
     def get_best_metrics(self) -> Optional[Dict[str, float]]:
         """
         Get the metrics at the best parameters.
         
         Returns:
-            Dictionary containing epoch, loss, contrast, and probabilities
+            Dictionary containing epoch, contrast, and probabilities
             at the best parameters, or None if no best parameters found
         """
         return self.best_metrics
@@ -137,17 +127,28 @@ class OptimizationCallback:
         Get the complete optimization history.
         
         Returns:
-            Dictionary with lists of epochs, loss values, contrasts,
-            probabilities, and parameters
+            Dictionary with lists of epochs, contrasts,
+            probabilities, and trainable parameters
         """
         return self.history
     
-    def save(self, filepath: str) -> None:
+    def set_convergence_info(self, converged: bool, final_grad_norm: float) -> None:
+        """
+        Set convergence information at the end of optimization.
+        
+        Args:
+            converged: Whether the optimization converged
+            final_grad_norm: Final gradient norm value
+        """
+        self.converged = converged
+        self.final_grad_norm = final_grad_norm
+    
+    def save(self, filepath: str = 'optimization_results.npz') -> None:
         """
         Save optimization results to an NPZ file.
         
-        The saved file contains all history arrays and best parameters
-        in a format optimized for easy loading and plotting.
+        The saved file contains all history arrays and best parameters.
+        Note: trainable_params objects are converted to parameter arrays for NPZ storage.
         
         Args:
             filepath: Path to save the NPZ file (e.g., 'results.npz')
@@ -157,29 +158,33 @@ class OptimizationCallback:
             >>> # Later, load with:
             >>> data = np.load('optimization_results.npz')
             >>> epochs = data['epochs']
-            >>> loss = data['loss']
             >>> contrast = data['contrast']
         """
         filepath = Path(filepath)
         
+        # Convert trainable_params to parameter arrays for saving
+        param_arrays = []
+        for tp in self.history['trainable_params']:
+            angles = tp.get_rotation_angles()
+            param_arrays.append(np.array([angles[name][0] for name in angles.keys()]))
+        
         # Prepare data for saving
         save_dict = {
             'epochs': np.array(self.history['epochs']),
-            'loss': np.array(self.history['loss']),
             'contrast': np.array(self.history['contrast']),
             'prob_with': np.array(self.history['prob_with']),
             'prob_without': np.array(self.history['prob_without']),
-            'parameters': np.array(self.history['parameters'])
+            'parameters': np.array(param_arrays) if param_arrays else np.array([])
         }
         
         # Add best parameters if available
-        if self.best_parameters is not None:
-            save_dict['best_parameters'] = self.best_parameters
-            save_dict['best_loss'] = np.array(self.best_loss)
+        if self.best_trainable_params is not None:
+            best_angles = self.best_trainable_params.get_rotation_angles()
+            save_dict['best_parameters'] = np.array([best_angles[name][0] for name in best_angles.keys()])
+            save_dict['best_contrast'] = np.array(self.best_contrast)
             
             if self.best_metrics is not None:
                 save_dict['best_epoch'] = np.array(self.best_metrics['epoch'])
-                save_dict['best_contrast'] = np.array(self.best_metrics['contrast'])
                 save_dict['best_prob_with'] = np.array(self.best_metrics['prob_with'])
                 save_dict['best_prob_without'] = np.array(self.best_metrics['prob_without'])
         
@@ -217,22 +222,24 @@ class OptimizationCallback:
         self.epoch = 0
         self.history = {
             'epochs': [],
-            'loss': [],
             'contrast': [],
             'prob_with': [],
             'prob_without': [],
-            'parameters': []
+            'trainable_params': []
         }
-        self.best_parameters = None
-        self.best_loss = float('inf')
+        self.best_trainable_params = None
+        self.best_contrast = -float('inf')
         self.best_metrics = None
+        self.converged = False
+        self.final_grad_norm = None
     
     def __repr__(self) -> str:
         """String representation of the callback."""
         status = f"OptimizationCallback(epoch={self.epoch}, "
         status += f"history_size={len(self.history['epochs'])}, "
-        if self.best_parameters is not None:
-            status += f"best_loss={self.best_loss:.6f})"
+        if self.best_trainable_params is not None:
+            status += f"best_contrast={self.best_contrast:.6f}, "
         else:
-            status += "best_loss=None)"
+            status += "best_contrast=None, "
+        status += f"converged={self.converged})"
         return status

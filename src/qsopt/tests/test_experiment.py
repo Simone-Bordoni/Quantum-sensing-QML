@@ -16,6 +16,7 @@ import qutip as qt
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.core.trainable_parameters import TrainableParameters
 from qsopt.core.experiment import SingleQubitExperiment
+from qsopt.core.callback import OptimizationCallback
 
 
 class TestSingleQubitExperiment:
@@ -292,27 +293,25 @@ class TestSingleQubitExperiment:
             verbose=False
         )
         
-        # Should return dict with history
-        assert isinstance(result, dict)
-        assert 'history' in result
+        # Should return OptimizationCallback directly
+        assert isinstance(result, OptimizationCallback)
         
-        history = result['history']
-        assert 'loss' in history
-        assert 'contrast' in history
-        assert 'theta1' in history
-        assert 'theta2' in history
+        # Verify callback is the same instance as experiment.callback
+        assert result is experiment.callback
         
-        # Each list should have correct length
-        assert len(history['loss']) == 3
-        assert len(history['contrast']) == 3
-        assert len(history['theta1']) == 3
-        assert len(history['theta2']) == 3
+        # Check that callback has tracked all epochs
+        assert result.epoch == 3
+        assert len(result.history['epochs']) == 3
+        assert len(result.history['contrast']) == 3
         
-        # Loss values should be finite
-        assert all(np.isfinite(loss) for loss in history['loss'])
+        # Contrasts should be finite and in valid range (can be negative for contrast)
+        assert all(np.isfinite(c) for c in result.history['contrast'])
         
-        # Contrasts should be in valid range (can be negative for contrast)
-        assert all(np.isfinite(c) for c in history['contrast'])
+        # Verify convergence info is set
+        assert hasattr(result, 'converged')
+        assert hasattr(result, 'final_grad_norm')
+        assert isinstance(result.converged, bool)
+        assert result.final_grad_norm is not None
 
 
 def test_experiment_creation_custom_params():
