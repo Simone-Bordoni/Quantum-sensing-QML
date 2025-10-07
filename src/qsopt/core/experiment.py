@@ -553,6 +553,7 @@ class SingleQubitExperiment:
         
         # Initialize variables
         grad_norm = tolerance + 1
+        step = 0
         
         for step in range(num_steps):
             # Compute loss and gradients using JAX autodiff
