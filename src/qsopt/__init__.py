@@ -21,3 +21,8 @@ from .core.trainable_parameters import (ParameterConstraints,
                                         ParameterType, TrainableParameters)
 from .core.experiment import SingleQubitExperiment
 from .core.callback import OptimizationCallback
+
+# Visualization utilities
+from .utils.visualization import (plot_optimization_dashboard,
+                                  plot_contrast_evolution,
+                                  plot_parameter_trajectory)

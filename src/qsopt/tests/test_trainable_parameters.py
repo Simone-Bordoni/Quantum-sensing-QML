@@ -209,7 +209,7 @@ class TestTrainableParameters:
         
         repr_str = repr(params)
         # Check structure
-        assert "TrainableParameters(total=2)" in repr_str
+        assert "Trainable Parameters: 2" in repr_str
         assert "Rotation Angles:" in repr_str
         assert "Custom Parameters:" in repr_str
         # Check parameter names and values

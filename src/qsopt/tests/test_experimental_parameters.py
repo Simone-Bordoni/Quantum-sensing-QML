@@ -87,15 +87,15 @@ class TestInitialStateConfig:
     def test_coherent_state_config(self):
         """Test configuration for coherent states."""
         config = InitialStateConfig(
-            state_type=InitialStateType.COHERENT_GROUND, coherent_alpha=1.0 + 0.5j
+            state_type=InitialStateType.COHERENT, coherent_alpha=1.0 + 0.5j
         )
-        assert config.state_type == InitialStateType.COHERENT_GROUND
+        assert config.state_type == InitialStateType.COHERENT
         assert config.coherent_alpha == 1.0 + 0.5j
 
     def test_thermal_state_config(self):
         """Test configuration for thermal states."""
-        config = InitialStateConfig(state_type=InitialStateType.THERMAL_GROUND, thermal_n_bar=2.5)
-        assert config.state_type == InitialStateType.THERMAL_GROUND
+        config = InitialStateConfig(state_type=InitialStateType.THERMAL, thermal_n_bar=2.5)
+        assert config.state_type == InitialStateType.THERMAL
         assert config.thermal_n_bar == 2.5
 
     def test_custom_state_config(self):

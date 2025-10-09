@@ -166,6 +166,7 @@ The `SingleQubitExperiment` class provides a complete quantum sensing framework 
 - **Parameter landscapes**: 2D visualization of sensing contrast vs rotation angles
 - **Benchmarking tools**: Performance comparison against standard protocols
 - **Noise sensitivity**: Systematic analysis across decoherence strength levels
+- **Optimization dashboard**: Comprehensive visualization with contrast, gradients, trajectories
 
 ### 🔧 Protocol Comparison
 - **Standard protocol**: θ₁=π/2, θ₂=-π/2 baseline performance
@@ -216,13 +217,26 @@ optimizer = QuantumSensingOptimizer(
 
 ### Visualization Tools
 ```python
-from qsopt.analysis import plot_optimization_dashboard, plot_parameter_landscape
+from qsopt.utils.visualization import (
+    plot_optimization_dashboard,
+    plot_contrast_evolution,
+    plot_parameter_trajectory
+)
 
-# Training progress dashboard
-plot_optimization_dashboard(optimization_history)
+# Run simulation and optimization
+results = experiment.run_simulation()
+history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
 
-# Parameter space analysis
-plot_parameter_landscape(theta_range, contrast_data)
+# Create comprehensive dashboard with reference benchmarks
+fig = plot_optimization_dashboard(
+    optimization_callback=history,
+    reference_callback=results,
+    save_path='optimization_dashboard.pdf'
+)
+
+# Individual plots for focused analysis
+plot_contrast_evolution(history, reference_callback=results)
+plot_parameter_trajectory(history, reference_callback=results)
 ```
 
 ### Protocol Benchmarking
