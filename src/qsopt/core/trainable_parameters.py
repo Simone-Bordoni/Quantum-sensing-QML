@@ -95,7 +95,7 @@ class TrainableParameters:
             raise ValueError(f"Number of names ({len(names_list)}) must match number of values ({len(values)})")
         
         default_constraints = constraints or ParameterConstraints()
-        param_optimizer = optimizer or optax.adam(0.01)
+        param_optimizer = optimizer or optax.sgd(0.01)
         
         for param_name, value in zip(names_list, values):
             idx = len(self.parameters)
@@ -189,7 +189,7 @@ class TrainableParameters:
         measurement_times = [p for p in self.parameters if p.param_type == ParameterType.MEASUREMENT_TIME]
         custom_params = [p for p in self.parameters if p.param_type == ParameterType.CUSTOM]
         
-        lines = [f"TrainableParameters(total={len(self.parameters)})"]
+        lines = [f"Trainable Parameters: {len(self.parameters)}"]
         
         # Rotation angles section
         if rotation_angles:
@@ -211,3 +211,7 @@ class TrainableParameters:
                 lines.append(f"    {param.name}: {param.value:.4f}")
         
         return "\n".join(lines)
+    
+    def __str__(self) -> str:
+        """String representation (calls __repr__)."""
+        return self.__repr__()

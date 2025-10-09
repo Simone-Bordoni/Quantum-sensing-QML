@@ -13,6 +13,7 @@ and are disabled in .pylintrc. The code executes correctly at runtime.
 """Quantum sensing experiment module."""
 # type: ignore  # Suppress Pylance type warnings for JAX arrays
 import warnings
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Union
 
 import jax
@@ -21,32 +22,24 @@ import numpy as np
 import optax
 import qutip as qt
 from jax.scipy.special import erfc
-from qsopt.core.experimental_parameters import ExperimentalParameters
+from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType
 from qsopt.core.trainable_parameters import TrainableParameters
+from qsopt.core.quantum_utils import gu
 from qsopt.core.callback import OptimizationCallback
+from qsopt.core.quantum_utils import (
+    generate_single_qubit_operators,
+    generate_initial_state,
+    apply_single_qubit_rotation,
+    create_measurement_projector,
+    project_and_measure,
+    measure_qubit_probability
+)
 
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
 
 # Suppress Diffrax complex dtype warning
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
-
-@jax.jit
-def gu(t, **kwargs):  
-    """
-    Time-dependent coupling function for input cavity transparency.
-    
-    Args:
-        t: float or JAX array, time variable
-        **kwargs: Dictionary containing 'sigma' parameter (pulse bandwidth)
-        
-    Returns:
-        JAX array: Normalized coupling strength g(t)
-    """
-    sigma = kwargs.get("sigma", 0.1)
-    dx = sigma * t
-    coupling = jnp.sqrt(2*sigma/jnp.sqrt(jnp.pi)*jnp.exp(-dx**2)/erfc(dx))
-    return jnp.array(coupling, float)
 
 class SingleQubitExperiment:
     """
@@ -71,6 +64,12 @@ class SingleQubitExperiment:
         # Optimization callback (default: save every epoch)
         self.callback: OptimizationCallback = OptimizationCallback(save_every=1, save_best=True)
         
+        # Cache for frequently used objects (significant speedup during optimization)
+        self._cached_initial_state: Optional[qt.Qobj] = None
+        self._cached_projector_0: Optional[qt.Qobj] = None
+        self._cached_projector_1: Optional[qt.Qobj] = None
+        self._cached_solvers: Dict[str, qt.MESolver] = {}
+        
         # Initialize quantum objects
         self.__post_init__()
 
@@ -78,74 +77,28 @@ class SingleQubitExperiment:
         """Post-initialization to set up operators and hamiltonian."""
         self._generate_operators()
         self._generate_hamiltonian()
+        self._initialize_caches()
 
     def _generate_operators(self):
         """
         Generate the necessary operators for the experiment in the composite space.
         
-        Creates operators for the three-subsystem composite Hilbert space:
-        - Input cavity: Annihilation/creation operators
-        - Resonator cavity: Annihilation/creation operators  
-        - Qubit: Pauli matrices and projection operators
+        Uses utility function to create operators for the three-subsystem composite 
+        Hilbert space: input_field ⊗ resonator_cavity ⊗ qubit.
         
-        All operators are embedded in the full three-system tensor product space.
-        Uses JAX backend for automatic differentiation compatibility.
+        This allows for easy extension to multi-qubit systems in the future.
         """
         # Get system dimensions
         field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         
-        # Generate all operators with JAX backend for autodiff compatibility
-        with qt.CoreOptions(default_dtype="jax"):
-            # Identity operators for each subsystem
-            I_field = qt.identity(field_levels)     # Input field identity
-            I_cavity = qt.identity(cavity_levels)   # Resonator cavity identity  
-            I_qubit = qt.identity(qubit_levels)     # Qubit identity
-            
-            # Individual subsystem operators
-            # Input field operators
-            a_field = qt.destroy(field_levels)      # Field annihilation
-            
-            # Resonator cavity operators
-            a_cavity = qt.destroy(cavity_levels)    # Cavity annihilation
-            
-            # Qubit operators
-            sigma_z = qt.sigmaz()                   # Pauli-Z
-            sigma_x = qt.sigmax()                   # Pauli-X
-            sigma_y = qt.sigmay()                   # Pauli-Y
-            sigma_minus = qt.destroy(qubit_levels)  # Qubit lowering
-            
-            # Qubit measurement projectors
-            P0 = qt.Qobj([[1, 0], [0, 0]])         # Ground state |0⟩⟨0|
-            P1 = qt.Qobj([[0, 0], [0, 1]])         # Excited state |1⟩⟨1|
-            
-            # Composite system operators (input_field ⊗ resonator_cavity ⊗ qubit)
-            self.operators = {
-                # Input field operators in composite space
-                'a_in': qt.tensor(a_field, I_cavity, I_qubit),
-                'a_in_dag': qt.tensor(a_field.dag(), I_cavity, I_qubit),
-                
-                # Resonator cavity operators in composite space
-                'a': qt.tensor(I_field, a_cavity, I_qubit),
-                'a_dag': qt.tensor(I_field, a_cavity.dag(), I_qubit),
-                
-                # Qubit operators in composite space
-                'sigma_z': qt.tensor(I_field, I_cavity, sigma_z),
-                'sigma_x': qt.tensor(I_field, I_cavity, sigma_x),
-                'sigma_y': qt.tensor(I_field, I_cavity, sigma_y),
-                'sigma_minus': qt.tensor(I_field, I_cavity, sigma_minus),
-                'sigma_plus': qt.tensor(I_field, I_cavity, sigma_minus.dag()),
-                
-                # Qubit measurement projectors in composite space
-                'P0': qt.tensor(I_field, I_cavity, P0),
-                'P1': qt.tensor(I_field, I_cavity, P1),
-                
-                # Identity operators for reference
-                'I_field': I_field,
-                'I_cavity': I_cavity,
-                'I_qubit': I_qubit,
-            }
+        # Use utility function to generate all operators
+        self.operators = generate_single_qubit_operators(
+            field_levels,
+            cavity_levels,
+            qubit_levels
+        )
 
     def _generate_hamiltonian(self):
         """
@@ -232,45 +185,88 @@ class SingleQubitExperiment:
             'no_interaction': no_interaction_ops,
         }
     
+    def _initialize_caches(self):
+        """
+        Initialize cached objects for performance optimization.
+        
+        Caches frequently-used objects that don't change during optimization:
+        - Measurement projectors P0 and P1
+        - Initial state (computed once per experiment)
+        
+        This provides significant speedup during optimization loops.
+        """
+        # Cache projectors (used in every measurement step)
+        self._cached_projector_0 = create_measurement_projector(
+            0,
+            self.experimental_params.field_levels,
+            self.experimental_params.cavity_levels,
+            self.experimental_params.qubit_levels
+        )
+        self._cached_projector_1 = create_measurement_projector(
+            1,
+            self.experimental_params.field_levels,
+            self.experimental_params.cavity_levels,
+            self.experimental_params.qubit_levels
+        )
+        
+        # Cache initial state (doesn't change during optimization)
+        self._cached_initial_state = generate_initial_state(
+            self.experimental_params.initial_state,
+            self.experimental_params.field_levels,
+            self.experimental_params.cavity_levels,
+            self.experimental_params.qubit_levels,
+            num_qubits=1
+        )
+    
     def get_solver_with_interaction(self) -> qt.MESolver:
         """
-        Create a Lindblad master equation solver WITH input photon interaction.
+        Get Lindblad master equation solver WITH input photon interaction (cached).
+        
+        Solver is created once and cached for performance during optimization loops.
         
         Returns:
             qt.MESolver: Configured solver for signal case evolution
         """
-        if self.hamiltonians is None or self.lindblad_operators is None:
-            raise RuntimeError("Hamiltonian and operators must be generated first")
+        if 'with_interaction' not in self._cached_solvers:
+            if self.hamiltonians is None or self.lindblad_operators is None:
+                raise RuntimeError("Hamiltonian and operators must be generated first")
             
-        return qt.MESolver(
-            self.hamiltonians['total'], 
-            self.lindblad_operators['interaction'],
-            options={"method": "diffrax", "normalize_output": False}
-        )
+            self._cached_solvers['with_interaction'] = qt.MESolver(
+                self.hamiltonians['total'], 
+                self.lindblad_operators['interaction'],
+                options={"method": "diffrax", "normalize_output": False}
+            )
+        
+        return self._cached_solvers['with_interaction']
     
     def get_solver_no_interaction(self) -> qt.MESolver:
         """
-        Create a Lindblad master equation solver WITHOUT input photon interaction.
+        Get Lindblad master equation solver WITHOUT input photon interaction (cached).
+        
+        Solver is created once and cached for performance during optimization loops.
         
         Returns:
             qt.MESolver: Configured solver for reference case evolution
         """
-        if self.hamiltonians is None or self.lindblad_operators is None:
-            raise RuntimeError("Hamiltonian and operators must be generated first")
+        if 'no_interaction' not in self._cached_solvers:
+            if self.hamiltonians is None or self.lindblad_operators is None:
+                raise RuntimeError("Hamiltonian and operators must be generated first")
             
-        return qt.MESolver(
-            self.hamiltonians['dispersive'], 
-            self.lindblad_operators['no_interaction'],
-            options={"method": "diffrax", "normalize_output": False}
-        )
+            self._cached_solvers['no_interaction'] = qt.MESolver(
+                self.hamiltonians['dispersive'], 
+                self.lindblad_operators['no_interaction'],
+                options={"method": "diffrax", "normalize_output": False}
+            )
+        
+        return self._cached_solvers['no_interaction']
     
     def ry_rotation(self, rho: qt.Qobj, theta: float) -> qt.Qobj:
         """
         Apply Ry rotation to qubit in the three-system composite space.
         
-        Implements a Ry rotation gate around the Y-axis for quantum state manipulation.
-        The rotation is applied only to the qubit subsystem while preserving the 
-        cavity states in the composite Hilbert space.
+        Uses utility function to apply rotation around the Y-axis for quantum state
+        manipulation. The rotation is applied only to the qubit subsystem while
+        preserving the cavity states in the composite Hilbert space.
         
         Args:
             rho: QuTiP Qobj density matrix in composite space (input ⊗ resonator ⊗ qubit)
@@ -281,19 +277,21 @@ class SingleQubitExperiment:
         """
         if self.operators is None:
             raise RuntimeError("Operators not initialized")
-        I_field = self.operators['I_field']
-        I_cavity = self.operators['I_cavity']
         
-        # Use JAX context for automatic differentiation compatibility
-        with qt.CoreOptions(default_dtype="jax"):
-            Sy_jax = qt.sigmay()
-            ry_gate = (-1j * Sy_jax * theta / 2).expm()
-            r = qt.tensor(I_field, I_cavity, ry_gate)
-            return r * rho * r.dag()  # type: ignore
+        # Use utility function for rotation
+        return apply_single_qubit_rotation(
+            rho,
+            theta,
+            'y',
+            self.operators['I_field'],
+            self.operators['I_cavity']
+        )
     
     def proj0(self, rho: qt.Qobj) -> qt.Qobj:
         """
         Project density matrix onto qubit |0⟩ state.
+        
+        Uses cached projector for performance (avoids repeated computation).
         
         Args:
             rho: QuTiP Qobj density matrix in composite space
@@ -301,56 +299,57 @@ class SingleQubitExperiment:
         Returns:
             QuTiP Qobj: Projected density matrix P₀ρP₀† (unnormalized)
         """
-        if self.operators is None:
-            raise RuntimeError("Operators not initialized")
-        P0 = self.operators['P0']
+        P0 = self._cached_projector_0
         return P0 * rho * P0.dag()  # type: ignore
     
     def prob0(self, rho: qt.Qobj):
         """
         Calculate probability of measuring qubit in |0⟩ state.
         
+        Uses cached projector for performance (avoids repeated computation).
+        
         Args:
             rho: QuTiP Qobj density matrix in composite space
             
         Returns:
-            JAX array: Real probability value Tr(P₀ρ) ∈ [0,1]
+            float: Real probability value Tr(P₀ρ) ∈ [0,1]
         """
-        return jnp.real(self.proj0(rho).tr())
+        P0 = self._cached_projector_0
+        return jnp.real((P0 * rho * P0.dag()).tr())  # type: ignore
     
     def prob1(self, rho: qt.Qobj):
         """
         Calculate probability of measuring qubit in |1⟩ state.
         
+        Uses cached projector for performance (avoids repeated computation).
+        
         Args:
             rho: QuTiP Qobj density matrix in composite space
             
         Returns:
-            JAX array: Real probability value Tr(P₁ρ) ∈ [0,1]
+            float: Real probability value Tr(P₁ρ) ∈ [0,1]
         """
-        if self.operators is None:
-            raise RuntimeError("Operators not initialized")
-        P1 = self.operators['P1']
+        P1 = self._cached_projector_1
         return jnp.real((P1 * rho * P1.dag()).tr())  # type: ignore
     
     def get_initial_state(self) -> qt.Qobj:
         """
-        Generate the initial state based on configuration.
+        Get the initial state (cached for performance).
+        
+        Returns the cached initial state computed during initialization.
+        The state is computed once based on configuration and reused.
+        
+        Supported state types:
+        - VACUUM: |0,0,0⟩ (vacuum field, vacuum cavity, qubit ground)
+        - SINGLE_PHOTON: |1,0,0⟩ (one photon in field, vacuum cavity, qubit ground)
+        - COHERENT: |α,0,0⟩ (coherent state in field, vacuum cavity, qubit ground)
+        - THERMAL: Thermal state in cavity with specified average photon number
+        - CUSTOM: User-defined state from amplitude dictionary
         
         Returns:
-            qt.Qobj: Initial density matrix in composite space
+            qt.Qobj: Initial density matrix in composite space (field ⊗ cavity ⊗ qubit)
         """
-        field_levels = self.experimental_params.field_levels
-        cavity_levels = self.experimental_params.cavity_levels
-        qubit_levels = self.experimental_params.qubit_levels
-        
-        # For SINGLE_PHOTON: |0,1,0⟩ (vacuum input, 1 photon resonator, qubit ground)
-        psi = qt.tensor(
-            qt.basis(field_levels, 1),
-            qt.basis(cavity_levels, 0),
-            qt.basis(qubit_levels, 0)
-        )
-        return psi * psi.dag()  # type: ignore
+        return self._cached_initial_state
     
     def simulation(self, solver: qt.MESolver, rho: qt.Qobj, 
                    theta1: float, theta2: float, 
@@ -472,26 +471,30 @@ class SingleQubitExperiment:
         
         return callback
     
-    def optimize(self, num_steps: int = 100, 
-                 learning_rate: float = 0.05,
+    def optimize(self, 
+                 num_steps: int = 100,
                  tolerance: float = 1e-6,
                  verbose: bool = True,
-                 callback: Optional[OptimizationCallback] = None) -> OptimizationCallback:
+                 verbose_step: int = 10,
+                 callback: Optional[OptimizationCallback] = None,
+                 theta_init: Optional[List[float]] = None) -> OptimizationCallback:
         """
         Optimize rotation parameters to maximize sensing contrast.
         
         Uses JAX automatic differentiation to find optimal rotation angles that
         maximize the difference between detection probabilities with and without
-        photon present.
+        photon present. Uses optimizers defined in trainable_params.
         
         Args:
             num_steps: Maximum number of optimization steps
-            learning_rate: Learning rate for gradient descent
             tolerance: Convergence threshold for gradient norm
             verbose: Print progress information
+            verbose_step: Step interval for printing progress
             callback: Optional callback to track optimization progress.
                      If None, uses the experiment's default callback (saves every epoch).
                      Pass a custom OptimizationCallback for different behavior.
+            theta_init: Optional initial rotation angles [θ₁, θ₂] in radians.
+                       If None, uses values from trainable_params.
             
         Returns:
             OptimizationCallback: The callback instance containing all optimization data:
@@ -521,28 +524,53 @@ class SingleQubitExperiment:
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
         
-        # Get initial parameter values from trainable_params
-        rotation_params = [p for p in self.trainable_params.parameters 
-                          if p.param_type.value == 'rotation_angle']
+        # Get rotation angles using the correct method
+        rotation_angles = self.trainable_params.get_rotation_angles()
         
-        if len(rotation_params) < 2:
+        if len(rotation_angles) < 2:
             raise ValueError("Need at least 2 rotation angle parameters")
         
-        # Get initial values and optimizer
-        theta1_param = rotation_params[0]
-        theta2_param = rotation_params[1]
+        # Get parameter names and values
+        param_names = list(rotation_angles.keys())
+        theta1_name = param_names[0]
+        theta2_name = param_names[1]
         
-        params = jnp.array([theta1_param.value, theta2_param.value], dtype=float)
+        # Get parameter indices for rotation angles
+        theta1_idx = -1
+        theta2_idx = -1
+        for param in self.trainable_params.parameters:
+            if param.name == theta1_name:
+                theta1_idx = param.index
+            elif param.name == theta2_name:
+                theta2_idx = param.index
         
-        # Get optimizer - use the trainable_params optimizer or create default
-        if hasattr(self.trainable_params, 'optimizers') and len(self.trainable_params.optimizers) > 0:
-            optimizer = self.trainable_params.optimizers[0]
+        if theta1_idx == -1 or theta2_idx == -1:
+            raise ValueError(f"Could not find rotation parameters {theta1_name} and/or {theta2_name}")
+        
+        # Use provided theta_init, property theta_init, or trainable_params values (in that order)
+        if theta_init is not None:
+            if len(theta_init) != 2:
+                raise ValueError("theta_init must contain exactly 2 angles [θ₁, θ₂]")
+            initial_angles = theta_init
         else:
-            optimizer = optax.adam(learning_rate)
+            theta1_value = rotation_angles[theta1_name][0]
+            theta2_value = rotation_angles[theta2_name][0]
+            initial_angles = [theta1_value, theta2_value]
         
+        params = jnp.array(initial_angles, dtype=float)
+        # Update trainable_params with initial values
+        self.trainable_params.parameters[theta1_idx].value = float(initial_angles[0])
+        self.trainable_params.parameters[theta2_idx].value = float(initial_angles[1])
+        
+        # Get optimizers from trainable_params
+        if len(self.trainable_params.optimizers) == 0:
+            raise ValueError("No optimizer defined in trainable_params. Use add_rotation_angles() with optimizer parameter.")
+        
+        # Use optimizer from first rotation parameter
+        optimizer = self.trainable_params.optimizers[theta1_idx]
         opt_state = optimizer.init(params)
         
-        # Define objective function
+        # Define objective function that returns probabilities along with loss
         def objective_function(theta_params):
             """Negative sensing contrast for minimization.
             
@@ -550,7 +578,7 @@ class SingleQubitExperiment:
                 theta_params: Array of [theta1, theta2] rotation angles
                 
             Returns:
-                float: Negative contrast for minimization
+                tuple: (loss, (prob_with, prob_without, contrast))
             """
             # pylint: disable=unsubscriptable-object
             theta0, theta1 = theta_params
@@ -561,57 +589,35 @@ class SingleQubitExperiment:
             sensing_contrast = prob_with - prob_without
             
             # Return negative for minimization (we want to maximize contrast)
-            return -sensing_contrast
-        
-        # Optimization history
-        history = {
-            'loss': [],
-            'contrast': [],
-            'theta1': [],
-            'theta2': [],
-            'gradients': [],
-            'prob_with': [],
-            'prob_without': []
-        }
+            # Also return aux data (probabilities and contrast)
+            return -sensing_contrast, (prob_with, prob_without, sensing_contrast)
         
         if verbose:
-            print("Starting optimization...")
-            print(f"Initial: θ₁={params[0]:.3f} rad, θ₂={params[1]:.3f} rad")
+            print(f"Configuration:")
+            print(f"    Max iterations: {num_steps}")
+            print(f"    Convergence tolerance: {tolerance:.2e}")
+            print(f"    Initial rotation parameters: {theta1_name}={params[0]:.3f} rad, {theta2_name}={params[1]:.3f} rad")
+            print(f"    Optimizer: {type(optimizer).__name__}")
             print("="*70)
-            print(f"{'Step':<6}{'θ₁':<12}{'θ₂':<12}{'Contrast':<12}{'Loss':<12}{'Grad Norm'}")
+            print(f"{'Step':<6}{theta1_name:<12}{theta2_name:<12}{'Contrast':<12}{'Grad Norm'}")
             print("-"*70)
         
         best_contrast = -np.inf
         best_params = params.copy()
         
         # Initialize variables
-        grad_norm = tolerance + 1
         step = 0
         
         for step in range(num_steps):
-            # Compute loss and gradients using JAX autodiff
-            loss_value, grads = jax.value_and_grad(objective_function)(params)
-            
-            # Calculate metrics
-            # pylint: disable=unsubscriptable-object,unsupported-assignment-operation
-            theta0, theta1 = params
-            prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurements)
-            prob_without = self.simulation(solver_without, rho0, theta0, theta1, measurements)
-            sensing_contrast = prob_with - prob_without
+            # Compute gradients using JAX autodiff with auxiliary data
+            # This computes the simulation only once and returns probabilities
+            grads, (prob_with, prob_without, sensing_contrast) = \
+                jax.grad(objective_function, has_aux=True)(params)
             
             # Track best parameters
             if sensing_contrast > best_contrast:
                 best_contrast = sensing_contrast
                 best_params = params.copy()
-            
-            # Store history
-            history['loss'].append(float(loss_value))
-            history['contrast'].append(float(sensing_contrast))
-            history['theta1'].append(float(params[0]))
-            history['theta2'].append(float(params[1]))
-            history['gradients'].append([float(grads[0]), float(grads[1])])
-            history['prob_with'].append(float(prob_with))
-            history['prob_without'].append(float(prob_without))
             
             # Call callback to track progress
             callback(
@@ -624,17 +630,13 @@ class SingleQubitExperiment:
             grad_norm = jnp.linalg.norm(grads)
             
             # Progress output
-            if verbose and (step % 20 == 0 or grad_norm < tolerance):
+            if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
                 # pylint: disable=unsubscriptable-object
                 print(f"{step:<6}{params[0]:<12.6f}{params[1]:<12.6f}"
-                      f"{sensing_contrast:<12.6f}{loss_value:<12.6f}{grad_norm:<12.2e}")
+                      f"{sensing_contrast:<12.6f}{grad_norm:<12.2e}")
             
             # Convergence check
             if grad_norm < tolerance:
-                if verbose:
-                    print(f"\nConverged after {step+1} iterations!")
-                    print(f"Final gradient norm: {grad_norm:.2e}")
-                    print(f"Best sensing contrast: {best_contrast:.6f}")
                 break
             
             # Update parameters
@@ -643,13 +645,28 @@ class SingleQubitExperiment:
             
             # Update trainable parameters continuously
             # pylint: disable=unsubscriptable-object
-            theta1_param.value = float(params[0])
-            theta2_param.value = float(params[1])
+            self.trainable_params.parameters[theta1_idx].value = float(params[0])
+            self.trainable_params.parameters[theta2_idx].value = float(params[1])
         
         # Ensure best parameters are set at the end
         # pylint: disable=unsubscriptable-object
-        theta1_param.value = float(best_params[0])
-        theta2_param.value = float(best_params[1])
+        self.trainable_params.parameters[theta1_idx].value = float(best_params[0])
+        self.trainable_params.parameters[theta2_idx].value = float(best_params[1])
+        
+        # Apply constraints at the end (angles between 0 and 2π)
+        final_values = np.array([
+            self.trainable_params.parameters[theta1_idx].value,
+            self.trainable_params.parameters[theta2_idx].value
+        ])
+        constrained_values = self.trainable_params.apply_constraints(final_values)
+        self.trainable_params.parameters[theta1_idx].value = float(constrained_values[0])
+        self.trainable_params.parameters[theta2_idx].value = float(constrained_values[1])
+
+        if verbose:
+            print("="*70)
+            print(f"Final gradient norm: {grad_norm:.2e}")
+            print(f"Best sensing contrast: {best_contrast:.6f}")
+            print(f"Best parameters: {theta1_name}={best_params[0]:.3f} rad, {theta2_name}={best_params[1]:.3f} rad")
         
         # Set convergence information in callback
         callback.set_convergence_info(
@@ -658,4 +675,20 @@ class SingleQubitExperiment:
         )
         
         return callback
+    
+    @property
+    def rotation_angles(self) -> Dict[str, float]:
+        """Get current rotation angle values."""
+        angles = self.trainable_params.get_rotation_angles()
+        return {name: float(val[0]) for name, val in angles.items()}
+    
+    @rotation_angles.setter
+    def rotation_angles(self, angles: Dict[str, float]) -> None:
+        """
+        Set rotation angle values.
+        
+        Args:
+            angles: Dictionary mapping parameter names to angle values in radians
+        """
+        self.trainable_params.set_rotation_angles(angles)
 

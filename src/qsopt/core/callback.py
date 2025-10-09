@@ -241,24 +241,21 @@ class OptimizationCallback:
         For optimize (>1 epoch): Shows best angles, convergence, and optimization info
         """
         lines = []
-        lines.append("=" * 70)
-        lines.append("Quantum Sensing Results")
-        lines.append("=" * 70)
         
         # Determine if this is from run_simulation (1 epoch) or optimization (>1 epoch)
         is_simulation = (self.epoch == 1 and self.converged is False and 
                         self.final_grad_norm is None)
         
         if is_simulation:
-            lines.append("Mode: Single Simulation (run_simulation)")
+            lines.append("MODE: Single Simulation")
         else:
-            lines.append("Mode: Optimization")
-            lines.append(f"  Total iterations: {self.epoch}")
-            lines.append(f"  Converged: {self.converged}")
+            lines.append("MODE: Optimization")
+            lines.append(f"     Total iterations: {self.epoch}")
+            if self.best_metrics is not None:
+                lines.append(f"     Best epoch:        {self.best_metrics['epoch']}")
+            lines.append(f"     Converged: {self.converged}")
             if self.final_grad_norm is not None:
-                lines.append(f"  Final gradient norm: {self.final_grad_norm:.6e}")
-        
-        lines.append("-" * 70)
+                lines.append(f"     Final gradient norm: {self.final_grad_norm:.6e}")
         
         # Show angles (best for optimization, current for simulation)
         if self.best_trainable_params is not None:
@@ -266,26 +263,23 @@ class OptimizationCallback:
             angle_names = list(angles.keys())
             
             if is_simulation:
-                lines.append("Current Parameters:")
+                lines.append("  Current Parameters:")
             else:
-                lines.append("Best Parameters:")
+                lines.append("  Best Parameters:")
             
-            for i, name in enumerate(angle_names[:2]):  # Show first two rotation angles
+            for name in angle_names:  # Show rotation angles
                 value = angles[name][0]
-                lines.append(f"  {name}: {value:.6f} rad ({np.rad2deg(value):.2f}°)")
-        
-        lines.append("-" * 70)
+                lines.append(f"     {name}: {value:.6f} rad ({np.rad2deg(value):.2f}°)")
         
         # Show metrics (best for optimization, current for simulation)
         if self.best_metrics is not None:
-            lines.append("Detection Probabilities:")
-            lines.append(f"  P(with photon):    {self.best_metrics['prob_with']:.6f}")
-            lines.append(f"  P(without photon): {self.best_metrics['prob_without']:.6f}")
-            lines.append(f"  Contrast:          {self.best_metrics['contrast']:.6f}")
-            
-            if not is_simulation:
-                lines.append(f"  Best epoch:        {self.best_metrics['epoch']}")
-        
-        lines.append("=" * 70)
+            lines.append("  Detection Probabilities:")
+            lines.append(f"     P(with photon):    {self.best_metrics['prob_with']:.6f}")
+            lines.append(f"     P(without photon): {self.best_metrics['prob_without']:.6f}")
+            lines.append(f"     Contrast:          {self.best_metrics['contrast']:.6f}")
         
         return "\n".join(lines)
+    
+    def __str__(self) -> str:
+        """String representation (calls __repr__)."""
+        return self.__repr__()

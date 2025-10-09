@@ -16,10 +16,10 @@ import numpy as np
 class InitialStateType(Enum):
     """Enumeration of supported initial state configurations."""
 
-    VACUUM_GROUND = "vacuum_ground"  # |0,0,0⟩
+    VACUUM = "vacuum"  # |0,0,0⟩
     SINGLE_PHOTON = "single_photon"  # |1,0,0⟩
-    COHERENT_GROUND = "coherent_ground"  # |α,0,0⟩ with qubit ground
-    THERMAL_GROUND = "thermal_ground"  # Thermal state with qubit ground
+    COHERENT = "coherent"  # |α,0,0⟩ with qubit ground
+    THERMAL = "thermal"  # Thermal state with qubit ground
     CUSTOM = "custom"  # User-defined state amplitudes
 
 
@@ -271,11 +271,11 @@ class ExperimentalParameters:
         )
         self._update_measurement_times()
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         """
         Comprehensive string representation showing all parameters organized by groups.
 
-        This method provides a detailed, human-readable display of all experimental
+        This method provides a detailed display of all experimental
         parameters, organized by their logical groups with validation status flags.
         """
         lines = []
@@ -366,26 +366,7 @@ class ExperimentalParameters:
             lines.append(f"  Error:                {str(e)}")
 
         return '\n'.join(lines)
-
-    def __repr__(self) -> str:
-        """Compact string representation of experimental parameters."""
-        total_dim = (
-            self.system_dims.cavity_levels
-            * self.system_dims.field_levels
-            * self.system_dims.qubit_levels
-        )
-        n_meas = len(self.measurement.measurement_times)
-        chi_coupling_ratio = (
-            self.physical_constants.chi / self.physical_constants.photon_cavity_coupling
-        )
-        dims_str = (
-            f"{self.system_dims.field_levels}x{self.system_dims.cavity_levels}"
-            f"x{self.system_dims.qubit_levels}={total_dim}"
-        )
-        return (
-            f"ExperimentalParameters("
-            f"dims={dims_str}, "
-            f"chi / coupling_ratio={chi_coupling_ratio:.2f}, "
-            f"number of measurements={n_meas}, "
-            f"state={self.initial_state.state_type.value})"
-        )
+    
+    def __str__(self) -> str:
+        """String representation (calls __repr__)."""
+        return self.__repr__()

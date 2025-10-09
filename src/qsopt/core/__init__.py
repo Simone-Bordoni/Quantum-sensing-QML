@@ -14,3 +14,12 @@ from .trainable_parameters import (Parameter, ParameterConstraints,
                                    ParameterType, TrainableParameters)
 from .experiment import SingleQubitExperiment
 from .callback import OptimizationCallback
+from .quantum_utils import (
+    generate_single_qubit_operators,
+    generate_two_qubit_operators,
+    generate_initial_state,
+    apply_single_qubit_rotation,
+    create_measurement_projector,
+    project_and_measure,
+    measure_qubit_probability
+)
