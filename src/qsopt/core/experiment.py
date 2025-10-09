@@ -216,9 +216,9 @@ class SingleQubitExperiment:
         
         # Lindblad interaction operators
         L_int = qt.QobjEvo([a_in, gu], args=args) + np.sqrt(gm) * a
-        
-        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = [L_int] + list(lindblad_noise)
-        no_interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = list(lindblad_noise)
+    
+        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = [L_int] + lindblad_noise
+        no_interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = lindblad_noise
         
         # Store Hamiltonians and Lindblad operators
         self.hamiltonians = {
@@ -227,13 +227,9 @@ class SingleQubitExperiment:
             'coupling': H_coupling
         }
         
-        # Fix type annotations for mypy
-        noise_only_list: List[Union[qt.Qobj, qt.QobjEvo]] = list(lindblad_noise)
-        
         self.lindblad_operators = {
             'interaction': interaction_ops,
             'no_interaction': no_interaction_ops,
-            'noise_only': noise_only_list
         }
     
     def get_solver_with_interaction(self) -> qt.MESolver:
@@ -348,12 +344,10 @@ class SingleQubitExperiment:
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         
-        initial_config = self.experimental_params.initial_state
-        
         # For SINGLE_PHOTON: |0,1,0⟩ (vacuum input, 1 photon resonator, qubit ground)
         psi = qt.tensor(
-            qt.basis(field_levels, 0),
-            qt.basis(cavity_levels, 1),
+            qt.basis(field_levels, 1),
+            qt.basis(cavity_levels, 0),
             qt.basis(qubit_levels, 0)
         )
         return psi * psi.dag()  # type: ignore
@@ -418,7 +412,7 @@ class SingleQubitExperiment:
 
         return prob_detection
     
-    def run_simulation(self) -> Dict[str, float]:
+    def run_simulation(self) -> OptimizationCallback:
         """
         Run simulation with current parameter values without updating them.
         
@@ -427,11 +421,12 @@ class SingleQubitExperiment:
         and without photon interaction.
         
         Returns:
-            dict: Dictionary containing:
-                - 'prob_with': Detection probability with interaction
-                - 'prob_without': Detection probability without interaction  
-                - 'contrast': Sensing contrast (prob_with - prob_without)
-                - Parameter names and values from trainable_params (e.g., 'ry1', 'ry2')
+            OptimizationCallback: Callback containing simulation results with:
+                - Single epoch (epoch=1)
+                - Current parameter values
+                - Detection probabilities (prob_with, prob_without)
+                - Sensing contrast
+                - Optimization-related attributes set to None (converged, final_grad_norm)
         
         Raises:
             ValueError: If fewer than 2 rotation parameters are defined
@@ -461,20 +456,27 @@ class SingleQubitExperiment:
         # Run simulations
         prob_with = self.simulation(solver_with, rho0, theta1, theta2, measurements)
         prob_without = self.simulation(solver_without, rho0, theta1, theta2, measurements)
+        contrast = prob_with - prob_without
         
-        return {
-            'prob_with': float(prob_with),
-            'prob_without': float(prob_without),
-            'contrast': float(prob_with - prob_without),
-            param1_name: float(theta1),
-            param2_name: float(theta2)
-        }
+        # Create a callback with single epoch for simulation results
+        callback = OptimizationCallback(save_every=1, save_best=True)
+        callback(
+            trainable_params=self.trainable_params,
+            prob_with=float(prob_with),
+            prob_without=float(prob_without),
+            contrast=float(contrast)
+        )
+        
+        # Keep optimization-related attributes as None/False (not from optimization)
+        # converged and final_grad_norm remain as initialized (False, None)
+        
+        return callback
     
     def optimize(self, num_steps: int = 100, 
                  learning_rate: float = 0.05,
                  tolerance: float = 1e-6,
                  verbose: bool = True,
-                 callback: Optional[OptimizationCallback] = None) -> Dict[str, Any]:
+                 callback: Optional[OptimizationCallback] = None) -> OptimizationCallback:
         """
         Optimize rotation parameters to maximize sensing contrast.
         

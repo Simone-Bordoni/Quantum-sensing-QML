@@ -284,6 +284,43 @@ class TestSingleQubitExperiment:
         assert hasattr(theta1_param, 'name')
         assert hasattr(theta1_param, 'param_type')
     
+    def test_run_simulation(self, experiment):
+        """Test run_simulation returns callback with single epoch."""
+        # Run simulation with current parameters
+        result = experiment.run_simulation()
+        
+        # Should return OptimizationCallback
+        assert isinstance(result, OptimizationCallback)
+        
+        # Should have exactly 1 epoch
+        assert result.epoch == 1
+        assert len(result.history['epochs']) == 1
+        assert len(result.history['contrast']) == 1
+        
+        # Should have valid metrics
+        assert 'prob_with' in result.history
+        assert 'prob_without' in result.history
+        assert len(result.history['prob_with']) == 1
+        assert len(result.history['prob_without']) == 1
+        
+        # Probabilities should be in [0, 1]
+        assert 0 <= result.history['prob_with'][0] <= 1
+        assert 0 <= result.history['prob_without'][0] <= 1
+        
+        # Optimization-related attributes should be False/None (not from optimization)
+        assert result.converged is False
+        assert result.final_grad_norm is None
+        
+        # Should have best_trainable_params set
+        assert result.best_trainable_params is not None
+        assert result.best_metrics is not None
+        
+        # Test __repr__ works without errors
+        repr_str = repr(result)
+        assert "Quantum Sensing Results" in repr_str
+        assert "Single Simulation" in repr_str
+        assert "Current Parameters" in repr_str
+    
     def test_optimize_short_run(self, experiment):
         """Test optimization runs for a few steps."""
         # Run optimization for just 3 steps to verify it works
@@ -312,6 +349,12 @@ class TestSingleQubitExperiment:
         assert hasattr(result, 'final_grad_norm')
         assert isinstance(result.converged, bool)
         assert result.final_grad_norm is not None
+        
+        # Test __repr__ works for optimization callback
+        repr_str = repr(result)
+        assert "Quantum Sensing Results" in repr_str
+        assert "Optimization" in repr_str
+        assert "Best Parameters" in repr_str
 
 
 def test_experiment_creation_custom_params():
