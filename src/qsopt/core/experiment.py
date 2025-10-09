@@ -691,4 +691,212 @@ class SingleQubitExperiment:
             angles: Dictionary mapping parameter names to angle values in radians
         """
         self.trainable_params.set_rotation_angles(angles)
+    
+    def save_experiment_report(self, save_path: str = "results/report.json") -> None:
+        """
+        Save a comprehensive experiment report to a JSON file.
+        
+        This method creates a detailed report containing:
+        - All experimental parameters (physical constants, dimensions, noise config, etc.)
+        - Trainable parameters and their current values
+        - Latest callback information (if available)
+        - For optimization callbacks: saves detailed results to NPZ file
+        
+        Args:
+            save_path: Path where the JSON report will be saved (default: 'results/report.json')
+                      The directory will be created if it doesn't exist.
+        
+        Example:
+            >>> experiment = SingleQubitExperiment(exp_params, trainable_params)
+            >>> history = experiment.optimize(num_steps=50)
+            >>> experiment.save_experiment_report('results/my_experiment.json')
+            >>> # This creates:
+            >>> # - results/my_experiment.json (experiment metadata)
+            >>> # - results/my_experiment_callback.npz (detailed optimization data)
+        """
+        import json
+        from pathlib import Path
+        
+        # Create results directory if it doesn't exist
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Build report dictionary
+        report = {
+            "experiment_type": "SingleQubitExperiment",
+            "version": "0.1.0",
+            "experimental_parameters": {
+                "physical_constants": {
+                    "chi": float(self.experimental_params.chi),
+                    "photon_cavity_coupling": float(self.experimental_params.photon_cavity_coupling),
+                    "inverse_pulse_width": float(self.experimental_params.inverse_pulse_width)
+                },
+                "system_dimensions": {
+                    "cavity_levels": int(self.experimental_params.cavity_levels),
+                    "qubit_levels": int(self.experimental_params.qubit_levels),
+                    "field_levels": int(self.experimental_params.field_levels)
+                },
+                "measurement_protocol": {
+                    "measurement_times": [float(t) for t in self.experimental_params.measurement_times],
+                    "num_measurements": len(self.experimental_params.measurement_times)
+                },
+                "initial_state": {
+                    "state_type": self.experimental_params.initial_state.state_type.value,
+                    "coherent_alpha": None if self.experimental_params.initial_state.coherent_alpha is None 
+                                     else float(abs(self.experimental_params.initial_state.coherent_alpha)),
+                    "coherent_alpha_phase": None if self.experimental_params.initial_state.coherent_alpha is None
+                                           else float(np.angle(self.experimental_params.initial_state.coherent_alpha)),
+                    "thermal_n_bar": None if self.experimental_params.initial_state.thermal_n_bar is None
+                                    else float(self.experimental_params.initial_state.thermal_n_bar),
+                    "has_custom_amplitudes": self.experimental_params.initial_state.custom_amplitudes is not None
+                },
+                "noise_configuration": {
+                    "depolarizing": float(self.experimental_params.noise_config.depolarizing),
+                    "dephasing": float(self.experimental_params.noise_config.dephasing),
+                    "relaxation": float(self.experimental_params.noise_config.relaxation)
+                }
+            },
+            "trainable_parameters": {
+                "rotation_angles": {
+                    name: float(val[0]) 
+                    for name, val in self.trainable_params.get_rotation_angles().items()
+                },
+                "num_parameters": len(self.trainable_params.parameters)
+            },
+            "callback_info": None
+        }
+        
+        # Add callback information if available
+        if self.callback is not None and self.callback.epoch > 0:
+            # Determine if this was an optimization or simulation
+            is_optimization = self.callback.epoch > 1 or (
+                self.callback.epoch == 1 and 
+                self.callback.converged is not False
+            )
+            
+            callback_info = {
+                "mode": "optimization" if is_optimization else "simulation",
+                "total_epochs": int(self.callback.epoch),
+                "converged": bool(self.callback.converged),
+                "final_gradient_norm": None if self.callback.final_grad_norm is None 
+                                       else float(self.callback.final_grad_norm)
+            }
+            
+            # Add best metrics if available
+            if self.callback.best_metrics is not None:
+                callback_info["best_metrics"] = {
+                    "epoch": int(self.callback.best_metrics['epoch']),
+                    "contrast": float(self.callback.best_metrics['contrast']),
+                    "prob_with": float(self.callback.best_metrics['prob_with']),
+                    "prob_without": float(self.callback.best_metrics['prob_without'])
+                }
+                
+                # Add best parameters
+                if self.callback.best_trainable_params is not None:
+                    best_angles = self.callback.best_trainable_params.get_rotation_angles()
+                    callback_info["best_parameters"] = {
+                        name: {
+                            "value_rad": float(val[0]),
+                            "value_deg": float(np.rad2deg(val[0]))
+                        }
+                        for name, val in best_angles.items()
+                    }
+            
+            # For optimization runs, save detailed callback data to NPZ file
+            if is_optimization:
+                # Generate callback save path based on report path
+                callback_save_path = save_path_obj.with_stem(
+                    save_path_obj.stem + "_callback"
+                ).with_suffix(".npz")
+                
+                # Save callback data
+                self.callback.save(str(callback_save_path))
+                callback_info["callback_data_path"] = str(callback_save_path)
+                
+                # Add summary statistics
+                history = self.callback.get_history()
+                if len(history['contrast']) > 0:
+                    callback_info["optimization_summary"] = {
+                        "initial_contrast": float(history['contrast'][0]),
+                        "final_contrast": float(history['contrast'][-1]),
+                        "best_contrast": float(max(history['contrast'])),
+                        "improvement": float(max(history['contrast']) - history['contrast'][0])
+                    }
+            
+            report["callback_info"] = callback_info
+        
+        # Save report to JSON
+        with open(save_path, 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2)
+        
+        print(f"✓ Experiment report saved to: {save_path}")
+        if report["callback_info"] and "callback_data_path" in report["callback_info"]:
+            print(f"✓ Optimization data saved to: {report['callback_info']['callback_data_path']}")
+    
+    @classmethod
+    def load_experiment_report(cls, json_path: str) -> Dict[str, Any]:
+        """
+        Load experiment configuration from a JSON report file.
+        
+        This method loads the experiment report and reconstructs the configuration
+        parameters. It does NOT reconstruct the full experiment object (as quantum
+        operators cannot be serialized), but provides all the information needed
+        to recreate the experiment.
+        
+        Args:
+            json_path: Path to the JSON report file
+        
+        Returns:
+            Dictionary containing:
+                - 'experimental_params_dict': Dictionary with all experimental parameters
+                - 'trainable_params_dict': Dictionary with trainable parameter values
+                - 'callback_info': Callback information (if available)
+                - 'callback_data': Loaded NPZ data (if optimization was performed)
+        
+        Example:
+            >>> # Load experiment configuration
+            >>> loaded = SingleQubitExperiment.load_experiment_report('results/report.json')
+            >>> 
+            >>> # Recreate experimental parameters
+            >>> from qsopt import *
+            >>> exp_params = ExperimentalParameters(
+            ...     physical_constants=PhysicalConstants(**loaded['experimental_params_dict']['physical_constants']),
+            ...     system_dims=SystemDimensions(**loaded['experimental_params_dict']['system_dimensions']),
+            ...     # ... etc
+            ... )
+            >>> 
+            >>> # Access optimization data if available
+            >>> if 'callback_data' in loaded:
+            ...     epochs = loaded['callback_data']['epochs']
+            ...     contrast = loaded['callback_data']['contrast']
+        """
+        import json
+        from pathlib import Path
+        
+        # Load JSON report
+        with open(json_path, 'r', encoding='utf-8') as f:
+            report = json.load(f)
+        
+        result = {
+            'experiment_type': report.get('experiment_type'),
+            'version': report.get('version'),
+            'experimental_params_dict': report.get('experimental_parameters'),
+            'trainable_params_dict': report.get('trainable_parameters'),
+            'callback_info': report.get('callback_info')
+        }
+        
+        # Load callback data if available
+        if (result['callback_info'] is not None and 
+            'callback_data_path' in result['callback_info']):
+            
+            callback_path = result['callback_info']['callback_data_path']
+            if Path(callback_path).exists():
+                callback_data = OptimizationCallback.load(callback_path)
+                result['callback_data'] = callback_data
+                print(f"✓ Loaded callback data from: {callback_path}")
+            else:
+                print(f"⚠ Warning: Callback data file not found: {callback_path}")
+        
+        print(f"✓ Experiment report loaded from: {json_path}")
+        return result
 

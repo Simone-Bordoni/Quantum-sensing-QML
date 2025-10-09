@@ -385,6 +385,42 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 }
 ```
 
+### Example 5: Saving and Loading Experiment Reports
+
+Save your experimental configuration for reproducibility:
+
+```python
+# After running an optimization
+experiment = SingleQubitExperiment(exp_params, params)
+history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=100)
+
+# Save comprehensive report with all parameters and optimization data
+experiment.save_experiment_report('results/my_experiment.json')
+# This creates:
+#   - results/my_experiment.json (all experimental parameters, metadata)
+#   - results/my_experiment_callback.npz (detailed optimization data)
+
+# Later, load the configuration
+loaded = SingleQubitExperiment.load_experiment_report('results/my_experiment.json')
+
+# Access all experiment details
+exp_config = loaded['experimental_params_dict']
+trainable_config = loaded['trainable_params_dict']
+optimization_data = loaded['callback_data']  # epochs, contrast, loss, etc.
+
+print(f"Experiment type: {loaded['experiment_type']}")
+print(f"Final contrast: {optimization_data['contrast'][-1]}")
+```
+
+The JSON report includes:
+- Physical constants (chi, coupling strengths, pulse width)
+- System dimensions (cavity, qubit, field levels)
+- Measurement protocol (times, strategies)
+- Initial state configuration (type, parameters)
+- Noise configuration (depolarizing, dephasing, relaxation)
+- Trainable parameters (rotation angles, field strengths)
+- Optimization summary (if available)
+
 ## Further Reading
 
 - [QuTiP Documentation](https://qutip.org/docs/latest/)
