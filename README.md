@@ -279,7 +279,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 📞 Contact
 
 **Simone Bordoni**  
-Email: [your.email@domain.com]  
+Email: [simone.bordoni@uniroma1.it]  
 GitHub: [@Simone-Bordoni](https://github.com/Simone-Bordoni)
 
 ## � Code Quality

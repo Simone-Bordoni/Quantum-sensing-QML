@@ -829,9 +829,9 @@ class SingleQubitExperiment:
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2)
         
-        print(f"✓ Experiment report saved to: {save_path}")
+        print(f"Experiment report saved to: {save_path}")
         if report["callback_info"] and "callback_data_path" in report["callback_info"]:
-            print(f"✓ Optimization data saved to: {report['callback_info']['callback_data_path']}")
+            print(f"Optimization data saved to: {report['callback_info']['callback_data_path']}")
     
     @classmethod
     def load_experiment_report(cls, json_path: str) -> Dict[str, Any]:
@@ -893,10 +893,10 @@ class SingleQubitExperiment:
             if Path(callback_path).exists():
                 callback_data = OptimizationCallback.load(callback_path)
                 result['callback_data'] = callback_data
-                print(f"✓ Loaded callback data from: {callback_path}")
+                print(f"Loaded callback data from: {callback_path}")
             else:
-                print(f"⚠ Warning: Callback data file not found: {callback_path}")
+                print(f"Warning: Callback data file not found: {callback_path}")
         
-        print(f"✓ Experiment report loaded from: {json_path}")
+        print(f"Experiment report loaded from: {json_path}")
         return result
 
