@@ -1,8 +1,8 @@
 # Quantum Sensing Optimization Library Documentation
 
-Welcome to the documentation for the Quantum Sensing Optimization Library (qsopt)!
+This document provides comprehensive documentation for the Quantum Sensing Optimization Library (qsopt).
 
-## 📖 Table of Contents
+## Table of Contents
 
 1. [Quick Start Guide](#quick-start-guide)
 2. [Core Modules](#core-modules)

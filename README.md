@@ -6,7 +6,7 @@ A specialized Python library for **parameter optimization in quantum sensing exp
 [![QuTiP](https://img.shields.io/badge/QuTiP-JAX%20compatible-green.svg)](https://qutip.org/)
 [![JAX](https://img.shields.io/badge/JAX-autodiff-orange.svg)](https://jax.readthedocs.io/)
 
-## 🔬 Overview
+## Overview
 
 This library emerged from quantum sensing research for dark matter detection experiments, providing tools to:
 
@@ -29,7 +29,7 @@ The simulation employs a **three-subsystem composite Hilbert space**:
 |ψ₀⟩ → Ry(θ₁) → H(t) Evolution → Ry(θ₂) → Measurement → Detection Probability
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
@@ -143,9 +143,9 @@ plt.show()
 - Parameter values at each epoch
 - Best parameters and corresponding metrics
 
-## 📊 Key Features
+## Key Features
 
-### ⚡ Completed Implementation
+### Completed Implementation
 
 The `SingleQubitExperiment` class provides a complete quantum sensing framework with:
 
@@ -155,25 +155,25 @@ The `SingleQubitExperiment` class provides a complete quantum sensing framework 
 - **Composite Hilbert Space**: Three-subsystem architecture (input cavity ⊗ resonator ⊗ qubit)
 - **Flexible Optimization**: Built-in optax integration with customizable optimizers and learning rates
 
-### 🎯 Parameter Optimization
+### Parameter Optimization
 - **Multiple optimizers**: Adam, SGD, RMSprop, AdamW with automatic differentiation via JAX
 - **Learning rate scheduling**: Exponential decay and adaptive strategies
 - **Convergence monitoring**: Real-time gradient tracking and early stopping
 - **Time-dependent gradients**: Fully differentiable through complex time-evolution operators
 
-### 📈 Analysis & Visualization
+### Analysis and Visualization
 - **Training dashboards**: 6-panel optimization monitoring with parameter evolution
 - **Parameter landscapes**: 2D visualization of sensing contrast vs rotation angles
 - **Benchmarking tools**: Performance comparison against standard protocols
 - **Noise sensitivity**: Systematic analysis across decoherence strength levels
 - **Optimization dashboard**: Comprehensive visualization with contrast, gradients, trajectories
 
-### 🔧 Protocol Comparison
+### Protocol Comparison
 - **Standard protocol**: θ₁=π/2, θ₂=-π/2 baseline performance
 - **Optimized protocols**: Data-driven parameter selection
 - **Multiple parameterizations**: Direct θ₁,θ₂ vs centered θ,Δθ strategies
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 quantum-sensing-opt/
@@ -191,7 +191,7 @@ quantum-sensing-opt/
 └── tests/                        # Unit tests
 ```
 
-## 📚 Examples & Notebooks
+## Examples and Notebooks
 
 ### 1. Multiple Measurement Optimization
 Demonstrates gradient-based optimization across sequential measurements with comprehensive performance analysis.
@@ -202,7 +202,7 @@ Comparative study of different parameterization strategies with 2D landscape vis
 ### 3. Noise Robustness Studies
 Systematic analysis of optimization benefits under varying decoherence conditions.
 
-## 🛠️ Core Components
+## Core Components
 
 ### Optimization Engine
 ```python
@@ -250,7 +250,7 @@ comparison = compare_protocols(
 )
 ```
 
-## 🔬 Research Applications
+## Research Applications
 
 This library has been used for:
 
@@ -259,7 +259,7 @@ This library has been used for:
 - **Noise resilience analysis**: Understanding optimization benefits under decoherence
 - **Protocol benchmarking**: Quantifying improvements over standard sensing approaches
 
-## 📖 Dependencies
+## Dependencies
 
 - **QuTiP** (≥4.7): Quantum Toolbox in Python with JAX backend
 - **JAX** (≥0.4): Automatic differentiation and JIT compilation  
@@ -268,21 +268,21 @@ This library has been used for:
 - **Matplotlib** (≥3.5): Visualization and plotting
 - **SciPy** (≥1.8): Scientific computing utilities
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 📞 Contact
+## Contact
 
 **Simone Bordoni**  
 Email: [simone.bordoni@uniroma1.it]  
 GitHub: [@Simone-Bordoni](https://github.com/Simone-Bordoni)
 
-## � Code Quality
+## Code Quality
 
 This project maintains high code quality through automated tools:
 
@@ -306,7 +306,7 @@ run_pylint.bat
 
 See [LINTING.md](./LINTING.md) for detailed information about code quality tools and configuration.
 
-## �📚 Citation
+## Citation
 
 If you use this library in your research, please consider citing:
 
