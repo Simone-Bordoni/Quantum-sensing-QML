@@ -162,6 +162,9 @@ class OptimizationCallback:
         """
         filepath = Path(filepath)
         
+        # Create directory if it doesn't exist
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        
         # Convert trainable_params to parameter arrays for saving
         param_arrays = []
         for tp in self.history['trainable_params']:

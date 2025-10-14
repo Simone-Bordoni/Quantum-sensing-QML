@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
+from pathlib import Path
 
 from qsopt.core.callback import OptimizationCallback
 
@@ -268,8 +269,11 @@ def plot_optimization_dashboard(
     
     # Save if path provided
     if save_path is not None:
+        # Create directory if it doesn't exist
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-        print(f"Dashboard saved to: {save_path}")
     
     return fig
 
@@ -319,8 +323,11 @@ def plot_contrast_evolution(
     plt.tight_layout()
     
     if save_path is not None:
+        # Create directory if it doesn't exist
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-        print(f"Contrast plot saved to: {save_path}")
     
     return fig
 
@@ -409,6 +416,10 @@ def plot_parameter_trajectory(
     plt.tight_layout()
     
     if save_path is not None:
+        # Create directory if it doesn't exist
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
         print(f"Trajectory plot saved to: {save_path}")
     
