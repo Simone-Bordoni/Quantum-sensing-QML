@@ -13,7 +13,6 @@ and are disabled in .pylintrc. The code executes correctly at runtime.
 """Quantum sensing experiment module."""
 # type: ignore  # Suppress Pylance type warnings for JAX arrays
 import warnings
-from functools import lru_cache
 from typing import Any, Dict, List, Optional, Union
 
 import jax
@@ -21,9 +20,8 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import qutip as qt
-from jax.scipy.special import erfc
-from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType
-from qsopt.core.trainable_parameters import TrainableParameters
+from qsopt.core.experimental_parameters import ExperimentalParameters
+from qsopt.core.trainable_parameters import TrainableParameters, ParameterType
 from qsopt.core.quantum_utils import gu
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.quantum_utils import (
@@ -31,8 +29,6 @@ from qsopt.core.quantum_utils import (
     generate_initial_state,
     apply_single_qubit_rotation,
     create_measurement_projector,
-    project_and_measure,
-    measure_qubit_probability
 )
 
 # Import qutip_jax to enable JAX backend
@@ -218,6 +214,17 @@ class SingleQubitExperiment:
             num_qubits=1
         )
     
+    def get_initial_state(self) -> qt.Qobj:
+        """
+        Get the cached initial state density matrix.
+        
+        Returns:
+            qt.Qobj: Initial density matrix for the experiment
+        """
+        if self._cached_initial_state is None:
+            raise RuntimeError("Initial state has not been initialized. This should not happen after __post_init__.")
+        return self._cached_initial_state
+    
     def get_solver_with_interaction(self) -> qt.MESolver:
         """
         Get Lindblad master equation solver WITH input photon interaction (cached).
@@ -332,28 +339,9 @@ class SingleQubitExperiment:
         P1 = self._cached_projector_1
         return jnp.real((P1 * rho * P1.dag()).tr())  # type: ignore
     
-    def get_initial_state(self) -> qt.Qobj:
-        """
-        Get the initial state (cached for performance).
-        
-        Returns the cached initial state computed during initialization.
-        The state is computed once based on configuration and reused.
-        
-        Supported state types:
-        - VACUUM: |0,0,0⟩ (vacuum field, vacuum cavity, qubit ground)
-        - SINGLE_PHOTON: |1,0,0⟩ (one photon in field, vacuum cavity, qubit ground)
-        - COHERENT: |α,0,0⟩ (coherent state in field, vacuum cavity, qubit ground)
-        - THERMAL: Thermal state in cavity with specified average photon number
-        - CUSTOM: User-defined state from amplitude dictionary
-        
-        Returns:
-            qt.Qobj: Initial density matrix in composite space (field ⊗ cavity ⊗ qubit)
-        """
-        return self._cached_initial_state
-    
     def simulation(self, solver: qt.MESolver, rho: qt.Qobj, 
                    theta1: float, theta2: float, 
-                   measurements: Dict[float, float],
+                   measurements: Union[List[float], np.ndarray],
                    args: Optional[Dict] = None):
         """
         Complete quantum photon detection simulation workflow.
@@ -370,7 +358,7 @@ class SingleQubitExperiment:
             rho: QuTiP Qobj, Initial density matrix in composite space
             theta1: float/JAX array, First Ry rotation angle 
             theta2: float/JAX array, Second Ry rotation angle 
-            measurements: dict, Measurement protocol specification
+            measurements: List or array of measurement times (sorted)
             args: dict, System parameters (optional, uses experimental_params if None)
                 
         Returns:
@@ -380,7 +368,7 @@ class SingleQubitExperiment:
         if args is None:
             args = {'sigma': self.experimental_params.inverse_pulse_width}
             
-        tmeas = list(measurements.keys())
+        tmeas = measurements
         probability_list = []
         
         # Process each measurement interval sequentially
@@ -411,7 +399,7 @@ class SingleQubitExperiment:
 
         return prob_detection
     
-    def run_simulation(self) -> OptimizationCallback:
+    def run_simulation(self, batch_size: int = 1) -> OptimizationCallback:
         """
         Run simulation with current parameter values without updating them.
         
@@ -419,12 +407,17 @@ class SingleQubitExperiment:
         trainable parameter values, computing detection probabilities both with
         and without photon interaction.
         
+        Args:
+            batch_size: Number of random realizations to average over for measurement
+                       uncertainty (default: 1). Each realization uses a different
+                       random shift in measurement times based on initial_time_uncertainty.
+        
         Returns:
             OptimizationCallback: Callback containing simulation results with:
                 - Single epoch (epoch=1)
                 - Current parameter values
-                - Detection probabilities (prob_with, prob_without)
-                - Sensing contrast
+                - Detection probabilities (prob_with, prob_without) averaged over batch
+                - Sensing contrast averaged over batch
                 - Optimization-related attributes set to None (converged, final_grad_norm)
         
         Raises:
@@ -443,18 +436,30 @@ class SingleQubitExperiment:
         theta1 = float(rotation_angles[param1_name][0])
         theta2 = float(rotation_angles[param2_name][0])
         
-        # Get initial state and measurement protocol
-        rho0 = self.get_initial_state()
-        measurement_times = self.experimental_params.measurement.measurement_times
-        measurements = {t: 0.0 for t in measurement_times}
-        
-        # Get solvers
+        # Get initial state and solvers
+        rho0 = self._cached_initial_state
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
         
-        # Run simulations
-        prob_with = self.simulation(solver_with, rho0, theta1, theta2, measurements)
-        prob_without = self.simulation(solver_without, rho0, theta1, theta2, measurements)
+        # Run simulations with batch averaging over uncertainty realizations
+        prob_with_list = []
+        prob_without_list = []
+        
+        for _ in range(batch_size):
+            # Get measurement times with uncertainty (uses random_seed if set)
+            # Each iteration gets a different realization if uncertainty > 0
+            measurement_times = self.experimental_params.get_measurement_times_with_uncertainty()
+            
+            # Run simulations for this realization
+            prob_with_batch = self.simulation(solver_with, rho0, theta1, theta2, measurement_times)
+            prob_without_batch = self.simulation(solver_without, rho0, theta1, theta2, measurement_times)
+            
+            prob_with_list.append(prob_with_batch)
+            prob_without_list.append(prob_without_batch)
+        
+        # Average over batch
+        prob_with = jnp.mean(jnp.array(prob_with_list))
+        prob_without = jnp.mean(jnp.array(prob_without_list))
         contrast = prob_with - prob_without
         
         # Create a callback with single epoch for simulation results
@@ -473,19 +478,22 @@ class SingleQubitExperiment:
     
     def optimize(self, 
                  num_steps: int = 100,
+                 batch_size: int = 1,
                  tolerance: float = 1e-6,
                  verbose: bool = True,
                  verbose_step: int = 10,
                  callback: Optional[OptimizationCallback] = None,
                  theta_init: Optional[List[float]] = None) -> OptimizationCallback:
         """
-        Optimize rotation parameters to maximize sensing contrast.
+        Optimize trainable parameters to maximize sensing contrast.
         
-        Uses JAX automatic differentiation to find optimal rotation angles that
+        Uses JAX automatic differentiation to find optimal parameter values that
         maximize the difference between detection probabilities with and without
-        photon present. Uses optimizers defined in trainable_params.
+        photon present. Supports optimization of rotation angles, time_interval, 
+        and custom parameters.
         
         Args:
+            batch_size: Number of random realizations for measurement uncertainty per step
             num_steps: Maximum number of optimization steps
             tolerance: Convergence threshold for gradient norm
             verbose: Print progress information
@@ -514,79 +522,215 @@ class SingleQubitExperiment:
         callback.reset()
         
         # Get initial state
-        rho0 = self.get_initial_state()
-        
-        # Get measurement protocol
-        measurement_times = self.experimental_params.measurement.measurement_times
-        measurements = {t: 0.0 for t in measurement_times}  # All measurements expect |0⟩
+        rho0 = self._cached_initial_state
         
         # Get solvers
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
         
-        # Get rotation angles using the correct method
+        # Get rotation angles (must have at least 2)
         rotation_angles = self.trainable_params.get_rotation_angles()
-        
         if len(rotation_angles) < 2:
             raise ValueError("Need at least 2 rotation angle parameters")
         
-        # Get parameter names and values
-        param_names = list(rotation_angles.keys())
-        theta1_name = param_names[0]
-        theta2_name = param_names[1]
+        # Get parameter names for the first two rotation angles
+        rotation_names = list(rotation_angles.keys())
+        theta1_name = rotation_names[0]
+        theta2_name = rotation_names[1]
         
-        # Get parameter indices for rotation angles
+        # Find indices for all parameters
         theta1_idx = -1
         theta2_idx = -1
+        time_interval_idx = -1
+        
         for param in self.trainable_params.parameters:
             if param.name == theta1_name:
                 theta1_idx = param.index
             elif param.name == theta2_name:
                 theta2_idx = param.index
+            elif param.param_type == ParameterType.MEASUREMENT_TIME:
+                time_interval_idx = param.index
         
         if theta1_idx == -1 or theta2_idx == -1:
             raise ValueError(f"Could not find rotation parameters {theta1_name} and/or {theta2_name}")
         
-        # Use provided theta_init, property theta_init, or trainable_params values (in that order)
+        # Check if we're optimizing time_interval
+        has_trainable_interval = (time_interval_idx != -1 and 
+                                  self.trainable_params.parameters[time_interval_idx].trainable)
+        
+        # Initialize parameter vector
+        # Use provided theta_init or current values
         if theta_init is not None:
             if len(theta_init) != 2:
                 raise ValueError("theta_init must contain exactly 2 angles [θ₁, θ₂]")
-            initial_angles = theta_init
+            initial_theta1 = theta_init[0]
+            initial_theta2 = theta_init[1]
         else:
-            theta1_value = rotation_angles[theta1_name][0]
-            theta2_value = rotation_angles[theta2_name][0]
-            initial_angles = [theta1_value, theta2_value]
+            initial_theta1 = rotation_angles[theta1_name][0]
+            initial_theta2 = rotation_angles[theta2_name][0]
         
-        params = jnp.array(initial_angles, dtype=float)
+        # Build parameter vector: [theta1, theta2, time_interval (if trainable)]
+        if has_trainable_interval:
+            initial_time_interval = self.trainable_params.parameters[time_interval_idx].value
+            params = jnp.array([initial_theta1, initial_theta2, initial_time_interval], dtype=float)
+            param_indices = [theta1_idx, theta2_idx, time_interval_idx]
+        else:
+            params = jnp.array([initial_theta1, initial_theta2], dtype=float)
+            param_indices = [theta1_idx, theta2_idx]
+        
         # Update trainable_params with initial values
-        self.trainable_params.parameters[theta1_idx].value = float(initial_angles[0])
-        self.trainable_params.parameters[theta2_idx].value = float(initial_angles[1])
+        self.trainable_params.parameters[theta1_idx].value = float(initial_theta1)
+        self.trainable_params.parameters[theta2_idx].value = float(initial_theta2)
+        
+        # Check which parameters are trainable
+        trainable_mask = jnp.array([self.trainable_params.parameters[idx].trainable 
+                                   for idx in param_indices])
         
         # Get optimizers from trainable_params
         if len(self.trainable_params.optimizers) == 0:
-            raise ValueError("No optimizer defined in trainable_params. Use add_rotation_angles() with optimizer parameter.")
+            raise ValueError("No optimizer defined in trainable_params.")
         
-        # Use optimizer from first rotation parameter
+        # Use optimizer from first trainable rotation parameter
         optimizer = self.trainable_params.optimizers[theta1_idx]
         opt_state = optimizer.init(params)
         
-        # Define objective function that returns probabilities along with loss
-        def objective_function(theta_params):
-            """Negative sensing contrast for minimization.
+        # Base random key for measurement uncertainty (fixed seed for reproducibility)
+        base_rng_key = jax.random.PRNGKey(42)
+        
+        # Step counter for generating random keys (accessible in objective function)
+        step_counter = [0]  # Use list to allow modification in nested function
+        
+        # Helper function to apply measurement uncertainty (JAX-compatible)
+        def apply_measurement_uncertainty(times: jnp.ndarray, key) -> jnp.ndarray:
+            """
+            Apply random time shift to measurement times (JAX-compatible).
             
             Args:
-                theta_params: Array of [theta1, theta2] rotation angles
+                times: Base measurement times
+                key: JAX random key
+                
+            Returns:
+                Measurement times with uncertainty shift applied
+            """
+            uncertainty = self.experimental_params.measurement.initial_time_uncertainty
+            if uncertainty > 0:
+                # Generate random shift using JAX random (traceable by JAX)
+                shift = jax.random.uniform(key, minval=-uncertainty, maxval=uncertainty)
+                return times + shift
+            else:
+                return times
+        
+        # Helper function to update time_interval in both locations (avoids repetition)
+        def update_time_interval(new_interval: float) -> None:
+            """
+            Update time_interval in both trainable_params and experimental_params.
+            
+            This ensures synchronization between:
+            - trainable_params.parameters[time_interval_idx].value
+            - experimental_params.measurement.time_interval
+            - experimental_params._measurement_times_list (recomputed)
+            
+            Must be called outside JAX tracing (after gradient computation).
+            """
+            self.trainable_params.parameters[time_interval_idx].value = float(new_interval)
+            self.experimental_params.measurement.time_interval = float(new_interval)
+            self.experimental_params._update_measurement_times()
+        
+        # Define objective function that returns probabilities along with loss
+        def objective_function(opt_params):
+            """Negative sensing contrast for minimization with batch averaging.
+            
+            Args:
+                opt_params: Array of parameters [theta1, theta2, time_interval (optional)]
                 
             Returns:
                 tuple: (loss, (prob_with, prob_without, contrast))
+                      All values are averaged over batch_size realizations
             """
             # pylint: disable=unsubscriptable-object
-            theta0, theta1 = theta_params
+            # Extract parameters based on what we're optimizing
+            if has_trainable_interval:
+                theta0_raw, theta1_raw, time_interval_raw = opt_params
+                
+                # Apply stop_gradient to non-trainable parameters
+                theta0 = theta0_raw if trainable_mask[0] else jax.lax.stop_gradient(theta0_raw)
+                theta1 = theta1_raw if trainable_mask[1] else jax.lax.stop_gradient(theta1_raw)
+                time_interval = time_interval_raw if trainable_mask[2] else jax.lax.stop_gradient(time_interval_raw)
+                
+            else:
+                theta0_raw, theta1_raw = opt_params
+                
+                # Apply stop_gradient to non-trainable parameters  
+                theta0 = theta0_raw if trainable_mask[0] else jax.lax.stop_gradient(theta0_raw)
+                theta1 = theta1_raw if trainable_mask[1] else jax.lax.stop_gradient(theta1_raw)
+                time_interval = None
             
-            # Calculate sensing contrast: P(with photon) - P(without photon)
-            prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurements)
-            prob_without = self.simulation(solver_without, rho0, theta0, theta1, measurements)
-            sensing_contrast = prob_with - prob_without
+            if batch_size == 1:
+                # Single realization: no need for batching overhead
+                if has_trainable_interval:
+                    # Compute measurement times directly from current time_interval
+                    # This allows JAX autodiff to compute gradients w.r.t. time_interval
+                    t_start = self.experimental_params.measurement.initial_time
+                    t_end = self.experimental_params.measurement.final_time
+                    measurement_times_batch = jnp.arange(t_start, t_end + time_interval/2, time_interval)
+                else:
+                    # Use pre-computed measurement times (supports uncertainty)
+                    measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty()
+                
+                # Calculate sensing contrast for this realization
+                prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurement_times_batch)
+                prob_without = self.simulation(solver_without, rho0, theta0, theta1, measurement_times_batch)
+                sensing_contrast = prob_with - prob_without
+                
+            else:
+                # Multiple realizations: use vectorization for better performance
+                # Pre-allocate JAX arrays
+                if has_trainable_interval:
+                    # For trainable interval, generate base times then apply uncertainty per batch element
+                    t_start = self.experimental_params.measurement.initial_time
+                    t_end = self.experimental_params.measurement.final_time
+                    base_measurement_times = jnp.arange(t_start, t_end + time_interval/2, time_interval)
+                    
+                    # Each batch element gets different uncertainty realization
+                    prob_with_batch = jnp.zeros(batch_size)
+                    prob_without_batch = jnp.zeros(batch_size)
+                    
+                    # Generate random key for this step (reproducible based on step counter)
+                    step_key = jax.random.fold_in(base_rng_key, step_counter[0])
+                    
+                    for i in range(batch_size):
+                        # Generate different random shift for each batch element
+                        subkey = jax.random.fold_in(step_key, i)
+                        measurement_times = apply_measurement_uncertainty(base_measurement_times, subkey)
+                        
+                        prob_with_batch = prob_with_batch.at[i].set(
+                            self.simulation(solver_with, rho0, theta0, theta1, measurement_times)
+                        )
+                        prob_without_batch = prob_without_batch.at[i].set(
+                            self.simulation(solver_without, rho0, theta0, theta1, measurement_times)
+                        )
+                else:
+                    # For fixed interval, generate all uncertainty realizations at once
+                    # Use JAX arrays directly for better performance
+                    measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
+                    
+                    prob_with_batch = jnp.zeros(batch_size)
+                    prob_without_batch = jnp.zeros(batch_size)
+                    
+                    for i in range(batch_size):
+                        # Extract measurement times for this batch element
+                        measurement_times = measurement_times_batch[i]
+                        prob_with_batch = prob_with_batch.at[i].set(
+                            self.simulation(solver_with, rho0, theta0, theta1, measurement_times)
+                        )
+                        prob_without_batch = prob_without_batch.at[i].set(
+                            self.simulation(solver_without, rho0, theta0, theta1, measurement_times)
+                        )
+                
+                # Average over batch using JAX operations (efficient)
+                prob_with = jnp.mean(prob_with_batch)
+                prob_without = jnp.mean(prob_without_batch)
+                sensing_contrast = prob_with - prob_without
             
             # Return negative for minimization (we want to maximize contrast)
             # Also return aux data (probabilities and contrast)
@@ -595,29 +739,44 @@ class SingleQubitExperiment:
         if verbose:
             print(f"Configuration:")
             print(f"    Max iterations: {num_steps}")
+            print(f"    Batch size: {batch_size}")
             print(f"    Convergence tolerance: {tolerance:.2e}")
-            print(f"    Initial rotation parameters: {theta1_name}={params[0]:.3f} rad, {theta2_name}={params[1]:.3f} rad")
+            theta1_status = " [FIXED]" if not trainable_mask[0] else ""
+            theta2_status = " [FIXED]" if not trainable_mask[1] else ""
+            print(f"    Initial rotation parameters: {theta1_name}={params[0]:.3f} rad{theta1_status}, {theta2_name}={params[1]:.3f} rad{theta2_status}")
+            if has_trainable_interval:
+                interval_status = " [FIXED]" if not trainable_mask[2] else ""
+                print(f"    Initial time interval: {params[2]:.6f}{interval_status}")
             print(f"    Optimizer: {type(optimizer).__name__}")
+            if self.experimental_params.measurement.initial_time_uncertainty > 0:
+                print(f"    Measurement uncertainty: ±{self.experimental_params.measurement.initial_time_uncertainty:.3f}")
             print("="*70)
-            print(f"{'Step':<6}{theta1_name:<12}{theta2_name:<12}{'Contrast':<12}{'Grad Norm'}")
+            if has_trainable_interval:
+                print(f"{'Step':<6}{theta1_name:<12}{theta2_name:<12}{'Δt':<12}{'Contrast':<12}{'Grad Norm'}")
+            else:
+                print(f"{'Step':<6}{theta1_name:<12}{theta2_name:<12}{'Contrast':<12}{'Grad Norm'}")
             print("-"*70)
         
         best_contrast = -np.inf
-        best_params = params.copy()
+        best_params = jnp.array(params)  # Make a copy using jnp
         
         # Initialize variables
         step = 0
         
         for step in range(num_steps):
+            # Update step counter for random key generation
+            step_counter[0] = step
+            
             # Compute gradients using JAX autodiff with auxiliary data
             # This computes the simulation only once and returns probabilities
             grads, (prob_with, prob_without, sensing_contrast) = \
                 jax.grad(objective_function, has_aux=True)(params)
             
+            print(grads)
             # Track best parameters
             if sensing_contrast > best_contrast:
                 best_contrast = sensing_contrast
-                best_params = params.copy()
+                best_params = jnp.array(params)  # Copy using jnp
             
             # Call callback to track progress
             callback(
@@ -632,8 +791,12 @@ class SingleQubitExperiment:
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
                 # pylint: disable=unsubscriptable-object
-                print(f"{step:<6}{params[0]:<12.6f}{params[1]:<12.6f}"
-                      f"{sensing_contrast:<12.6f}{grad_norm:<12.2e}")
+                if has_trainable_interval:
+                    print(f"{step:<6}{params[0]:<12.6f}{params[1]:<12.6f}{params[2]:<12.6f}"
+                          f"{sensing_contrast:<12.6f}{grad_norm:<12.2e}")
+                else:
+                    print(f"{step:<6}{params[0]:<12.6f}{params[1]:<12.6f}"
+                          f"{sensing_contrast:<12.6f}{grad_norm:<12.2e}")
             
             # Convergence check
             if grad_norm < tolerance:
@@ -643,30 +806,44 @@ class SingleQubitExperiment:
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
             
+            # Apply constraints immediately after update
+            if has_trainable_interval:
+                # Enforce positive constraint on time_interval
+                min_interval = self.trainable_params.constraints[time_interval_idx].min_value or 1e-6
+                params = params.at[2].set(jnp.maximum(params[2], min_interval))
+            
             # Update trainable parameters continuously
             # pylint: disable=unsubscriptable-object
             self.trainable_params.parameters[theta1_idx].value = float(params[0])
             self.trainable_params.parameters[theta2_idx].value = float(params[1])
+            if has_trainable_interval:
+                # Update time_interval in both experimental_params and trainable_params
+                # This must be done outside JAX tracing (after gradient computation)
+                update_time_interval(float(params[2]))
         
         # Ensure best parameters are set at the end
         # pylint: disable=unsubscriptable-object
-        self.trainable_params.parameters[theta1_idx].value = float(best_params[0])
-        self.trainable_params.parameters[theta2_idx].value = float(best_params[1])
+        for idx, param_idx in enumerate(param_indices):
+            self.trainable_params.parameters[param_idx].value = float(best_params[idx])
         
-        # Apply constraints at the end (angles between 0 and 2π)
-        final_values = np.array([
-            self.trainable_params.parameters[theta1_idx].value,
-            self.trainable_params.parameters[theta2_idx].value
-        ])
+        # Update experimental_params with best time_interval if it was trainable
+        if has_trainable_interval:
+            update_time_interval(float(best_params[2]))
+        
+        # Apply constraints at the end
+        final_values = np.array([p.value for p in self.trainable_params.parameters])
         constrained_values = self.trainable_params.apply_constraints(final_values)
-        self.trainable_params.parameters[theta1_idx].value = float(constrained_values[0])
-        self.trainable_params.parameters[theta2_idx].value = float(constrained_values[1])
+        for i, val in enumerate(constrained_values):
+            self.trainable_params.parameters[i].value = float(val)
 
         if verbose:
             print("="*70)
             print(f"Final gradient norm: {grad_norm:.2e}")
             print(f"Best sensing contrast: {best_contrast:.6f}")
-            print(f"Best parameters: {theta1_name}={best_params[0]:.3f} rad, {theta2_name}={best_params[1]:.3f} rad")
+            if has_trainable_interval:
+                print(f"Best parameters: {theta1_name}={best_params[0]:.3f} rad, {theta2_name}={best_params[1]:.3f} rad, Δt={best_params[2]:.6f}")
+            else:
+                print(f"Best parameters: {theta1_name}={best_params[0]:.3f} rad, {theta2_name}={best_params[1]:.3f} rad")
         
         # Set convergence information in callback
         callback.set_convergence_info(
@@ -705,14 +882,6 @@ class SingleQubitExperiment:
         Args:
             save_path: Path where the JSON report will be saved (default: 'results/report.json')
                       The directory will be created if it doesn't exist.
-        
-        Example:
-            >>> experiment = SingleQubitExperiment(exp_params, trainable_params)
-            >>> history = experiment.optimize(num_steps=50)
-            >>> experiment.save_experiment_report('results/my_experiment.json')
-            >>> # This creates:
-            >>> # - results/my_experiment.json (experiment metadata)
-            >>> # - results/my_experiment_callback.npz (detailed optimization data)
         """
         import json
         from pathlib import Path
@@ -737,8 +906,23 @@ class SingleQubitExperiment:
                     "field_levels": int(self.experimental_params.field_levels)
                 },
                 "measurement_protocol": {
-                    "measurement_times": [float(t) for t in self.experimental_params.measurement_times],
-                    "num_measurements": len(self.experimental_params.measurement_times)
+                    # Store the mode (explicit list vs interval-based)
+                    "mode": "explicit" if self.experimental_params.measurement.measurement_times is not None else "interval",
+                    # If explicit mode, store the list
+                    "measurement_times": [float(t) for t in self.experimental_params.measurement.measurement_times] 
+                                        if self.experimental_params.measurement.measurement_times is not None else None,
+                    # If interval mode, store the interval parameters
+                    "initial_time": float(self.experimental_params.measurement.initial_time) 
+                                   if self.experimental_params.measurement.measurement_times is None else None,
+                    "final_time": float(self.experimental_params.measurement.final_time)
+                                 if self.experimental_params.measurement.measurement_times is None else None,
+                    "time_interval": float(self.experimental_params.measurement.time_interval)
+                                    if self.experimental_params.measurement.measurement_times is None else None,
+                    # Always store uncertainty settings
+                    "initial_time_uncertainty": float(self.experimental_params.measurement.initial_time_uncertainty),
+                    # Computed times for reference
+                    "computed_times": [float(t) for t in self.experimental_params._measurement_times_list],
+                    "num_measurements": len(self.experimental_params._measurement_times_list)
                 },
                 "initial_state": {
                     "state_type": self.experimental_params.initial_state.state_type.value,
@@ -757,11 +941,17 @@ class SingleQubitExperiment:
                 }
             },
             "trainable_parameters": {
-                "rotation_angles": {
-                    name: float(val[0]) 
-                    for name, val in self.trainable_params.get_rotation_angles().items()
-                },
-                "num_parameters": len(self.trainable_params.parameters)
+                "parameters": [
+                    {
+                        "name": param.name,
+                        "type": param.param_type.value,
+                        "value": float(param.value),
+                        "trainable": param.trainable
+                    }
+                    for param in self.trainable_params.parameters
+                ],
+                "num_parameters": len(self.trainable_params.parameters),
+                "num_trainable": len(self.trainable_params.get_trainable_indices())
             },
             "callback_info": None
         }
@@ -828,75 +1018,3 @@ class SingleQubitExperiment:
         # Save report to JSON
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2)
-        
-        print(f"Experiment report saved to: {save_path}")
-        if report["callback_info"] and "callback_data_path" in report["callback_info"]:
-            print(f"Optimization data saved to: {report['callback_info']['callback_data_path']}")
-    
-    @classmethod
-    def load_experiment_report(cls, json_path: str) -> Dict[str, Any]:
-        """
-        Load experiment configuration from a JSON report file.
-        
-        This method loads the experiment report and reconstructs the configuration
-        parameters. It does NOT reconstruct the full experiment object (as quantum
-        operators cannot be serialized), but provides all the information needed
-        to recreate the experiment.
-        
-        Args:
-            json_path: Path to the JSON report file
-        
-        Returns:
-            Dictionary containing:
-                - 'experimental_params_dict': Dictionary with all experimental parameters
-                - 'trainable_params_dict': Dictionary with trainable parameter values
-                - 'callback_info': Callback information (if available)
-                - 'callback_data': Loaded NPZ data (if optimization was performed)
-        
-        Example:
-            >>> # Load experiment configuration
-            >>> loaded = SingleQubitExperiment.load_experiment_report('results/report.json')
-            >>> 
-            >>> # Recreate experimental parameters
-            >>> from qsopt import *
-            >>> exp_params = ExperimentalParameters(
-            ...     physical_constants=PhysicalConstants(**loaded['experimental_params_dict']['physical_constants']),
-            ...     system_dims=SystemDimensions(**loaded['experimental_params_dict']['system_dimensions']),
-            ...     # ... etc
-            ... )
-            >>> 
-            >>> # Access optimization data if available
-            >>> if 'callback_data' in loaded:
-            ...     epochs = loaded['callback_data']['epochs']
-            ...     contrast = loaded['callback_data']['contrast']
-        """
-        import json
-        from pathlib import Path
-        
-        # Load JSON report
-        with open(json_path, 'r', encoding='utf-8') as f:
-            report = json.load(f)
-        
-        result = {
-            'experiment_type': report.get('experiment_type'),
-            'version': report.get('version'),
-            'experimental_params_dict': report.get('experimental_parameters'),
-            'trainable_params_dict': report.get('trainable_parameters'),
-            'callback_info': report.get('callback_info')
-        }
-        
-        # Load callback data if available
-        if (result['callback_info'] is not None and 
-            'callback_data_path' in result['callback_info']):
-            
-            callback_path = result['callback_info']['callback_data_path']
-            if Path(callback_path).exists():
-                callback_data = OptimizationCallback.load(callback_path)
-                result['callback_data'] = callback_data
-                print(f"Loaded callback data from: {callback_path}")
-            else:
-                print(f"Warning: Callback data file not found: {callback_path}")
-        
-        print(f"Experiment report loaded from: {json_path}")
-        return result
-

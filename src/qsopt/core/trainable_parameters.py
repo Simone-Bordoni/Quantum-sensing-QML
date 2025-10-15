@@ -40,6 +40,7 @@ class Parameter:
     name: str
     param_type: ParameterType
     value: float
+    trainable: bool = True  # Whether to compute gradients for this parameter
 
 
 class TrainableParameters:
@@ -53,20 +54,37 @@ class TrainableParameters:
     
     def add_rotation_angles(self, names: Union[str, List[str]], 
                            initial_values: Union[float, List[float], np.ndarray],
-                           optimizer: Optional[optax.GradientTransformation] = None) -> None:
-        """Add rotation angle parameters (periodic, 0 to 2π)."""
+                           optimizer: Optional[optax.GradientTransformation] = None,
+                           trainable: Union[bool, List[bool]] = True) -> None:
+        """Add rotation angle parameters (periodic, 0 to 2π).
+        
+        Args:
+            names: Parameter name(s)
+            initial_values: Initial angle value(s) in radians
+            optimizer: Optimizer for trainable parameters (default: Adam with lr=0.01)
+            trainable: Whether parameter(s) are trainable (default: True).
+                      Can be a single bool or a list matching the number of parameters.
+        """
         names_list = [names] if isinstance(names, str) else names
         values = np.atleast_1d(initial_values)
         
         if len(names_list) != len(values):
             raise ValueError(f"Number of names ({len(names_list)}) must match number of values ({len(values)})")
         
+        # Handle trainable flag
+        if isinstance(trainable, bool):
+            trainable_list = [trainable] * len(names_list)
+        else:
+            trainable_list = list(trainable)
+            if len(trainable_list) != len(names_list):
+                raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
+        
         # Use default optimizer if not provided
         param_optimizer = optimizer or optax.adam(0.01)
         
-        for param_name, value in zip(names_list, values):
+        for param_name, value, is_trainable in zip(names_list, values, trainable_list):
             idx = len(self.parameters)
-            param = Parameter(idx, param_name, ParameterType.ROTATION_ANGLE, float(value))
+            param = Parameter(idx, param_name, ParameterType.ROTATION_ANGLE, float(value), is_trainable)
             self.parameters.append(param)
             
             # Rotation angles are periodic with period 2π
@@ -76,30 +94,99 @@ class TrainableParameters:
             )
             self.optimizers[idx] = param_optimizer
     
-    def add_measurement_times(self, names: Union[str, List[str]], 
+    def add_measurement_interval(self, names: Union[str, List[str]], 
                              initial_values: Union[float, List[float], np.ndarray],
-                             min_time: float = 0.0, max_time: float = 10.0,
-                             optimizer: Optional[optax.GradientTransformation] = None) -> None:
-        """Add measurement time parameters - NOT IMPLEMENTED YET."""
-        raise NotImplementedError("Measurement time parameters are not implemented yet")
-    
-    def add_custom_parameters(self, names: Union[str, List[str]], 
-                             initial_values: Union[float, List[float], np.ndarray],
-                             constraints: Optional[ParameterConstraints] = None,
-                             optimizer: Optional[optax.GradientTransformation] = None) -> None:
-        """Add custom parameters with user-defined constraints."""
+                             min_interval: float = 1e-6,
+                             optimizer: Optional[optax.GradientTransformation] = None,
+                             trainable: Union[bool, List[bool]] = True) -> None:
+        """Add measurement interval parameters (time_interval for measurement protocol).
+        
+        These parameters represent the time interval between consecutive measurements.
+        They must be strictly positive (> 0).
+        
+        Args:
+            names: Parameter name(s) (typically 'time_interval')
+            initial_values: Initial interval value(s) (must be > 0)
+            min_interval: Minimum allowed interval (default: 1e-6, must be > 0)
+            optimizer: Optimizer for trainable parameters (default: Adam with lr=0.001)
+            trainable: Whether parameter(s) are trainable (default: True).
+                      Can be a single bool or a list matching the number of parameters.
+        
+        Raises:
+            ValueError: If initial values are not positive or if min_interval is not positive
+        """
         names_list = [names] if isinstance(names, str) else names
         values = np.atleast_1d(initial_values)
         
         if len(names_list) != len(values):
             raise ValueError(f"Number of names ({len(names_list)}) must match number of values ({len(values)})")
         
+        # Validate that all values are positive
+        if np.any(values <= 0):
+            raise ValueError(f"Measurement interval values must be > 0, got {values}")
+        
+        if min_interval <= 0:
+            raise ValueError(f"Minimum interval must be > 0, got {min_interval}")
+        
+        # Handle trainable flag
+        if isinstance(trainable, bool):
+            trainable_list = [trainable] * len(names_list)
+        else:
+            trainable_list = list(trainable)
+            if len(trainable_list) != len(names_list):
+                raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
+        
+        # Use a smaller learning rate for time intervals (more sensitive parameter)
+        param_optimizer = optimizer or optax.adam(0.001)
+        
+        for param_name, value, is_trainable in zip(names_list, values, trainable_list):
+            idx = len(self.parameters)
+            param = Parameter(idx, param_name, ParameterType.MEASUREMENT_TIME, float(value), is_trainable)
+            self.parameters.append(param)
+            
+            # Measurement intervals must be strictly positive
+            self.constraints[idx] = ParameterConstraints(
+                min_value=min_interval,
+                max_value=None,  # No upper bound
+                periodic=False
+            )
+            self.optimizers[idx] = param_optimizer
+    
+    def add_custom_parameters(self, names: Union[str, List[str]], 
+                             initial_values: Union[float, List[float], np.ndarray],
+                             constraints: Optional[ParameterConstraints] = None,
+                             optimizer: Optional[optax.GradientTransformation] = None,
+                             trainable: Union[bool, List[bool]] = True) -> None:
+        """Add custom parameters with user-defined constraints.
+        
+        Args:
+            names: Parameter name(s)
+            initial_values: Initial value(s)
+            constraints: Parameter constraints (default: no constraints)
+            optimizer: Optimizer for trainable parameters (default: SGD with lr=0.01)
+            trainable: Whether parameter(s) are trainable (default: True).
+                      Can be a single bool or a list matching the number of parameters.
+        """
+        names_list = [names] if isinstance(names, str) else names
+        values = np.atleast_1d(initial_values)
+        
+        if len(names_list) != len(values):
+            raise ValueError(f"Number of names ({len(names_list)}) must match number of values ({len(values)})")
+        
+        # Handle trainable flag
+        if isinstance(trainable, bool):
+            trainable_list = [trainable] * len(names_list)
+        else:
+            trainable_list = list(trainable)
+            if len(trainable_list) != len(names_list):
+                raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
+        
         default_constraints = constraints or ParameterConstraints()
         param_optimizer = optimizer or optax.sgd(0.01)
         
-        for param_name, value in zip(names_list, values):
+        for param_name, value, is_trainable in zip(names_list, values, trainable_list):
             idx = len(self.parameters)
-            param = Parameter(idx, param_name, ParameterType.CUSTOM, float(value))
+            param = Parameter(idx, param_name, ParameterType.CUSTOM, float(value), is_trainable)
             self.parameters.append(param)
             self.constraints[idx] = default_constraints
             self.optimizers[idx] = param_optimizer
@@ -155,6 +242,14 @@ class TrainableParameters:
         """Get all optimizers."""
         return self.optimizers.copy()
     
+    def get_trainable_indices(self) -> List[int]:
+        """Get indices of trainable parameters."""
+        return [i for i, param in enumerate(self.parameters) if param.trainable]
+    
+    def get_trainable_mask(self) -> np.ndarray:
+        """Get boolean mask for trainable parameters."""
+        return np.array([param.trainable for param in self.parameters])
+    
     def apply_constraints(self, values: np.ndarray) -> np.ndarray:
         """Apply constraints to parameter values."""
         constrained = np.array(values)
@@ -196,19 +291,22 @@ class TrainableParameters:
             lines.append("  Rotation Angles:")
             for param in rotation_angles:
                 angle_deg = np.degrees(param.value)
-                lines.append(f"    {param.name}: {param.value:.4f} rad ({angle_deg:.2f}°)")
+                trainable_str = "" if param.trainable else " [FIXED]"
+                lines.append(f"    {param.name}: {param.value:.4f} rad ({angle_deg:.2f}°){trainable_str}")
         
         # Measurement times section
         if measurement_times:
             lines.append("  Measurement Times:")
             for param in measurement_times:
-                lines.append(f"    {param.name}: {param.value:.4f}")
+                trainable_str = "" if param.trainable else " [FIXED]"
+                lines.append(f"    {param.name}: {param.value:.4f}{trainable_str}")
         
         # Custom parameters section
         if custom_params:
             lines.append("  Custom Parameters:")
             for param in custom_params:
-                lines.append(f"    {param.name}: {param.value:.4f}")
+                trainable_str = "" if param.trainable else " [FIXED]"
+                lines.append(f"    {param.name}: {param.value:.4f}{trainable_str}")
         
         return "\n".join(lines)
     

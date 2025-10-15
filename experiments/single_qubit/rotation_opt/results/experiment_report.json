@@ -1,0 +1,74 @@
+{
+  "experiment_type": "SingleQubitExperiment",
+  "version": "0.1.0",
+  "experimental_parameters": {
+    "physical_constants": {
+      "chi": 0.09424777960769379,
+      "photon_cavity_coupling": 0.18849555921538758,
+      "inverse_pulse_width": 0.01884955592153876
+    },
+    "system_dimensions": {
+      "cavity_levels": 2,
+      "qubit_levels": 2,
+      "field_levels": 2
+    },
+    "measurement_protocol": {
+      "measurement_times": [
+        -265.25823848649225,
+        -53.05164769729845,
+        0.0,
+        53.05164769729845,
+        265.25823848649225
+      ],
+      "num_measurements": 5
+    },
+    "initial_state": {
+      "state_type": "single_photon",
+      "coherent_alpha": null,
+      "coherent_alpha_phase": null,
+      "thermal_n_bar": null,
+      "has_custom_amplitudes": false
+    },
+    "noise_configuration": {
+      "depolarizing": 0.0001,
+      "dephasing": 0.0001,
+      "relaxation": 0.0001
+    }
+  },
+  "trainable_parameters": {
+    "rotation_angles": {
+      "ry1": 1.5614751446622785,
+      "ry2": 4.7275779456908715
+    },
+    "num_parameters": 2
+  },
+  "callback_info": {
+    "mode": "optimization",
+    "total_epochs": 37,
+    "converged": true,
+    "final_gradient_norm": 7.236678594626347e-08,
+    "best_metrics": {
+      "epoch": 37,
+      "contrast": 0.8682718659680296,
+      "prob_with": 0.9630226861755568,
+      "prob_without": 0.09475082020752712
+    },
+    "best_parameters": {
+      "ry1": {
+        "value_rad": 1.5614751446622785,
+        "value_deg": 89.46593560372824
+      },
+      "ry2": {
+        "value_rad": -1.5556073614887143,
+        "value_deg": -89.12973639278512
+      }
+    },
+    "callback_data_path": "experiments\\single_qubit\\rotation_opt\\results\\experiment_report_callback.npz",
+    "optimization_summary": {
+      "initial_contrast": 0.8654396224262,
+      "final_contrast": 0.8682718659680296,
+      "best_contrast": 0.8682718659680296,
+      "improvement": 0.0028322435418296488
+    }
+  }
+}

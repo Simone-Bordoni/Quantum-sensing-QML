@@ -238,10 +238,9 @@ class TestSingleQubitExperiment:
         theta1 = 0.0
         theta2 = np.pi / 2
         measurement_times = experiment.experimental_params.measurement_times
-        measurements = {t: 0.0 for t in measurement_times}
         
         # Run simulation
-        result = experiment.simulation(solver, rho0, theta1, theta2, measurements)
+        result = experiment.simulation(solver, rho0, theta1, theta2, measurement_times)
         
         # Should return a single probability value (JAX array or float)
         assert isinstance(result, (float, np.ndarray, jnp.ndarray))
@@ -255,7 +254,6 @@ class TestSingleQubitExperiment:
         solver = experiment.get_solver_with_interaction()
         rho0 = experiment.get_initial_state()
         measurement_times = experiment.experimental_params.measurement_times
-        measurements = {t: 0.0 for t in measurement_times}
         
         # Use a smaller set of angles to avoid solver timeouts
         # Set seed for reproducibility
@@ -269,7 +267,7 @@ class TestSingleQubitExperiment:
         ]
         
         for theta1, theta2 in test_angles:
-            result = experiment.simulation(solver, rho0, theta1, theta2, measurements)
+            result = experiment.simulation(solver, rho0, theta1, theta2, measurement_times)
             prob_val = float(result) if hasattr(result, '__float__') else result
             # Allow small numerical errors (e.g., -1e-15 is effectively 0)
             assert -1e-10 <= prob_val <= 1 + 1e-10, f"Invalid probability for θ1={theta1:.3f}, θ2={theta2:.3f}: {prob_val}"
@@ -335,10 +333,11 @@ class TestSingleQubitExperiment:
         # Verify callback is the same instance as experiment.callback
         assert result is experiment.callback
         
-        # Check that callback has tracked all epochs
-        assert result.epoch == 3
-        assert len(result.history['epochs']) == 3
-        assert len(result.history['contrast']) == 3
+        # Check that callback has tracked epochs (may converge early)
+        assert result.epoch >= 1  # At least one iteration
+        assert result.epoch <= 3  # No more than requested
+        assert len(result.history['epochs']) == result.epoch
+        assert len(result.history['contrast']) == result.epoch
         
         # Contrasts should be finite and in valid range (can be negative for contrast)
         assert all(np.isfinite(c) for c in result.history['contrast'])

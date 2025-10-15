@@ -94,12 +94,29 @@ class TestTrainableParameters:
         optimizers = params.get_all_optimizers()
         assert len(optimizers) == 2
 
-    def test_add_measurement_times_not_implemented(self):
-        """Test that measurement times raise NotImplementedError."""
+    def test_add_measurement_interval(self):
+        """Test adding measurement interval parameters."""
         params = TrainableParameters()
         
-        with pytest.raises(NotImplementedError, match="Measurement time parameters are not implemented yet"):
-            params.add_measurement_times("t1", 1.0)
+        # Test adding a single interval parameter
+        params.add_measurement_interval("time_interval", 0.5)
+        assert len(params) == 1
+        assert params.parameters[0].param_type == ParameterType.MEASUREMENT_TIME
+        assert params.parameters[0].value == 0.5
+        assert params.parameters[0].trainable is True
+        
+        # Test that min_value constraint is set
+        assert params.constraints[0].min_value is not None
+        assert params.constraints[0].min_value > 0
+        
+        # Test that negative values are rejected
+        params2 = TrainableParameters()
+        with pytest.raises(ValueError, match="Measurement interval values must be > 0"):
+            params2.add_measurement_interval("time_interval", -0.1)
+        
+        # Test that zero values are rejected
+        with pytest.raises(ValueError, match="Measurement interval values must be > 0"):
+            params2.add_measurement_interval("time_interval", 0.0)
 
     def test_add_custom_parameters(self):
         """Test adding custom parameters."""
@@ -217,6 +234,107 @@ class TestTrainableParameters:
         assert "0.0000 rad" in repr_str
         assert "x:" in repr_str
         assert "2.0000" in repr_str
+
+
+    def test_trainable_flag_single_parameter(self):
+        """Test trainable flag with single parameter."""
+        params = TrainableParameters()
+        
+        # Add trainable parameter
+        params.add_rotation_angles("theta1", 1.0, trainable=True)
+        assert params.parameters[0].trainable is True
+        
+        # Add non-trainable parameter
+        params.add_rotation_angles("theta2", 2.0, trainable=False)
+        assert params.parameters[1].trainable is False
+        
+    def test_trainable_flag_multiple_parameters_uniform(self):
+        """Test trainable flag with multiple parameters (uniform)."""
+        params = TrainableParameters()
+        
+        # All trainable
+        params.add_rotation_angles(["theta1", "theta2"], [1.0, 2.0], trainable=True)
+        assert all(p.trainable for p in params.parameters)
+        
+        # All non-trainable
+        params2 = TrainableParameters()
+        params2.add_rotation_angles(["theta1", "theta2"], [1.0, 2.0], trainable=False)
+        assert all(not p.trainable for p in params2.parameters)
+    
+    def test_trainable_flag_multiple_parameters_mixed(self):
+        """Test trainable flag with multiple parameters (mixed)."""
+        params = TrainableParameters()
+        
+        # Mixed trainable flags
+        params.add_rotation_angles(
+            ["theta1", "theta2", "theta3"], 
+            [1.0, 2.0, 3.0], 
+            trainable=[True, False, True]
+        )
+        
+        assert params.parameters[0].trainable is True
+        assert params.parameters[1].trainable is False
+        assert params.parameters[2].trainable is True
+    
+    def test_trainable_flag_custom_parameters(self):
+        """Test trainable flag with custom parameters."""
+        params = TrainableParameters()
+        constraints = ParameterConstraints(min_value=-1.0, max_value=1.0)
+        
+        # Single with trainable=False
+        params.add_custom_parameters("x", 0.5, constraints, trainable=False)
+        assert params.parameters[0].trainable is False
+        
+        # Multiple with mixed flags
+        params.add_custom_parameters(
+            ["y", "z"], 
+            [0.3, 0.7], 
+            constraints, 
+            trainable=[True, False]
+        )
+        assert params.parameters[1].trainable is True
+        assert params.parameters[2].trainable is False
+    
+    def test_get_trainable_indices(self):
+        """Test get_trainable_indices method."""
+        params = TrainableParameters()
+        
+        params.add_rotation_angles(
+            ["theta1", "theta2", "theta3"], 
+            [1.0, 2.0, 3.0], 
+            trainable=[True, False, True]
+        )
+        
+        trainable_indices = params.get_trainable_indices()
+        assert trainable_indices == [0, 2]
+    
+    def test_get_trainable_mask(self):
+        """Test get_trainable_mask method."""
+        params = TrainableParameters()
+        
+        params.add_rotation_angles(
+            ["theta1", "theta2", "theta3", "theta4"], 
+            [1.0, 2.0, 3.0, 4.0], 
+            trainable=[True, False, True, False]
+        )
+        
+        mask = params.get_trainable_mask()
+        expected = np.array([True, False, True, False])
+        assert np.array_equal(mask, expected)
+    
+    def test_repr_with_fixed_parameters(self):
+        """Test string representation with fixed parameters."""
+        params = TrainableParameters()
+        
+        params.add_rotation_angles(
+            ["theta1", "theta2"], 
+            [1.0, 2.0], 
+            trainable=[True, False]
+        )
+        
+        repr_str = repr(params)
+        # Check that FIXED tag appears for non-trainable parameter
+        assert "[FIXED]" in repr_str
 
 
 class TestParameterType:

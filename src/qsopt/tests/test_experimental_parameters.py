@@ -64,7 +64,10 @@ class TestMeasurementProtocol:
     def test_default_initialization(self):
         """Test default initialization of MeasurementProtocol."""
         protocol = MeasurementProtocol()
-        assert protocol.measurement_times == [-5.0, 5.0]
+        assert protocol.measurement_times is None  # Default uses interval mode
+        assert protocol.initial_time == -5.0
+        assert protocol.final_time == 5.0
+        assert protocol.time_interval == 1.0
 
     def test_custom_initialization(self):
         """Test custom initialization of MeasurementProtocol."""
@@ -142,11 +145,8 @@ class TestExperimentalParameters:
         assert isinstance(params.initial_state, InitialStateConfig)
 
         # Check that measurement times are computed
-        assert params._measurement_times is not None
-        assert isinstance(params._measurement_times, np.ndarray)
-
-        # Check default measurement results
-        assert params._measurement_results == [0, 1]
+        assert params._measurement_times_list is not None
+        assert isinstance(params.measurement_times, np.ndarray)
 
     def test_custom_initialization(self):
         """Test initialization with custom parameters."""
@@ -171,23 +171,23 @@ class TestExperimentalParameters:
 
         params = ExperimentalParameters(physical_constants=constants, measurement=measurement)
 
-        expected_times = np.array([-5.0, 0.0, 5.0]) * 0.2
-        assert params._measurement_times is not None
-        np.testing.assert_array_almost_equal(params._measurement_times, expected_times)
+        # Times are stored and returned as absolute values (no normalization)
+        expected_times = np.array([-5.0, 0.0, 5.0])
+        assert params._measurement_times_list is not None
+        np.testing.assert_array_almost_equal(params.measurement_times, expected_times)
 
     def test_update_measurement_times(self):
         """Test that measurement times are updated when parameters change."""
         params = ExperimentalParameters()
-        assert params._measurement_times is not None
-        original_times = params._measurement_times.copy()
+        assert params._measurement_times_list is not None
+        original_times = params.measurement_times.copy()
 
-        # Change the inverse_pulse_width
-        params.physical_constants.inverse_pulse_width = 0.2
-        params._update_measurement_times()
-
-        # Times should be different now
-        assert params._measurement_times is not None
-        assert not np.array_equal(params._measurement_times, original_times)
+        # Change the time interval to get different measurement times
+        params.time_interval = 2.0
+        
+        # Times should be different now (fewer measurements with larger interval)
+        assert params._measurement_times_list is not None
+        assert not np.array_equal(params.measurement_times, original_times)
 
     # ==================== VALIDATION TESTS ====================
 
@@ -272,7 +272,7 @@ class TestExperimentalParameters:
         measurement = MeasurementProtocol(measurement_times=[5.0, -5.0, 0.0])
 
         with pytest.raises(
-            ValueError, match="Measurement times \\(measurement_times\\) must be in ascending order"
+            ValueError, match="Measurement times must be in ascending order"
         ):
             ExperimentalParameters(measurement=measurement)
 
@@ -352,26 +352,23 @@ class TestExperimentalParameters:
         """Test primary measurement_times property."""
         params = ExperimentalParameters()
 
-        # Test getter - should return computed measurement times
+        # Test getter - should return computed measurement times (interval mode)
         times = params.measurement_times
         assert isinstance(times, np.ndarray)
-        expected = (
-            np.array(params.measurement.measurement_times)
-            * params.physical_constants.inverse_pulse_width
-        )
-        np.testing.assert_array_almost_equal(times, expected)
+        # In interval mode, times are computed from initial_time, final_time, time_interval
+        assert len(times) >= 2
 
         # Test setter
         new_times = np.array([-10.0, -5.0, 0.0, 5.0, 10.0])
         params.measurement_times = new_times
 
-        # Check that the measurement protocol was updated correctly
-        expected_protocol_times = list(new_times / params.physical_constants.inverse_pulse_width)
+        # Check that the measurement protocol was updated correctly (no normalization)
+        expected_protocol_times = list(new_times)
         assert params.measurement.measurement_times == expected_protocol_times
 
-        # Check that _measurement_times was updated
-        assert params._measurement_times is not None
-        np.testing.assert_array_almost_equal(params._measurement_times, new_times)
+        # Check that measurement_times was updated
+        assert params._measurement_times_list is not None
+        np.testing.assert_array_almost_equal(params.measurement_times, new_times)
 
 
 if __name__ == "__main__":

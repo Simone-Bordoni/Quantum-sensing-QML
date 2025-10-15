@@ -9,9 +9,11 @@ from .visualization import (
     plot_contrast_evolution,
     plot_parameter_trajectory
 )
+from .experiment_loader import load_experiment_from_report
 
 __all__ = [
     'plot_optimization_dashboard',
     'plot_contrast_evolution',
-    'plot_parameter_trajectory'
+    'plot_parameter_trajectory',
+    'load_experiment_from_report'
 ]
