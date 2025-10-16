@@ -364,20 +364,3 @@ fig = plot_optimization_dashboard(history, save_path='dashboard.png', dpi=300)
 # Save as SVG (vector graphics, web-friendly)
 fig = plot_optimization_dashboard(history, save_path='dashboard.svg')
 ```
-
-## Notes
-
-- **Gradients**: Computed as finite differences from parameter changes (approximate)
-- **Parameter Space**: Trajectory plots use the first two parameters by default
-- **Auto-layout**: Dashboard automatically adjusts layout based on enabled plots
-- **Reference Comparison**: When reference provided, shows improvement over baseline
-- **Publication Quality**: Default DPI of 300 suitable for publications
-
-## Future Extensions
-
-Potential additions:
-- Heatmaps for parameter sensitivity analysis
-- Noise level comparison plots
-- Animation of optimization trajectory
-- Interactive plots with plotly
-- Multi-experiment comparison dashboards

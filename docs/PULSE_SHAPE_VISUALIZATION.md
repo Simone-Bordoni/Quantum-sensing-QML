@@ -466,40 +466,6 @@ fig2 = plot_pulse_shape_with_measurements(
     save_path='results/pulse_adjusted.png'
 )
 ```
-
----
-
-## Troubleshooting
-
-### Issue: Pulse looks too wide/narrow
-**Solution:** Adjust `inverse_pulse_width` (σ)
-```python
-exp_params.physical_constants.inverse_pulse_width = new_sigma
-```
-
-### Issue: Not enough measurements in pulse region
-**Solution:** Decrease `time_interval` or expand measurement window
-```python
-exp_params.measurement.time_interval = smaller_value
-# or
-exp_params.measurement.initial_time = earlier_time
-exp_params.measurement.final_time = later_time
-```
-
-### Issue: Too many measurements (cluttered plot)
-**Solution:** Increase `time_interval` for sparser sampling
-```python
-exp_params.measurement.time_interval = larger_value
-```
-
-### Issue: Measurements outside pulse envelope
-**Solution:** Adjust measurement window to center on pulse
-```python
-# Center window on pulse (typically at t=0)
-exp_params.measurement.initial_time = -window_size/2
-exp_params.measurement.final_time = window_size/2
-```
-
 ---
 
 ## See Also

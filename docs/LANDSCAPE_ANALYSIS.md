@@ -368,55 +368,6 @@ history = experiment.optimize(
 print(f"Final optimized contrast: {history.best_contrast:.6f}")
 ```
 
-## Best Practices
-
-### 1. Resolution Selection
-- **Initial exploration**: resolution=15-20
-- **Fine-grained analysis**: resolution=30-50
-- **Publication quality**: resolution=50-100 (time-intensive)
-
-### 2. Batch Sizing for Uncertainty
-- Use `batch_size > 1` only when `initial_time_uncertainty > 0`
-- Recommended: batch_size = 10-20 for uncertainty averaging
-- Higher batch sizes give smoother results but increase computation time
-
-### 3. Mode Selection for Time Intervals
-- Use `'continuous'` for general exploration and smooth landscapes
-- Use `'discrete'` when hardware requires integer measurement counts
-- Discrete mode ensures all intervals are integer fractions of total time
-
-### 4. Computational Efficiency
-- Start with low resolution for parameter exploration
-- Increase resolution only for regions of interest
-- Use batch_size=1 initially, add uncertainty analysis later
-- Consider running on multiple cores for high-resolution landscapes
-
-### 5. Interpretation
-- **Parameter landscapes**: Look for global maxima and local structure
-- **Time interval landscapes**: Balance between measurement density and contrast
-- **Uncertainty analysis**: Broader peaks are more robust to timing jitter
-
-## Troubleshooting
-
-### Issue: Landscape computation is too slow
-**Solution:**
-- Reduce resolution (try 10-15 for initial testing)
-- Set batch_size=1 initially
-- Use discrete mode for time intervals (fewer computations)
-
-### Issue: Landscape shows no clear optimum
-**Solution:**
-- Check parameter ranges (may need to expand)
-- Verify experimental parameters are physical
-- Try different rotation angle ranges
-- Check if noise is too high
-
-### Issue: Results vary significantly between runs
-**Solution:**
-- Increase batch_size for uncertainty averaging
-- Check if initial_time_uncertainty is set appropriately
-- Verify random seed is set for reproducibility
-
 ## See Also
 
 - [Visualization Module](VISUALIZATION_MODULE.md) - For plotting landscapes

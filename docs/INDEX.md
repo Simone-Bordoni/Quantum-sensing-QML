@@ -91,7 +91,6 @@ The `SingleQubitExperiment` class is the main interface for running simulations 
 **Key Methods:**
 - `run_simulation()`: Execute quantum evolution with current parameters
 - `optimize()`: Gradient-based parameter optimization
-- `get_sensing_contrast()`: Calculate detection metric
 
 **See:** [Experiment Class Reference](./experiment.md)
 
@@ -373,28 +372,6 @@ initial_state = InitialStateConfig(
 - Run `run_simulation()` before optimization
 - Use reference values in visualization for comparison
 
-## Troubleshooting
-
-### Common Issues
-
-**Issue: Optimization doesn't converge**
-- Try different initial values
-- Reduce learning rate
-- Check if gradients are vanishing (use dashboard)
-
-**Issue: Numerical instabilities**
-- Reduce system dimensions
-- Check measurement time normalization
-- Ensure physical parameters are reasonable
-
-**Issue: Slow performance**
-- Reduce `cavity_levels` and `qubit_levels`
-- Use fewer measurement points
-- Enable JAX JIT compilation (automatic)
-
-## Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 
 ## Citation
 
@@ -550,5 +527,5 @@ The JSON report includes:
 
 ---
 
-**Last Updated:** January 2025  
+**Last Updated:** October 2025  
 **Version:** 0.1.0
