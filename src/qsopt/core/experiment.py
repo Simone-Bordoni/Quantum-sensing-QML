@@ -448,7 +448,7 @@ class SingleQubitExperiment:
         for _ in range(batch_size):
             # Get measurement times with uncertainty (uses random_seed if set)
             # Each iteration gets a different realization if uncertainty > 0
-            measurement_times = self.experimental_params.get_measurement_times_with_uncertainty()
+            measurement_times = self.experimental_params.get_measurement_times(uncertainty=True)
             
             # Run simulations for this realization
             prob_with_batch = self.simulation(solver_with, rho0, theta1, theta2, measurement_times)
@@ -675,7 +675,7 @@ class SingleQubitExperiment:
                     measurement_times_batch = jnp.arange(t_start, t_end + time_interval/2, time_interval)
                 else:
                     # Use pre-computed measurement times (supports uncertainty)
-                    measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty()
+                    measurement_times_batch = self.experimental_params.get_measurement_times(uncertainty=True)
                 
                 # Calculate sensing contrast for this realization
                 prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurement_times_batch)
@@ -712,7 +712,7 @@ class SingleQubitExperiment:
                 else:
                     # For fixed interval, generate all uncertainty realizations at once
                     # Use JAX arrays directly for better performance
-                    measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
+                    measurement_times_batch = self.experimental_params.get_measurement_times(batch_size=batch_size, uncertainty=True)
                     
                     prob_with_batch = jnp.zeros(batch_size)
                     prob_without_batch = jnp.zeros(batch_size)

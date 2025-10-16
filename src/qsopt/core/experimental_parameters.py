@@ -210,7 +210,7 @@ class ExperimentalParameters:
         else:
             self._measurement_times_list = self._compute_measurement_times_from_interval()
 
-    def get_measurement_times_with_uncertainty(self, batch_size: int = 1) -> np.ndarray:
+    def get_measurement_times(self, batch_size: int = 1, uncertainty: bool = True) -> np.ndarray:
         """
         Get measurement times with random shift due to initial time uncertainty.
         
@@ -223,6 +223,7 @@ class ExperimentalParameters:
             batch_size: Number of independent realizations to generate (default: 1).
                        If batch_size=1, returns 1D array of shape (n_times,).
                        If batch_size>1, returns 2D array of shape (batch_size, n_times).
+            uncertainty: Whether to apply initial time uncertainty (default: True).
             
         Returns:
             Array of measurement times with uncertainty shift applied:
@@ -234,7 +235,7 @@ class ExperimentalParameters:
         
         if batch_size == 1:
             # Single realization: return 1D array
-            if self.measurement.initial_time_uncertainty > 0:
+            if self.measurement.initial_time_uncertainty > 0 and uncertainty:
                 shift = np.random.uniform(
                     -self.measurement.initial_time_uncertainty,
                     self.measurement.initial_time_uncertainty
@@ -244,7 +245,7 @@ class ExperimentalParameters:
                 return base_times
         else:
             # Multiple realizations: return 2D array (batch_size, n_times)
-            if self.measurement.initial_time_uncertainty > 0:
+            if self.measurement.initial_time_uncertainty > 0 and uncertainty:
                 # Generate batch_size random shifts
                 shifts = np.random.uniform(
                     -self.measurement.initial_time_uncertainty,

@@ -793,6 +793,8 @@ Landscape Statistics:
 
 def plot_pulse_shape_with_measurements(
     exp_params: 'ExperimentalParameters',
+    uncertainty: bool = False,
+    batch_size: int = 1,
     save_path: Optional[str] = None,
     dpi: int = 300
 ) -> Figure:
