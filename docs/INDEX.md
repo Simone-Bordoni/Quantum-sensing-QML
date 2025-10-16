@@ -112,8 +112,30 @@ Create comprehensive plots and dashboards.
 - `plot_optimization_dashboard()`: Multi-panel optimization visualization
 - `plot_contrast_evolution()`: Tracking sensing contrast
 - `plot_parameter_trajectory()`: Parameter space exploration
+- `plot_parameter_landscape()`: 2D parameter landscape heatmaps
+- `plot_time_interval_landscape()`: Time interval optimization analysis
+- `plot_pulse_shape_with_measurements()`: Pulse envelope with measurement markers
 
 **See:** [Visualization Module](./VISUALIZATION_MODULE.md)
+
+### 6. Landscape Analysis
+
+Systematically explore parameter spaces for optimization.
+
+**Key Functions:**
+- `compute_theta1_theta2_landscape()`: 2D rotation angle parameter analysis
+- `compute_time_interval_landscape()`: Measurement timing optimization
+
+**See:** [Landscape Analysis Module](./LANDSCAPE_ANALYSIS.md)
+
+### 7. Experiment Loader
+
+Load and reconstruct experiments from saved reports for reproducibility.
+
+**Key Functions:**
+- `load_experiment_from_report()`: Load experiment configuration from JSON
+
+**See:** [Experiment Loader](./EXPERIMENT_LOADER.md)
 
 ## API Reference
 
@@ -401,15 +423,114 @@ experiment.save_experiment_report('results/my_experiment.json')
 #   - results/my_experiment_callback.npz (detailed optimization data)
 
 # Later, load the configuration
-loaded = SingleQubitExperiment.load_experiment_report('results/my_experiment.json')
+from qsopt.utils.experiment_loader import load_experiment_from_report
+exp_params, train_params, metadata = load_experiment_from_report('results/my_experiment.json')
 
-# Access all experiment details
-exp_config = loaded['experimental_params_dict']
-trainable_config = loaded['trainable_params_dict']
-optimization_data = loaded['callback_data']  # epochs, contrast, loss, etc.
+# Recreate experiment
+experiment = SingleQubitExperiment(exp_params, train_params)
 
-print(f"Experiment type: {loaded['experiment_type']}")
-print(f"Final contrast: {optimization_data['contrast'][-1]}")
+# Access optimization data
+if 'callback_data' in metadata:
+    optimization_data = metadata['callback_data']
+    print(f"Epochs: {len(optimization_data['epochs'])}")
+    print(f"Final contrast: {optimization_data['contrast'][-1]:.6f}")
+```
+
+### Example 6: Parameter Landscape Analysis
+
+Systematically explore parameter space before optimization:
+
+```python
+from qsopt.utils.landscape_analysis import compute_theta1_theta2_landscape
+from qsopt.utils.visualization import plot_parameter_landscape
+
+# Compute 2D landscape of rotation angles
+data = compute_theta1_theta2_landscape(
+    exp_params,
+    theta1_range=(-np.pi, np.pi),
+    theta2_range=(-np.pi, np.pi),
+    resolution=30,  # 30×30 grid
+    verbose=True
+)
+
+# Visualize landscape
+fig = plot_parameter_landscape(
+    data['theta1_vals'],
+    data['theta2_vals'],
+    data['contrast_map'],
+    data['detection_map'],
+    exp_params,
+    save_path='parameter_landscape.png'
+)
+
+# Find best parameters from landscape
+best_idx = np.unravel_index(np.argmax(data['contrast_map']), data['contrast_map'].shape)
+best_theta1 = data['theta1_vals'][best_idx[0]]
+best_theta2 = data['theta2_vals'][best_idx[1]]
+
+print(f"Best parameters from landscape: θ₁={best_theta1:.4f}, θ₂={best_theta2:.4f}")
+
+# Use as starting point for optimization
+history = experiment.optimize(theta_init=[best_theta1, best_theta2], num_steps=50)
+```
+
+### Example 7: Time Interval Optimization
+
+Find optimal measurement timing:
+
+```python
+from qsopt.utils.landscape_analysis import compute_time_interval_landscape
+from qsopt.utils.visualization import plot_time_interval_landscape
+
+# Analyze how contrast varies with measurement interval
+data = compute_time_interval_landscape(
+    exp_params,
+    theta1=np.pi/2,
+    theta2=-np.pi/2,
+    resolution=30,
+    mode='continuous',  # Linearly spaced intervals
+    verbose=True
+)
+
+# Visualize 3-panel landscape
+fig = plot_time_interval_landscape(
+    data['interval_vals'],
+    data['contrast_vals'],
+    data['detection_with'],
+    data['detection_without'],
+    data['n_measurements'],
+    exp_params,
+    theta1=np.pi/2,
+    theta2=-np.pi/2,
+    mode='continuous',
+    save_path='time_interval_landscape.png'
+)
+
+# Find and apply optimal interval
+optimal_idx = np.argmax(data['contrast_vals'])
+optimal_interval = data['interval_vals'][optimal_idx]
+
+print(f"Optimal time interval: {optimal_interval:.6f}")
+exp_params.measurement.time_interval = optimal_interval
+```
+
+### Example 8: Pulse Shape Visualization
+
+Visualize Gaussian pulse envelope with measurement markers:
+
+```python
+from qsopt.utils.visualization import plot_pulse_shape_with_measurements
+
+# Visualize pulse and measurement timing
+fig = plot_pulse_shape_with_measurements(
+    exp_params,
+    save_path='pulse_shape.png',
+    dpi=300
+)
+
+# Or use experiment method
+experiment = SingleQubitExperiment(exp_params, train_params)
+fig = experiment.plot_pulse_shape(save_path='pulse_shape.png')
 ```
 
 The JSON report includes:

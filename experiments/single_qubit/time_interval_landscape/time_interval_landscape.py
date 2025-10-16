@@ -1,16 +1,12 @@
 """
-Parameter Space Landscape Analysis using qsopt module
-======================================================
+Time Interval Landscape Analysis Example
+=========================================
 
-This script analyzes the parameter space landscape for quantum sensing
-optimization using the θ₁, θ₂ parameterization strategy.
+This script demonstrates the time-interval landscape analysis functionality
+with batch averaging to account for measurement uncertainty.
 
-Uses run_simulation() with different rotation parameters and plots heatmaps of:
-- Sensing contrast landscape
-- Detection probability landscape
-
-The analysis uses time-interval based measurements and includes comprehensive
-system parameters in the visualization.
+The analysis shows how sensing contrast varies with the time interval between
+measurements while keeping rotation parameters fixed.
 """
 
 import numpy as np
@@ -19,7 +15,7 @@ from pathlib import Path
 
 # Import qsopt modules
 from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType, PhysicalConstants, SystemDimensions, MeasurementProtocol, NoiseConfiguration, InitialStateConfig
-from qsopt.utils import compute_theta1_theta2_landscape, plot_parameter_landscape
+from qsopt.utils import compute_time_interval_landscape, plot_time_interval_landscape
 
 
 def create_experiment_setup():
@@ -43,10 +39,10 @@ def create_experiment_setup():
     # Define measurement protocol
     custom_measurement = MeasurementProtocol(
         measurement_times=None,  # Use interval mode
-        initial_time=-5.0/inverse_pulse_width,
-        final_time=5.0/inverse_pulse_width,
+        initial_time=-8.0/inverse_pulse_width,
+        final_time=8.0/inverse_pulse_width,
         time_interval=5.0/inverse_pulse_width,
-        initial_time_uncertainty=0.0/inverse_pulse_width
+        initial_time_uncertainty=2.0/inverse_pulse_width
     )
 
     # Define initial state configuration (SINGLE_PHOTON)
@@ -74,30 +70,35 @@ def create_experiment_setup():
 
 
 def main():
-    """Main execution function."""
-    print("Analyzing quantum sensing parameter landscape using qsopt module")
-    
+    filename = "time_interval_landscape_discrete_uncertainty.png"
+
     # Create output directory
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
     print(f"Output directory: {output_dir.absolute()}\n")
+
     exp_params = create_experiment_setup()
-    print(exp_params)
-    data_theta12 = compute_theta1_theta2_landscape(
+    
+    # Define fixed rotation angles (optimal from parameter landscape)
+    theta1 = np.pi / 2  # 90 degrees
+    theta2 = -np.pi / 2  # -90 degrees
+    
+    data = compute_time_interval_landscape(
         exp_params,
-        resolution=25,
-        center_theta1=np.pi/2,
-        center_theta2=-np.pi/2,
-        param_range=np.pi/8,
+        theta1=theta1,
+        theta2=theta2,
+        resolution=20,
+        mode='discrete',
+        batch_size=15,  # No averaging
         verbose=True
     )
     
-    fig = plot_parameter_landscape(
-        data_theta12,
+    fig = plot_time_interval_landscape(
+        data,
         exp_params,
-        save_path=str(output_dir / 'parameter_landscape.png')
+        save_path=str(output_dir / filename)
     )
-    plt.show()
+
 
 if __name__ == "__main__":
     main()

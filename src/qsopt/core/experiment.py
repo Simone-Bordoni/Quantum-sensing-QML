@@ -1018,3 +1018,36 @@ class SingleQubitExperiment:
         # Save report to JSON
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2)
+    
+    def plot_pulse_shape(self, save_path: Optional[str] = None, dpi: int = 300):
+        """
+        Plot Gaussian pulse envelope with measurement time markers.
+        
+        Convenience method that visualizes the temporal shape of the Gaussian input pulse
+        along with vertical markers indicating when measurements are performed. This helps
+        understand the relationship between the pulse envelope and the measurement protocol.
+        
+        Args:
+            save_path: Optional path to save the figure
+            dpi: Resolution for saved figure (default: 300)
+            
+        Returns:
+            matplotlib.figure.Figure: Figure object containing the plot
+            
+        Example:
+            >>> experiment = SingleQubitExperiment(exp_params, train_params)
+            >>> fig = experiment.plot_pulse_shape(save_path="results/pulse_shape.png")
+            >>> # Plot shows pulse shape with measurement markers
+            
+        Note:
+            - Uses current trainable parameters (theta1, theta2)
+            - Pulse shape computed using u0() function from quantum_utils
+            - Measurement times extracted from experimental_params.measurement
+        """
+        from ..utils.visualization import plot_pulse_shape_with_measurements
+        
+        return plot_pulse_shape_with_measurements(
+            self.experimental_params,
+            save_path=save_path,
+            dpi=dpi
+        )

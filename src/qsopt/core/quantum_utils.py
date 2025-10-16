@@ -44,6 +44,38 @@ def gu(t, **kwargs):
     return jnp.array(coupling, float)
 
 
+@jax.jit
+def u0(t, **kwargs):
+    """
+    Normalized Gaussian pulse envelope function.
+    
+    This function represents the amplitude envelope of a Gaussian input pulse,
+    useful for visualizing the temporal shape of the input field. Unlike gu(),
+    this is a simple Gaussian without normalization factors.
+    
+    Args:
+        t: float or JAX array, time variable(s)
+        **kwargs: Dictionary containing 'sigma' parameter (pulse bandwidth)
+        
+    Returns:
+        JAX array: Gaussian pulse amplitude at time t
+        
+    Example:
+        >>> import numpy as np
+        >>> t_vals = np.linspace(-5, 5, 100)
+        >>> sigma = 0.1
+        >>> pulse = u0(t_vals, sigma=sigma)
+        >>> # pulse has maximum value of 1.0 at t=0
+        
+    Physical Interpretation:
+        Represents the unnormalized envelope of a Gaussian pulse centered at t=0.
+        The pulse width is determined by 1/sigma, where sigma is the inverse pulse width.
+    """
+    sigma = kwargs.get("sigma", 0.1)
+    dx = sigma * t
+    return jnp.exp(-dx**2)
+
+
 def generate_single_qubit_operators(
     field_levels: int,
     cavity_levels: int,
