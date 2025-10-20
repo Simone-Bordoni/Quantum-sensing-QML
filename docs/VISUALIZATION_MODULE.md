@@ -92,122 +92,6 @@ from qsopt.utils.visualization import plot_parameter_trajectory
 fig = plot_parameter_trajectory(history, reference_callback=results)
 ```
 
-### 4. `plot_parameter_landscape()`
-
-Creates 2D heatmap visualizations of parameter space landscapes.
-
-**Arguments:**
-- `theta1_vals` (required): 1D array of θ₁ values
-- `theta2_vals` (required): 1D array of θ₂ values
-- `contrast_map` (required): 2D array of contrast values
-- `detection_map` (required): 2D array of detection probabilities
-- `exp_params` (required): ExperimentalParameters object
-- `save_path` (str, optional): Path to save figure
-- `dpi` (int, default=300): Resolution
-
-**Returns:**
-- matplotlib.figure.Figure: Figure with 2-panel landscape visualization
-
-**Example:**
-```python
-from qsopt.utils.landscape_analysis import compute_theta1_theta2_landscape
-from qsopt.utils.visualization import plot_parameter_landscape
-
-# Compute landscape
-data = compute_theta1_theta2_landscape(
-    exp_params,
-    resolution=30,
-    verbose=True
-)
-
-# Visualize
-fig = plot_parameter_landscape(
-    data['theta1_vals'],
-    data['theta2_vals'],
-    data['contrast_map'],
-    data['detection_map'],
-    exp_params,
-    save_path='parameter_landscape.png'
-)
-```
-
-### 5. `plot_time_interval_landscape()`
-
-Creates 3-panel visualization of time interval landscape analysis.
-
-**Arguments:**
-- `interval_vals` (required): 1D array of time interval values
-- `contrast_vals` (required): 1D array of contrast values
-- `detection_with` (required): 1D array of P(detect|with photon)
-- `detection_without` (required): 1D array of P(detect|without photon)
-- `n_measurements` (required): 1D array of measurement counts
-- `exp_params` (required): ExperimentalParameters object
-- `theta1` (required): First rotation angle
-- `theta2` (required): Second rotation angle
-- `mode` (str, required): 'continuous' or 'discrete'
-- `batch_size` (int, default=1): Number of realizations averaged
-- `save_path` (str, optional): Path to save figure
-- `dpi` (int, default=300): Resolution
-
-**Returns:**
-- matplotlib.figure.Figure: Figure with 3-panel landscape visualization
-
-**Example:**
-```python
-from qsopt.utils.landscape_analysis import compute_time_interval_landscape
-from qsopt.utils.visualization import plot_time_interval_landscape
-
-# Compute time interval landscape
-data = compute_time_interval_landscape(
-    exp_params,
-    theta1=np.pi/2,
-    theta2=-np.pi/2,
-    resolution=30,
-    mode='continuous'
-)
-
-# Visualize
-fig = plot_time_interval_landscape(
-    data['interval_vals'],
-    data['contrast_vals'],
-    data['detection_with'],
-    data['detection_without'],
-    data['n_measurements'],
-    exp_params,
-    theta1=np.pi/2,
-    theta2=-np.pi/2,
-    mode='continuous',
-    save_path='time_interval_landscape.png'
-)
-```
-
-### 6. `plot_pulse_shape_with_measurements()`
-
-Visualizes Gaussian pulse envelope with measurement time markers.
-
-**Arguments:**
-- `exp_params` (required): ExperimentalParameters object
-- `save_path` (str, optional): Path to save figure
-- `dpi` (int, default=300): Resolution
-
-**Returns:**
-- matplotlib.figure.Figure: Figure showing pulse shape and measurement markers
-
-**Example:**
-```python
-from qsopt.utils.visualization import plot_pulse_shape_with_measurements
-
-# Visualize pulse and measurement timing
-fig = plot_pulse_shape_with_measurements(
-    exp_params,
-    save_path='pulse_shape.png'
-)
-
-# Or use experiment method
-experiment = SingleQubitExperiment(exp_params, train_params)
-fig = experiment.plot_pulse_shape(save_path='pulse_shape.png')
-```
-
 ## Usage Patterns
 
 ### Pattern 1: Full Dashboard with Reference
@@ -321,26 +205,9 @@ Or import specifically:
 from qsopt.utils.visualization import (
     plot_optimization_dashboard,
     plot_contrast_evolution,
-    plot_parameter_trajectory,
-    plot_parameter_landscape,
-    plot_time_interval_landscape,
-    plot_pulse_shape_with_measurements
+    plot_parameter_trajectory
 )
 ```
-
-## Usage Patterns by Analysis Type
-
-### For Optimization Analysis
-- `plot_optimization_dashboard()` - Comprehensive multi-panel view
-- `plot_contrast_evolution()` - Focus on objective function
-- `plot_parameter_trajectory()` - Understand parameter space exploration
-
-### For Parameter Space Exploration  
-- `plot_parameter_landscape()` - 2D heatmaps of rotation angles
-- `plot_time_interval_landscape()` - 1D analysis of measurement timing
-
-### For Experimental Setup
-- `plot_pulse_shape_with_measurements()` - Visualize pulse and measurement protocol
 
 ## Example Notebook
 
@@ -364,3 +231,11 @@ fig = plot_optimization_dashboard(history, save_path='dashboard.png', dpi=300)
 # Save as SVG (vector graphics, web-friendly)
 fig = plot_optimization_dashboard(history, save_path='dashboard.svg')
 ```
+
+## Notes
+
+- **Gradients**: Computed as finite differences from parameter changes (approximate)
+- **Parameter Space**: Trajectory plots use the first two parameters by default
+- **Auto-layout**: Dashboard automatically adjusts layout based on enabled plots
+- **Reference Comparison**: When reference provided, shows improvement over baseline
+- **Publication Quality**: Default DPI of 300 suitable for publications

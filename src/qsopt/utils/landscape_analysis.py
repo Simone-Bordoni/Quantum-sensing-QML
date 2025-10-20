@@ -9,9 +9,10 @@ Functions:
     compute_theta1_theta2_landscape: Compute 2D landscape over rotation parameters
 """
 
+import math
 import numpy as np
 import time
-from typing import Dict, Union, Any
+from typing import Dict, Union, Any, Optional
 from qsopt.core.trainable_parameters import TrainableParameters
 from qsopt.core.experiment import SingleQubitExperiment
 from qsopt.core.experimental_parameters import ExperimentalParameters
@@ -180,7 +181,9 @@ def compute_time_interval_landscape(
     resolution: int = 50,
     mode: str = 'continuous',
     batch_size: int = 1,
-    verbose: bool = True
+    verbose: bool = True,
+    min_interval: Optional[float] = None,
+    max_interval: Optional[float] = None
 ) -> Dict[str, Union[np.ndarray, float, str, int]]:
     """
     Compute contrast landscape vs measurement time interval.
@@ -220,6 +223,12 @@ def compute_time_interval_landscape(
             measurement uncertainty. Recommended: ≥10 for realistic results
             when initial_time_uncertainty > 0. Default: 1.
         verbose: Print progress information. Default: True.
+        min_interval: Minimum interval to consider.
+            - Continuous mode: defaults to total_time / 100 when None.
+            - Discrete mode: defaults to total_time / resolution when None.
+        max_interval: Maximum interval to consider.
+            Defaults to total_time when None. In discrete mode, constraints
+            are enforced by rounding up to the nearest valid measurement count.
         
     Returns:
         Dictionary containing:
@@ -232,7 +241,8 @@ def compute_time_interval_landscape(
             - 'theta2': Fixed θ₂ value (float)
             - 'mode': Computation mode used (str)
             - 'batch_size': Batch size used (int)
-            - 'initial_time_uncertainty': Uncertainty value from exp_params (float)
+            - 'initial_time_uncertainty': Resolved uncertainty value from exp_params (float)
+            - 'initial_time_uncertainty_spec': Raw specification (float or str)
             
     Raises:
         ValueError: If mode is not 'continuous' or 'discrete'
@@ -297,20 +307,75 @@ def compute_time_interval_landscape(
         print(f"  Resolution: {resolution} points")
         print(f"  Batch size: {batch_size} realizations")
         print(f"  Total evolution time: {total_time:.4f}")
-        if exp_params.measurement.initial_time_uncertainty > 0:
-            print(f"  Initial time uncertainty: ±{exp_params.measurement.initial_time_uncertainty:.4f}")
+        if min_interval is not None or max_interval is not None:
+            print(
+                "  Requested interval bounds: "
+                f"[{(min_interval if min_interval is not None else 'default')}, "
+                f"{(max_interval if max_interval is not None else 'default')}]"
+            )
+        uncertainty_val = exp_params.initial_time_uncertainty
+        if uncertainty_val > 0:
+            spec = exp_params.initial_time_uncertainty_spec
+            extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
+            print(f"  Initial time uncertainty: ±{uncertainty_val:.4f}{extra}")
     
     # Generate time interval values based on mode
     if mode == 'continuous':
         # Continuous: linearly spaced from min to max
-        # Minimum interval ensures at least 2 measurements
-        min_interval = total_time / 100.0  # At least 100 potential measurements
-        max_interval = total_time  # Single measurement at end
-        interval_vals = np.linspace(min_interval, max_interval, resolution)
+        min_val = total_time / 100.0 if min_interval is None else float(min_interval)
+        max_val = total_time if max_interval is None else float(max_interval)
+        if min_val <= 0:
+            raise ValueError(f"min_interval must be > 0, got {min_val}")
+        if max_val <= 0 or max_val > total_time:
+            raise ValueError(
+                f"max_interval must be in (0, {total_time}], got {max_val}"
+            )
+        if min_val >= max_val:
+            raise ValueError(
+                f"min_interval ({min_val}) must be less than max_interval ({max_val})"
+            )
+        interval_vals = np.linspace(min_val, max_val, resolution)
     else:  # mode == 'discrete'
-        # Discrete: integer fractions T/N for N = 1, 2, ..., resolution
-        fractions = np.arange(1, resolution + 1)  # [1, 2, 3, ..., resolution]
-        interval_vals = total_time / fractions
+        max_val = total_time if max_interval is None else float(max_interval)
+        if max_val <= 0 or max_val > total_time:
+            raise ValueError(
+                f"max_interval must be in (0, {total_time}], got {max_val}"
+            )
+
+        if min_interval is None:
+            # Default to the smallest interval produced by the requested resolution
+            min_val = total_time / float(resolution)
+        else:
+            min_val = float(min_interval)
+
+        if min_val <= 0:
+            raise ValueError(f"min_interval must be > 0, got {min_val}")
+        if min_val > max_val:
+            raise ValueError(
+                f"min_interval ({min_val}) must be less than or equal to max_interval ({max_val})"
+            )
+
+        n_start = max(1, int(math.ceil(total_time / max_val)))
+        n_end = int(math.floor(total_time / min_val))
+
+        if n_end < n_start:
+            raise ValueError(
+                "No discrete intervals satisfy the requested min/max bounds. "
+                f"Computed n_start={n_start}, n_end={n_end}."
+            )
+
+        n_values = np.arange(n_start, n_end + 1, dtype=int)
+        if n_values.size == 0:
+            n_values = np.array([n_start], dtype=int)
+
+        if n_values.size >= resolution:
+            n_values = n_values[:resolution]
+        else:
+            # Pad with the last valid interval to maintain desired resolution
+            pad_count = resolution - n_values.size
+            n_values = np.concatenate([n_values, np.repeat(n_values[-1], pad_count)])
+
+        interval_vals = total_time / n_values.astype(float)
     
     # Initialize result arrays
     contrast_vals = np.zeros(resolution)
@@ -351,13 +416,11 @@ def compute_time_interval_landscape(
         detection_without[i] = callback.history['prob_without'][-1]
         
         # Progress update
-        if verbose and ((i + 1) % max(1, resolution // 10) == 0):
+        if verbose:
             progress = (i + 1) / resolution * 100
-            elapsed = time.time() - start_time
-            eta = elapsed / (i + 1) * (resolution - i - 1)
             print(f"  Progress: {progress:.1f}% "
                   f"(interval={interval:.4f}, n_meas={n_measurements[i]}, "
-                  f"contrast={contrast_vals[i]:.6f}, ETA: {eta:.1f}s)", end='\r')
+                  f"contrast={contrast_vals[i]:.6f})", end='\r')
     
     # Restore original time interval
     exp_params.measurement.time_interval = original_interval
@@ -387,5 +450,6 @@ def compute_time_interval_landscape(
         'theta2': theta2,
         'mode': mode,
         'batch_size': batch_size,
-        'initial_time_uncertainty': exp_params.measurement.initial_time_uncertainty
+        'initial_time_uncertainty': exp_params.initial_time_uncertainty,
+        'initial_time_uncertainty_spec': exp_params.initial_time_uncertainty_spec
     }

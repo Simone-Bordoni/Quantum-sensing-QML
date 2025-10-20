@@ -17,11 +17,10 @@ from pathlib import Path
 from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType, PhysicalConstants, SystemDimensions, MeasurementProtocol, NoiseConfiguration, InitialStateConfig
 from qsopt.utils import compute_time_interval_landscape, plot_time_interval_landscape
 
+gm = 0.03 * 2 * np.pi
+inverse_pulse_width = 0.1 * gm
 
 def create_experiment_setup():
-    gm = 0.03 * 2 * np.pi
-    inverse_pulse_width = 0.1 * gm
-
     # Define custom physical constants
     custom_constants = PhysicalConstants(
         chi = 0.5 * gm,                    # Dispersive coupling
@@ -39,10 +38,10 @@ def create_experiment_setup():
     # Define measurement protocol
     custom_measurement = MeasurementProtocol(
         measurement_times=None,  # Use interval mode
-        initial_time=-8.0/inverse_pulse_width,
-        final_time=8.0/inverse_pulse_width,
+        initial_time=-9.0/inverse_pulse_width,
+        final_time=9.0/inverse_pulse_width,
         time_interval=5.0/inverse_pulse_width,
-        initial_time_uncertainty=2.0/inverse_pulse_width
+        initial_time_uncertainty=4.0/inverse_pulse_width
     )
 
     # Define initial state configuration (SINGLE_PHOTON)
@@ -52,9 +51,9 @@ def create_experiment_setup():
 
     # Define noise configuration
     noise_config = NoiseConfiguration(
-        depolarizing = 0.00,  
-        dephasing = 0.00,      
-        relaxation = 0.00
+        depolarizing = 0.000,  
+        dephasing = 0.000,      
+        relaxation = 0.000
     )
 
     # Create parameters with custom configuration
@@ -70,8 +69,7 @@ def create_experiment_setup():
 
 
 def main():
-    filename = "time_interval_landscape_discrete_uncertainty.png"
-
+    
     # Create output directory
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
@@ -87,16 +85,17 @@ def main():
         exp_params,
         theta1=theta1,
         theta2=theta2,
-        resolution=20,
+        resolution=15,
+        min_interval=0.2/inverse_pulse_width,
         mode='discrete',
-        batch_size=15,  # No averaging
+        batch_size=30, 
         verbose=True
     )
     
     fig = plot_time_interval_landscape(
         data,
         exp_params,
-        save_path=str(output_dir / filename)
+        save_path=str(output_dir / 'time_interval_landscape_discrete_no_noise.png')
     )
 
 

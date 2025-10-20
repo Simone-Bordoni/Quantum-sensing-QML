@@ -4,6 +4,8 @@ Tests for pulse shape visualization functionality.
 import pytest
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
+from matplotlib.figure import Figure
 from pathlib import Path
 import sys
 
@@ -100,12 +102,12 @@ class TestPulseShapeVisualization:
         fig = plot_pulse_shape_with_measurements(exp_params)
         
         assert fig is not None
-        assert isinstance(fig, plt.Figure)
-        
+        assert isinstance(fig, Figure)
+
         # Check that figure has axes
         axes = fig.get_axes()
         assert len(axes) > 0
-        
+
         plt.close(fig)
     
     def test_plot_pulse_shape_with_save(self, exp_params, tmp_path):
@@ -120,6 +122,30 @@ class TestPulseShapeVisualization:
         assert save_path.exists()
         assert save_path.stat().st_size > 0
         
+        plt.close(fig)
+
+    def test_plot_pulse_shape_with_batch(self, exp_params):
+        """Ensure batch visualization draws multiple colored measurement sets."""
+        batch_size = 3
+        exp_params.measurement.initial_time_uncertainty = 0.0
+        fig = plot_pulse_shape_with_measurements(
+            exp_params,
+            batch_size=batch_size
+        )
+
+        ax = fig.axes[0]
+        measurement_lines = [
+            line for line in ax.get_lines() if line.get_linestyle() == '--'
+        ]
+        expected_lines = len(exp_params.measurement_times) * batch_size
+        assert len(measurement_lines) == expected_lines
+
+        unique_colors = {
+            tuple(np.round(mcolors.to_rgb(line.get_color()), decimals=5))
+            for line in measurement_lines
+        }
+        assert len(unique_colors) == batch_size
+
         plt.close(fig)
 
 

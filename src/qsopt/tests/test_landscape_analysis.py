@@ -2,6 +2,9 @@
 Tests for landscape analysis utilities.
 """
 
+import math
+from typing import cast
+
 import pytest
 import numpy as np
 from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType
@@ -46,6 +49,27 @@ def create_test_experiment():
     return exp_params
 
 
+def test_initial_time_uncertainty_max_interval_spec():
+    """Ensure string specification for initial time uncertainty is resolved."""
+    exp_params = create_test_experiment()
+    exp_params.initial_time_uncertainty = "max_interval"
+
+    base_times = exp_params.measurement_times
+    expected_interval = float(np.max(np.diff(base_times)))
+    assert np.isclose(exp_params.initial_time_uncertainty, expected_interval)
+
+    # Changing the measurement interval should update the resolved uncertainty
+    exp_params.time_interval = exp_params.time_interval / 2
+    updated_times = exp_params.measurement_times
+    updated_expected = float(np.max(np.diff(updated_times)))
+    assert np.isclose(exp_params.initial_time_uncertainty, updated_expected)
+
+    # Batch sampling should stay within the resolved uncertainty bounds
+    exp_params.seed = 42
+    batch_times = exp_params.get_measurement_times_with_uncertainty(batch_size=2)
+    max_deviation = np.max(np.abs(batch_times - updated_times[np.newaxis, :]))
+    assert max_deviation <= exp_params.initial_time_uncertainty + 1e-12
+
 def test_compute_theta1_theta2_landscape_structure():
     """Test that landscape computation returns correct structure."""
     exp_params = create_test_experiment()
@@ -70,10 +94,14 @@ def test_compute_theta1_theta2_landscape_structure():
     assert 'center_theta2' in data
     
     # Check array shapes
-    assert data['theta1_vals'].shape == (resolution,)
-    assert data['theta2_vals'].shape == (resolution,)
-    assert data['contrast_map'].shape == (resolution, resolution)
-    assert data['detection_map'].shape == (resolution, resolution)
+    theta1_vals = cast(np.ndarray, data['theta1_vals'])
+    theta2_vals = cast(np.ndarray, data['theta2_vals'])
+    contrast_map = cast(np.ndarray, data['contrast_map'])
+    detection_map = cast(np.ndarray, data['detection_map'])
+    assert theta1_vals.shape == (resolution,)
+    assert theta2_vals.shape == (resolution,)
+    assert contrast_map.shape == (resolution, resolution)
+    assert detection_map.shape == (resolution, resolution)
     
     # Check center values
     assert data['center_theta1'] == np.pi/2
@@ -91,23 +119,28 @@ def test_compute_theta1_theta2_landscape_values():
         verbose=False
     )
     
+    contrast_map = cast(np.ndarray, data['contrast_map'])
+    detection_map = cast(np.ndarray, data['detection_map'])
+    theta1_vals = cast(np.ndarray, data['theta1_vals'])
+    theta2_vals = cast(np.ndarray, data['theta2_vals'])
+
     # Check contrast map values are in valid range [0, 1]
-    assert np.all(data['contrast_map'] >= 0.0)
-    assert np.all(data['contrast_map'] <= 1.0)
+    assert np.all(contrast_map >= 0.0)
+    assert np.all(contrast_map <= 1.0)
     
     # Check detection map values are in valid range [0, 1]
-    assert np.all(data['detection_map'] >= 0.0)
-    assert np.all(data['detection_map'] <= 1.0)
+    assert np.all(detection_map >= 0.0)
+    assert np.all(detection_map <= 1.0)
     
     # Check parameter values span the expected range
     center_theta1 = data['center_theta1']
     center_theta2 = data['center_theta2']
     param_range = np.pi/6  # default
     
-    assert np.isclose(data['theta1_vals'][0], center_theta1 - param_range, rtol=1e-5)
-    assert np.isclose(data['theta1_vals'][-1], center_theta1 + param_range, rtol=1e-5)
-    assert np.isclose(data['theta2_vals'][0], center_theta2 - param_range, rtol=1e-5)
-    assert np.isclose(data['theta2_vals'][-1], center_theta2 + param_range, rtol=1e-5)
+    assert np.isclose(theta1_vals[0], center_theta1 - param_range, rtol=1e-5)
+    assert np.isclose(theta1_vals[-1], center_theta1 + param_range, rtol=1e-5)
+    assert np.isclose(theta2_vals[0], center_theta2 - param_range, rtol=1e-5)
+    assert np.isclose(theta2_vals[-1], center_theta2 + param_range, rtol=1e-5)
 
 
 def test_compute_theta1_theta2_landscape_custom_range():
@@ -126,10 +159,12 @@ def test_compute_theta1_theta2_landscape_custom_range():
     )
     
     # Check parameter values span the custom range
-    assert np.isclose(data['theta1_vals'][0], -custom_range, rtol=1e-5)
-    assert np.isclose(data['theta1_vals'][-1], custom_range, rtol=1e-5)
-    assert np.isclose(data['theta2_vals'][0], -custom_range, rtol=1e-5)
-    assert np.isclose(data['theta2_vals'][-1], custom_range, rtol=1e-5)
+    theta1_vals = cast(np.ndarray, data['theta1_vals'])
+    theta2_vals = cast(np.ndarray, data['theta2_vals'])
+    assert np.isclose(theta1_vals[0], -custom_range, rtol=1e-5)
+    assert np.isclose(theta1_vals[-1], custom_range, rtol=1e-5)
+    assert np.isclose(theta2_vals[0], -custom_range, rtol=1e-5)
+    assert np.isclose(theta2_vals[-1], custom_range, rtol=1e-5)
 
 
 def test_compute_theta1_theta2_landscape_with_batch():
@@ -150,19 +185,20 @@ def test_compute_theta1_theta2_landscape_with_batch():
     
     # Check structure
     assert 'contrast_map' in data
-    assert data['contrast_map'].shape == (resolution, resolution)
+    contrast_map = cast(np.ndarray, data['contrast_map'])
+    assert contrast_map.shape == (resolution, resolution)
     
     # Values should still be in valid range
-    assert np.all(data['contrast_map'] >= 0.0)
-    assert np.all(data['contrast_map'] <= 1.0)
+    assert np.all(contrast_map >= 0.0)
+    assert np.all(contrast_map <= 1.0)
 
 
 def test_compute_time_interval_landscape_continuous():
     """Test time interval landscape computation in continuous mode."""
     from qsopt.utils import compute_time_interval_landscape
-    
+
     exp_params = create_test_experiment()
-    
+
     resolution = 5
     data = compute_time_interval_landscape(
         exp_params,
@@ -172,7 +208,7 @@ def test_compute_time_interval_landscape_continuous():
         mode='continuous',
         verbose=False
     )
-    
+
     # Check returned dictionary has expected keys
     assert 'interval_vals' in data
     assert 'contrast_vals' in data
@@ -182,32 +218,37 @@ def test_compute_time_interval_landscape_continuous():
     assert 'theta1' in data
     assert 'theta2' in data
     assert 'mode' in data
-    
-    # Check array shapes
-    assert data['interval_vals'].shape == (resolution,)
-    assert data['contrast_vals'].shape == (resolution,)
-    assert data['detection_with'].shape == (resolution,)
-    assert data['detection_without'].shape == (resolution,)
-    assert data['n_measurements'].shape == (resolution,)
-    
+
+    interval_vals = cast(np.ndarray, data['interval_vals'])
+    contrast_vals = cast(np.ndarray, data['contrast_vals'])
+    detection_with = cast(np.ndarray, data['detection_with'])
+    detection_without = cast(np.ndarray, data['detection_without'])
+    n_measurements = cast(np.ndarray, data['n_measurements'])
+
+    assert interval_vals.shape == (resolution,)
+    assert contrast_vals.shape == (resolution,)
+    assert detection_with.shape == (resolution,)
+    assert detection_without.shape == (resolution,)
+    assert n_measurements.shape == (resolution,)
+
     # Check mode
     assert data['mode'] == 'continuous'
-    
+
     # Check values are in valid ranges
-    assert np.all(data['contrast_vals'] >= 0.0)
-    assert np.all(data['contrast_vals'] <= 1.0)
-    assert np.all(data['detection_with'] >= 0.0)
-    assert np.all(data['detection_with'] <= 1.0)
-    assert np.all(data['detection_without'] >= 0.0)
-    assert np.all(data['detection_without'] <= 1.0)
+    assert np.all(contrast_vals >= 0.0)
+    assert np.all(contrast_vals <= 1.0)
+    assert np.all(detection_with >= 0.0)
+    assert np.all(detection_with <= 1.0)
+    assert np.all(detection_without >= 0.0)
+    assert np.all(detection_without <= 1.0)
 
 
 def test_compute_time_interval_landscape_discrete():
     """Test time interval landscape computation in discrete mode."""
     from qsopt.utils import compute_time_interval_landscape
-    
+
     exp_params = create_test_experiment()
-    
+
     resolution = 5
     data = compute_time_interval_landscape(
         exp_params,
@@ -217,29 +258,60 @@ def test_compute_time_interval_landscape_discrete():
         mode='discrete',
         verbose=False
     )
-    
-    # Check mode
+
     assert data['mode'] == 'discrete'
-    
-    # Check array shapes
-    assert data['interval_vals'].shape == (resolution,)
-    
-    # In discrete mode, intervals should be integer fractions
-    # T/1, T/2, T/3, ..., T/resolution
+
+    interval_vals = cast(np.ndarray, data['interval_vals'])
+    assert interval_vals.shape == (resolution,)
+
     total_time = exp_params.measurement.final_time - exp_params.measurement.initial_time
     expected_fractions = np.arange(1, resolution + 1)
     expected_intervals = total_time / expected_fractions
-    
-    np.testing.assert_allclose(data['interval_vals'], expected_intervals, rtol=1e-5)
+
+    np.testing.assert_allclose(interval_vals, expected_intervals, rtol=1e-5)
+
+
+def test_compute_time_interval_landscape_discrete_with_bounds():
+    """Discrete mode should honor explicit min/max bounds."""
+    from qsopt.utils import compute_time_interval_landscape
+
+    exp_params = create_test_experiment()
+
+    total_time = exp_params.measurement.final_time - exp_params.measurement.initial_time
+    max_interval = total_time / 3.7
+    min_interval = total_time / 10.5
+
+    resolution = 5
+    data = compute_time_interval_landscape(
+        exp_params,
+        theta1=np.pi/2,
+        theta2=-np.pi/2,
+        resolution=resolution,
+        mode='discrete',
+        verbose=False,
+        min_interval=min_interval,
+        max_interval=max_interval
+    )
+
+    assert data['mode'] == 'discrete'
+
+    intervals = cast(np.ndarray, data['interval_vals'])
+    assert intervals.shape == (resolution,)
+    assert np.all(intervals <= max_interval + 1e-8)
+    assert np.all(intervals >= min_interval - 1e-8)
+    assert np.all(np.diff(intervals) <= 1e-12)
+
+    expected_first = total_time / math.ceil(total_time / max_interval)
+    assert np.isclose(intervals[0], expected_first)
 
 
 def test_compute_time_interval_landscape_with_batch():
     """Test time interval landscape with batch averaging."""
     from qsopt.utils import compute_time_interval_landscape
-    
+
     exp_params = create_test_experiment()
     exp_params.measurement.initial_time_uncertainty = 0.1
-    
+
     resolution = 5
     batch_size = 3
     data = compute_time_interval_landscape(
@@ -250,13 +322,14 @@ def test_compute_time_interval_landscape_with_batch():
         batch_size=batch_size,
         verbose=False
     )
-    
+
     # Check batch_size is stored
     assert data['batch_size'] == batch_size
     
     # Values should still be valid
-    assert np.all(data['contrast_vals'] >= 0.0)
-    assert np.all(data['contrast_vals'] <= 1.0)
+    contrast_vals = cast(np.ndarray, data['contrast_vals'])
+    assert np.all(contrast_vals >= 0.0)
+    assert np.all(contrast_vals <= 1.0)
 
 
 def test_compute_time_interval_landscape_invalid_mode():

@@ -600,7 +600,8 @@ def plot_time_interval_landscape(
     landscape_data: Dict[str, Union[np.ndarray, float, str, int]],
     exp_params: 'ExperimentalParameters',
     save_path: Optional[str] = None,
-    dpi: int = 300
+    dpi: int = 300,
+    show_measurement_count: bool = False
 ) -> Figure:
     """
     Plot time interval landscape with system information.
@@ -608,7 +609,7 @@ def plot_time_interval_landscape(
     Creates a comprehensive visualization showing:
     1. Sensing contrast vs time interval
     2. Detection probabilities (with and without photon) vs time interval
-    3. Number of measurements vs time interval
+    3. (Optional) Number of measurements vs time interval
     
     Includes system information box showing:
     - Physical constants (coupling strengths, pulse widths)
@@ -631,7 +632,8 @@ def plot_time_interval_landscape(
             - 'initial_time_uncertainty': Uncertainty value
         exp_params: ExperimentalParameters instance with system configuration
         save_path: Optional file path to save figure. If None, figure is not saved.
-        dpi: Resolution for saved figure. Default: 300.
+    dpi: Resolution for saved figure. Default: 300.
+    show_measurement_count: Include measurement count subplot when True (default: False)
         
     Returns:
         matplotlib Figure object
@@ -658,8 +660,14 @@ def plot_time_interval_landscape(
         - Optimal interval is marked with a vertical line and annotation
         - If batch_size > 1, uncertainty information is displayed
     """
-    # Create figure with three subplots stacked vertically
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 14))
+    # Create figure with subplots stacked vertically
+    if show_measurement_count:
+        fig, axes = plt.subplots(3, 1, figsize=(12, 14))
+        ax1, ax2, ax3 = axes
+    else:
+        fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+        ax1, ax2 = axes
+        ax3 = None
     
     # Extract data
     interval_vals = landscape_data['interval_vals']
@@ -672,6 +680,7 @@ def plot_time_interval_landscape(
     mode = landscape_data['mode']
     batch_size = landscape_data['batch_size']
     uncertainty = landscape_data['initial_time_uncertainty']
+    uncertainty_spec = landscape_data.get('initial_time_uncertainty_spec')
     
     # Find optimal interval
     optimal_idx = np.argmax(contrast_vals)
@@ -719,34 +728,37 @@ def plot_time_interval_landscape(
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='best', fontsize=10)
     
-    # Plot 3: Number of measurements
-    if mode == 'discrete':
-        ax3.plot(interval_vals, n_measurements, 'ko-', linewidth=2, markersize=5,
-                label='Number of measurements')
-    else:
-        ax3.plot(interval_vals, n_measurements, 'k-', linewidth=2,
-                label='Number of measurements')
-    
-    # Mark optimal point
-    ax3.axvline(optimal_interval, color='red', linestyle='--', alpha=0.7, linewidth=1.5)
-    ax3.plot(optimal_interval, optimal_n_meas, 'ro', markersize=10,
-             markerfacecolor='red', markeredgecolor='white', markeredgewidth=2, zorder=10)
-    
-    ax3.set_xlabel('Time Interval (Δt)', fontsize=12)
-    ax3.set_ylabel('Number of Measurements', fontsize=12)
-    ax3.set_title('Measurement Count vs Time Interval', fontsize=14, fontweight='bold')
-    ax3.grid(True, alpha=0.3)
-    ax3.legend(loc='best', fontsize=10)
-    
+    # Plot 3: Number of measurements (optional)
+    if show_measurement_count and ax3 is not None:
+        if mode == 'discrete':
+            ax3.plot(interval_vals, n_measurements, 'ko-', linewidth=2, markersize=5,
+                    label='Number of measurements')
+        else:
+            ax3.plot(interval_vals, n_measurements, 'k-', linewidth=2,
+                    label='Number of measurements')
+
+        # Mark optimal point
+        ax3.axvline(optimal_interval, color='red', linestyle='--', alpha=0.7, linewidth=1.5)
+        ax3.plot(optimal_interval, optimal_n_meas, 'ro', markersize=10,
+                 markerfacecolor='red', markeredgecolor='white', markeredgewidth=2, zorder=10)
+
+        ax3.set_xlabel('Time Interval (Δt)', fontsize=12)
+        ax3.set_ylabel('Number of Measurements', fontsize=12)
+        ax3.set_title('Measurement Count vs Time Interval', fontsize=14, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(loc='best', fontsize=10)
+
     # Adjust layout to leave space at bottom for info box
-    plt.tight_layout(rect=(0, 0.15, 1, 1))
+    layout_bottom = 0.15 if show_measurement_count else 0.2
+    plt.tight_layout(rect=(0, layout_bottom, 1, 1))
     
     # Create comprehensive system information box
     batch_info = f"  • Batch size: {batch_size} realizations"
+    spec_suffix = f" (specified as '{uncertainty_spec}')" if isinstance(uncertainty_spec, str) else ""
     if batch_size > 1 and uncertainty > 0:
-        batch_info += f" (uncertainty: ±{uncertainty:.4f})"
+        batch_info += f" (uncertainty: ±{uncertainty:.4f}{spec_suffix})"
     elif batch_size == 1 and uncertainty > 0:
-        batch_info += f" (uncertainty available: ±{uncertainty:.4f}, not used)"
+        batch_info += f" (uncertainty available: ±{uncertainty:.4f}{spec_suffix}, not used)"
     
     system_info = f"""SYSTEM PARAMETERS AND CONFIGURATION
 
@@ -793,10 +805,9 @@ Landscape Statistics:
 
 def plot_pulse_shape_with_measurements(
     exp_params: 'ExperimentalParameters',
-    uncertainty: bool = False,
-    batch_size: int = 1,
     save_path: Optional[str] = None,
-    dpi: int = 300
+    dpi: int = 300,
+    batch_size: int = 1
 ) -> Figure:
     """
     Plot Gaussian pulse envelope with measurement time markers.
@@ -809,18 +820,18 @@ def plot_pulse_shape_with_measurements(
         exp_params: ExperimentalParameters object containing system configuration
         save_path: Optional path to save the figure
         dpi: Resolution for saved figure (default: 300)
+        batch_size: Number of measurement realizations to visualize. If > 1,
+            measurement times are drawn using distinct colors for each batch
+            (default: 1)
         
     Returns:
         matplotlib.figure.Figure: Figure object containing the plot
         
     Example:
-        >>> from qsopt.core.experimental_parameters import ExperimentalParameters
-        >>> from qsopt.core.trainable_parameters import TrainableParameters
-        >>> exp_params = ExperimentalParameters(...)
-        >>> train_params = TrainableParameters(theta1=0.5, theta2=1.2, time_interval=0.1)
-        >>> fig = plot_pulse_shape_with_measurements(
-        ...     exp_params, train_params.theta1, train_params.theta2
-        ... )
+    >>> from qsopt.core.experimental_parameters import ExperimentalParameters
+    >>> exp_params = ExperimentalParameters(...)
+    >>> fig = plot_pulse_shape_with_measurements(exp_params)
+    >>> fig = plot_pulse_shape_with_measurements(exp_params, batch_size=5)
         >>> # Plot shows pulse shape with measurement markers
         
     Note:
@@ -830,14 +841,18 @@ def plot_pulse_shape_with_measurements(
     """
     from ..core.quantum_utils import u0
     
-    # Extract measurement times
+    # Extract measurement protocol information
     initial_time = exp_params.measurement.initial_time
     final_time = exp_params.measurement.final_time
     interval = exp_params.measurement.time_interval
-    
-    # Generate measurement times
-    times = np.arange(initial_time, final_time + interval/2, interval)
-    n_measurements = len(times)
+
+    # Generate measurement times using ExperimentalParameters helper
+    measurement_times = exp_params.get_measurement_times_with_uncertainty(batch_size)
+    if measurement_times.ndim == 1:
+        measurement_sequences = [measurement_times]
+    else:
+        measurement_sequences = [measurement_times[i] for i in range(measurement_times.shape[0])]
+    n_measurements = len(measurement_sequences[0]) if measurement_sequences else 0
     
     # Create time array for plotting pulse (extend beyond measurement range)
     time_range = final_time - initial_time
@@ -855,13 +870,20 @@ def plot_pulse_shape_with_measurements(
     # Plot pulse envelope
     ax.plot(t_plot, pulse_vals, 'b-', linewidth=2, label='Gaussian pulse envelope')
     
-    # Add vertical lines for measurement times
-    for i, t_meas in enumerate(times):
-        if i == 0:
-            ax.axvline(t_meas, color='red', linestyle='--', alpha=0.6, 
-                      linewidth=1.5, label='Measurement times')
-        else:
-            ax.axvline(t_meas, color='red', linestyle='--', alpha=0.6, linewidth=1.5)
+    # Add vertical lines for measurement times (support multiple realizations)
+    cmap = plt.get_cmap('tab10')
+    for seq_idx, times in enumerate(measurement_sequences):
+        color = cmap(seq_idx % cmap.N)
+        label_prefix = 'Measurement times' if batch_size == 1 else f'Realization {seq_idx + 1}'
+        for line_idx, t_meas in enumerate(times):
+            ax.axvline(
+                t_meas,
+                color=color,
+                linestyle='--',
+                alpha=0.6,
+                linewidth=1.5,
+                label=label_prefix if line_idx == 0 else None
+            )
     
     # Shade the measurement region
     ax.axvspan(initial_time, final_time, alpha=0.1, color='green', 
@@ -874,7 +896,7 @@ def plot_pulse_shape_with_measurements(
                 fontsize=14, fontweight='bold', pad=15)
     ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
     ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
-    ax.set_ylim([0, 1.1])
+    ax.set_ylim(0.0, 1.1)
     
     # Add system information
     system_info = f"""PULSE AND MEASUREMENT CONFIGURATION
@@ -887,7 +909,8 @@ Measurement Protocol:
   • Final time:         {final_time:.6f}
   • Time interval:      {interval:.6f}
   • Total duration:     {time_range:.6f}
-  • Number of measurements:  {n_measurements}
+    • Number of measurements:  {n_measurements}
+    • Batch visualizations:    {len(measurement_sequences)}
 """
     
     # Add text box with system info

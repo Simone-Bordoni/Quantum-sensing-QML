@@ -78,8 +78,10 @@ class MeasurementProtocol:
         initial_time: Initial time for interval mode (absolute time)
         final_time: Final time for interval mode (absolute time)
         time_interval: Time interval between measurements for interval mode (absolute time)
-        initial_time_uncertainty: Initial time uncertainty (absolute time), 
-                                 uniform distribution [-initial_time_uncertainty, initial_time_uncertainty]
+    initial_time_uncertainty: Initial time uncertainty specification (absolute time).
+                 Can be a float or special string keywords (e.g., 'max_interval') that
+                 will be resolved dynamically. When numeric, represents the half-width of
+                 a uniform distribution [-initial_time_uncertainty, initial_time_uncertainty].
         single_measurement_uncertainty: Function defining uncertainty at each measurement time
     """
 
@@ -87,7 +89,7 @@ class MeasurementProtocol:
     initial_time: float = -5.0
     final_time: float = 5.0
     time_interval: float = 1.0
-    initial_time_uncertainty: float = 0.0
+    initial_time_uncertainty: Union[float, str] = 0.0
     single_measurement_uncertainty: Callable[[float], float] = lambda t: 0.0
 
 
@@ -171,7 +173,7 @@ class ExperimentalParameters:
             np.random.seed(self.random_seed)
 
         # Computed measurement times list (denormalized)
-        self._measurement_times_list = None
+        self._measurement_times_list: Optional[List[float]] = None
         self._update_measurement_times()
 
         # Validation
@@ -194,7 +196,8 @@ class ExperimentalParameters:
             raise ValueError("Final time must be greater than initial time")
             
         # Generate times using arange and ensure final time is included
-        times = list(np.arange(initial, final + interval/2, interval))
+        grid = np.arange(initial, final + interval/2, interval, dtype=float)
+        times = [float(t) for t in grid]
         
         return times
 
@@ -206,11 +209,56 @@ class ExperimentalParameters:
         Otherwise, compute from initial_time, final_time, and time_interval.
         """
         if self.measurement.measurement_times is not None:
-            self._measurement_times_list = list(self.measurement.measurement_times)
+            self._measurement_times_list = [float(t) for t in self.measurement.measurement_times]
         else:
             self._measurement_times_list = self._compute_measurement_times_from_interval()
 
-    def get_measurement_times(self, batch_size: int = 1, uncertainty: bool = True) -> np.ndarray:
+    def _resolve_initial_time_uncertainty(self) -> float:
+        """Resolve the initial time uncertainty specification to a numeric value."""
+        spec = self.measurement.initial_time_uncertainty
+
+        if isinstance(spec, str):
+            spec_stripped = spec.strip()
+            if not spec_stripped:
+                raise ValueError("initial_time_uncertainty string specification cannot be empty")
+
+            key = spec_stripped.lower()
+            if key in {"max_interval", "max_measurement_interval"}:
+                times = self.measurement_times
+                if times.size < 2:
+                    raise ValueError(
+                        "Cannot compute 'max_interval' initial_time_uncertainty with fewer than two measurement times"
+                    )
+                diffs = np.diff(np.sort(times))
+                if diffs.size == 0:
+                    return 0.0
+                value = float(np.max(diffs))
+            elif key in {"total_duration", "full_window"}:
+                times = self.measurement_times
+                if times.size == 0:
+                    return 0.0
+                value = float(np.max(times) - np.min(times))
+            else:
+                try:
+                    value = float(spec_stripped)
+                except ValueError as exc:
+                    raise ValueError(
+                        "Unsupported initial_time_uncertainty specification "
+                        f"'{spec}'. Supported keywords: 'max_interval', 'total_duration'."
+                    ) from exc
+        else:
+            try:
+                value = float(spec)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "initial_time_uncertainty must be a float or supported string keyword"
+                ) from exc
+
+        if value < 0:
+            raise ValueError("Initial time uncertainty must be >= 0")
+        return value
+
+    def get_measurement_times_with_uncertainty(self, batch_size: int = 1) -> np.ndarray:
         """
         Get measurement times with random shift due to initial time uncertainty.
         
@@ -223,7 +271,6 @@ class ExperimentalParameters:
             batch_size: Number of independent realizations to generate (default: 1).
                        If batch_size=1, returns 1D array of shape (n_times,).
                        If batch_size>1, returns 2D array of shape (batch_size, n_times).
-            uncertainty: Whether to apply initial time uncertainty (default: True).
             
         Returns:
             Array of measurement times with uncertainty shift applied:
@@ -232,31 +279,24 @@ class ExperimentalParameters:
         """
         # Get base measurement times (absolute time values)
         base_times = self.measurement_times
-        
+        uncertainty = self._resolve_initial_time_uncertainty()
+
         if batch_size == 1:
             # Single realization: return 1D array
-            if self.measurement.initial_time_uncertainty > 0 and uncertainty:
-                shift = np.random.uniform(
-                    -self.measurement.initial_time_uncertainty,
-                    self.measurement.initial_time_uncertainty
-                )
+            if uncertainty > 0:
+                shift = np.random.uniform(-uncertainty, uncertainty)
                 return base_times + shift
-            else:
-                return base_times
-        else:
-            # Multiple realizations: return 2D array (batch_size, n_times)
-            if self.measurement.initial_time_uncertainty > 0 and uncertainty:
-                # Generate batch_size random shifts
-                shifts = np.random.uniform(
-                    -self.measurement.initial_time_uncertainty,
-                    self.measurement.initial_time_uncertainty,
-                    size=batch_size
-                )
-                # Broadcasting: (batch_size, 1) + (n_times,) -> (batch_size, n_times)
-                return base_times[np.newaxis, :] + shifts[:, np.newaxis]
-            else:
-                # No uncertainty: tile the same times batch_size times
-                return np.tile(base_times, (batch_size, 1))
+            return base_times
+
+        # Multiple realizations: return 2D array (batch_size, n_times)
+        if uncertainty > 0:
+            # Generate batch_size random shifts
+            shifts = np.random.uniform(-uncertainty, uncertainty, size=batch_size)
+            # Broadcasting: (batch_size, 1) + (n_times,) -> (batch_size, n_times)
+            return base_times[np.newaxis, :] + shifts[:, np.newaxis]
+
+        # No uncertainty: tile the same times batch_size times
+        return np.tile(base_times, (batch_size, 1))
 
     def _validate_configuration(self) -> None:
         """Validate parameter consistency and physical constraints."""
@@ -289,16 +329,20 @@ class ExperimentalParameters:
             raise ValueError("Time interval must be positive")
         if self.measurement.final_time <= self.measurement.initial_time:
             raise ValueError("Final time must be greater than initial time")
-        if self.measurement.initial_time_uncertainty < 0:
-            raise ValueError("Initial time uncertainty must be >= 0")
+        # Resolve initial time uncertainty to ensure specification is valid
+        _ = self._resolve_initial_time_uncertainty()
 
         # Validate measurement times (len > 1 and sorted)
         if self._measurement_times_list is None:
             self._update_measurement_times()
-            
-        if len(self._measurement_times_list) < 2:
+
+        times_list = self._measurement_times_list
+        if times_list is None:
+            raise ValueError("Measurement times could not be computed")
+
+        if len(times_list) < 2:
             raise ValueError("At least two measurement times must be specified")
-        if sorted(self._measurement_times_list) != self._measurement_times_list:
+        if sorted(times_list) != times_list:
             raise ValueError("Measurement times must be in ascending order")
 
     # Direct access to commonly used parameters for easier integration
@@ -444,18 +488,23 @@ class ExperimentalParameters:
 
     @property
     def initial_time_uncertainty(self) -> float:
-        """Direct access to initial time uncertainty (absolute time)."""
-        return self.measurement.initial_time_uncertainty
+        """Resolved initial time uncertainty (absolute time)."""
+        return self._resolve_initial_time_uncertainty()
 
     @initial_time_uncertainty.setter
-    def initial_time_uncertainty(self, value: float) -> None:
+    def initial_time_uncertainty(self, value: Union[float, str]) -> None:
         """
-        Set initial time uncertainty.
+        Set initial time uncertainty specification.
         
         Args:
-            value: Initial time uncertainty (absolute time)
+            value: Initial time uncertainty specification (absolute time or keyword)
         """
         self.measurement.initial_time_uncertainty = value
+
+    @property
+    def initial_time_uncertainty_spec(self) -> Union[float, str]:
+        """Return the raw initial time uncertainty specification."""
+        return self.measurement.initial_time_uncertainty
 
     @property
     def seed(self) -> Optional[int]:
@@ -500,8 +549,6 @@ class ExperimentalParameters:
             and self.system_dims.qubit_levels >= 2
             and self.system_dims.field_levels >= 2
         )
-        status = "VALID" if dim_valid else "INVALID"
-        lines.append(f"  Status:               {status}")
 
         # Physical Constants Group
         lines.append("PHYSICAL CONSTANTS")
@@ -517,8 +564,6 @@ class ExperimentalParameters:
             and self.physical_constants.photon_cavity_coupling > 0
             and self.physical_constants.inverse_pulse_width > 0
         )
-        status = "VALID" if const_valid else "INVALID"
-        lines.append(f"  Status:               {status}")
 
         # Measurement Protocol Group
         lines.append("MEASUREMENT PROTOCOL")
@@ -539,17 +584,13 @@ class ExperimentalParameters:
             lines.append(f"  Number of measurements: {n_measurements:>6}")
             lines.append(f"  Computed times:       {times_list}")
             
-        if self.measurement.initial_time_uncertainty > 0:
-            lines.append(f"  Initial time uncertainty: {self.measurement.initial_time_uncertainty:>6.4f}")
-
-        # Validation flags for measurements
-        meas_valid = (
-            n_measurements >= 2
-            and sorted(times_list) == times_list
-        )
-        status = "VALID" if meas_valid else "INVALID"
-        lines.append(f"  Status:               {status}")
-
+        uncertainty_value = self.initial_time_uncertainty
+        if uncertainty_value > 0:
+            lines.append(f"  Initial time uncertainty: {uncertainty_value:>8.4f}")
+            if isinstance(self.measurement.initial_time_uncertainty, str):
+                lines.append(
+                    f"    (specified as '{self.measurement.initial_time_uncertainty}')"
+                )
         # Initial State Configuration Group
         lines.append("INITIAL STATE")
         lines.append(f"  Type:                 {self.initial_state.state_type.value}")
@@ -564,15 +605,6 @@ class ExperimentalParameters:
             lines.append(f"  Custom operators:     {len(self.noise_config.custom_operators):>6}")
         else:
             lines.append("  Custom operators:     None")
-
-        # Validation flags for noise
-        noise_valid = (
-            self.noise_config.depolarizing >= 0
-            and self.noise_config.dephasing >= 0
-            and self.noise_config.relaxation >= 0
-        )
-        status = "VALID" if noise_valid else "INVALID"
-        lines.append(f"  Status:               {status}")
 
         # Overall System Status
         lines.append("SYSTEM STATUS")

@@ -441,19 +441,22 @@ class SingleQubitExperiment:
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
         
+        # Prepare measurement time realizations once for the entire batch
+        measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
+        if measurement_times_batch.ndim == 1:
+            measurement_sequences = [measurement_times_batch]
+        else:
+            measurement_sequences = [measurement_times_batch[i] for i in range(measurement_times_batch.shape[0])]
+
         # Run simulations with batch averaging over uncertainty realizations
         prob_with_list = []
         prob_without_list = []
-        
-        for _ in range(batch_size):
-            # Get measurement times with uncertainty (uses random_seed if set)
-            # Each iteration gets a different realization if uncertainty > 0
-            measurement_times = self.experimental_params.get_measurement_times(uncertainty=True)
-            
+
+        for measurement_times in measurement_sequences:
             # Run simulations for this realization
             prob_with_batch = self.simulation(solver_with, rho0, theta1, theta2, measurement_times)
             prob_without_batch = self.simulation(solver_without, rho0, theta1, theta2, measurement_times)
-            
+
             prob_with_list.append(prob_with_batch)
             prob_without_list.append(prob_without_batch)
         
@@ -612,7 +615,7 @@ class SingleQubitExperiment:
             Returns:
                 Measurement times with uncertainty shift applied
             """
-            uncertainty = self.experimental_params.measurement.initial_time_uncertainty
+            uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:
                 # Generate random shift using JAX random (traceable by JAX)
                 shift = jax.random.uniform(key, minval=-uncertainty, maxval=uncertainty)
@@ -675,7 +678,7 @@ class SingleQubitExperiment:
                     measurement_times_batch = jnp.arange(t_start, t_end + time_interval/2, time_interval)
                 else:
                     # Use pre-computed measurement times (supports uncertainty)
-                    measurement_times_batch = self.experimental_params.get_measurement_times(uncertainty=True)
+                    measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty()
                 
                 # Calculate sensing contrast for this realization
                 prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurement_times_batch)
@@ -712,7 +715,7 @@ class SingleQubitExperiment:
                 else:
                     # For fixed interval, generate all uncertainty realizations at once
                     # Use JAX arrays directly for better performance
-                    measurement_times_batch = self.experimental_params.get_measurement_times(batch_size=batch_size, uncertainty=True)
+                    measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
                     
                     prob_with_batch = jnp.zeros(batch_size)
                     prob_without_batch = jnp.zeros(batch_size)
@@ -748,8 +751,11 @@ class SingleQubitExperiment:
                 interval_status = " [FIXED]" if not trainable_mask[2] else ""
                 print(f"    Initial time interval: {params[2]:.6f}{interval_status}")
             print(f"    Optimizer: {type(optimizer).__name__}")
-            if self.experimental_params.measurement.initial_time_uncertainty > 0:
-                print(f"    Measurement uncertainty: ±{self.experimental_params.measurement.initial_time_uncertainty:.3f}")
+            uncertainty = self.experimental_params.initial_time_uncertainty
+            if uncertainty > 0:
+                spec = self.experimental_params.initial_time_uncertainty_spec
+                extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
+                print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
             print("="*70)
             if has_trainable_interval:
                 print(f"{'Step':<6}{theta1_name:<12}{theta2_name:<12}{'Δt':<12}{'Contrast':<12}{'Grad Norm'}")
@@ -919,7 +925,7 @@ class SingleQubitExperiment:
                     "time_interval": float(self.experimental_params.measurement.time_interval)
                                     if self.experimental_params.measurement.measurement_times is None else None,
                     # Always store uncertainty settings
-                    "initial_time_uncertainty": float(self.experimental_params.measurement.initial_time_uncertainty),
+                    "initial_time_uncertainty": float(self.experimental_params.initial_time_uncertainty),
                     # Computed times for reference
                     "computed_times": [float(t) for t in self.experimental_params._measurement_times_list],
                     "num_measurements": len(self.experimental_params._measurement_times_list)
@@ -1019,7 +1025,12 @@ class SingleQubitExperiment:
         with open(save_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2)
     
-    def plot_pulse_shape(self, save_path: Optional[str] = None, dpi: int = 300):
+    def plot_pulse_shape(
+        self,
+        save_path: Optional[str] = None,
+        dpi: int = 300,
+        batch_size: int = 1
+    ):
         """
         Plot Gaussian pulse envelope with measurement time markers.
         
@@ -1030,6 +1041,8 @@ class SingleQubitExperiment:
         Args:
             save_path: Optional path to save the figure
             dpi: Resolution for saved figure (default: 300)
+            batch_size: Number of measurement realizations to visualize. If > 1,
+                measurement times are drawn using distinct colors (default: 1)
             
         Returns:
             matplotlib.figure.Figure: Figure object containing the plot
@@ -1049,5 +1062,6 @@ class SingleQubitExperiment:
         return plot_pulse_shape_with_measurements(
             self.experimental_params,
             save_path=save_path,
-            dpi=dpi
+            dpi=dpi,
+            batch_size=batch_size
         )
