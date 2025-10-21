@@ -169,15 +169,15 @@ def test_plot_time_interval_landscape_creates_figure():
         'initial_time_uncertainty': 0.0
     }
     
-    # Create plot without saving
+    # Create plot without saving (default hides measurement count subplot)
     fig = plot_time_interval_landscape(landscape_data, exp_params, save_path=None)
     
     # Check figure was created
     assert fig is not None
     assert isinstance(fig, Figure)
     
-    # Check figure has three subplots (axes)
-    assert len(fig.axes) == 3
+    # Default configuration renders two subplots (contrast + probabilities)
+    assert len(fig.axes) == 2
     
     plt.close(fig)
 
@@ -216,6 +216,38 @@ def test_plot_time_interval_landscape_with_save():
         assert Path(save_path).exists()
         
         plt.close(fig)
+
+
+def test_plot_time_interval_landscape_with_measurement_count():
+    """Check optional measurement count subplot appears when requested."""
+    from qsopt.utils import plot_time_interval_landscape
+
+    exp_params = create_test_experiment()
+
+    resolution = 4
+    interval_vals = np.linspace(0.2, 4.0, resolution)
+    landscape_data = {
+        'interval_vals': interval_vals,
+        'contrast_vals': np.linspace(0.3, 0.6, resolution),
+        'detection_with': np.linspace(0.4, 0.7, resolution),
+        'detection_without': np.linspace(0.2, 0.5, resolution),
+        'n_measurements': np.array([12, 9, 6, 3]),
+        'theta1': np.pi/2,
+        'theta2': -np.pi/2,
+        'mode': 'continuous',
+        'batch_size': 1,
+        'initial_time_uncertainty': 0.0
+    }
+
+    fig = plot_time_interval_landscape(
+        landscape_data,
+        exp_params,
+        save_path=None,
+        show_measurement_count=True
+    )
+
+    assert len(fig.axes) == 3
+    plt.close(fig)
 
 
 if __name__ == "__main__":

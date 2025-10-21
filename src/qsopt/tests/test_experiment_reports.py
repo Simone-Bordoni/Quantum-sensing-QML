@@ -91,7 +91,7 @@ class TestExperimentReports:
         experiment = self.create_test_experiment()
         
         # Run short optimization
-        history = experiment.optimize(
+        history = experiment.optimize_rotations(
             theta_init=[1.5, -1.3],
             num_steps=5,
             verbose=False
@@ -125,7 +125,7 @@ class TestExperimentReports:
         experiment = self.create_test_experiment()
         
         # Run optimization
-        history = experiment.optimize(
+        history = experiment.optimize_rotations(
             theta_init=[1.5, -1.3],
             num_steps=5,
             verbose=False

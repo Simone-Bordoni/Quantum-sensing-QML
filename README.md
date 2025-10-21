@@ -92,7 +92,7 @@ trainable_params.add_rotation_angles(
 
 # Create and optimize experiment
 experiment = SingleQubitExperiment(exp_params, trainable_params)
-history = experiment.optimize(num_steps=100, learning_rate=0.05, verbose=True)
+history = experiment.optimize_rotations(num_steps=100, learning_rate=0.05, verbose=True)
 
 print(f"Final contrast: {history['contrast'][-1]:.6f}")
 print(f"Optimized θ₁: {trainable_params.parameters[0].value:.3f}")
@@ -112,7 +112,7 @@ from qsopt import OptimizationCallback
 callback = OptimizationCallback(save_every=1, save_best=True)
 
 # Run optimization with callback
-history = experiment.optimize(
+history = experiment.optimize_rotations(
     num_steps=100,
     learning_rate=0.05,
     verbose=True,
@@ -225,7 +225,7 @@ from qsopt.utils.visualization import (
 
 # Run simulation and optimization
 results = experiment.run_simulation()
-history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
 
 # Create comprehensive dashboard with reference benchmarks
 fig = plot_optimization_dashboard(

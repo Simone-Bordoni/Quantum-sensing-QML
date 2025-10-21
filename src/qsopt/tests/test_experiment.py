@@ -15,7 +15,7 @@ import qutip as qt
 import optax
 
 from qsopt.core.experimental_parameters import ExperimentalParameters
-from qsopt.core.trainable_parameters import TrainableParameters
+from qsopt.core.trainable_parameters import TrainableParameters, ParameterType
 from qsopt.core.experiment import SingleQubitExperiment
 from qsopt.core.callback import OptimizationCallback
 
@@ -322,7 +322,7 @@ class TestSingleQubitExperiment:
     def test_optimize_short_run(self, experiment):
         """Test optimization runs for a few steps."""
         # Run optimization for just 3 steps to verify it works
-        result = experiment.optimize(
+        result = experiment.optimize_rotations(
             num_steps=3,
             verbose=False
         )
@@ -552,7 +552,7 @@ def test_optimize_with_theta_init():
     experiment = SingleQubitExperiment(params, trainable)
     
     # Test with theta_init parameter
-    result = experiment.optimize(
+    result = experiment.optimize_rotations(
         num_steps=2,
         theta_init=[np.pi/4, -np.pi/4],
         verbose=False
@@ -571,7 +571,7 @@ def test_optimize_with_property_theta_init():
     experiment = SingleQubitExperiment(params, trainable)
     
     # Pass theta_init directly to optimize
-    result = experiment.optimize(num_steps=2, theta_init=[np.pi/3, -np.pi/3], verbose=False)
+    result = experiment.optimize_rotations(num_steps=2, theta_init=[np.pi/3, -np.pi/3], verbose=False)
     
     assert isinstance(result, OptimizationCallback)
 
@@ -608,7 +608,7 @@ def test_parameter_constraints_applied():
     experiment = SingleQubitExperiment(params, trainable)
     
     # Run optimization (even for 1 step)
-    experiment.optimize(num_steps=1, verbose=False)
+    experiment.optimize_rotations(num_steps=1, verbose=False)
     
     # Check that constraints were applied (angles should be in [0, 2π])
     angles = experiment.rotation_angles
@@ -628,8 +628,43 @@ def test_optimizer_from_trainable_params():
     experiment = SingleQubitExperiment(params, trainable)
     
     # Should use the custom optimizer
-    result = experiment.optimize(num_steps=2, verbose=False)
+    result = experiment.optimize_rotations(num_steps=2, verbose=False)
     assert isinstance(result, OptimizationCallback)
+
+
+def test_optimize_measurement_times_updates_interval():
+    """Test measurement time optimization applies the best interval."""
+    params = ExperimentalParameters()
+    params.measurement.initial_time = -2.0
+    params.measurement.final_time = 2.0
+    params.measurement.time_interval = 0.6
+    params.measurement.measurement_times = None
+    params._update_measurement_times()
+
+    trainable = TrainableParameters()
+    trainable.add_rotation_angles(['ry1', 'ry2'], [np.pi / 2, -np.pi / 2])
+    trainable.add_measurement_interval('time_interval', params.measurement.time_interval)
+
+    experiment = SingleQubitExperiment(params, trainable)
+
+    results = experiment.optimize_measurement_times(
+        resolution=4,
+        mode='discrete',
+        batch_size=2,
+        verbose=False,
+    )
+
+    assert 'best_interval' in results
+    best_interval = float(results['best_interval'])
+    assert best_interval > 0
+    assert np.isclose(experiment.experimental_params.measurement.time_interval, best_interval)
+
+    measurement_params = [p for p in trainable.parameters if p.param_type == ParameterType.MEASUREMENT_TIME]
+    assert measurement_params
+    assert np.isclose(measurement_params[0].value, best_interval)
+
+    times_list = experiment.experimental_params._measurement_times_list
+    assert times_list is not None and len(times_list) >= 2
 
 
 if __name__ == '__main__':

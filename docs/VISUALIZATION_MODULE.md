@@ -23,7 +23,7 @@ Creates a comprehensive multi-panel dashboard with customizable plots.
 - **Detection Probabilities**: Evolution of P(with photon) and P(without photon)
 
 **Arguments:**
-- `optimization_callback` (required): `OptimizationCallback` from `experiment.optimize()`
+- `optimization_callback` (required): `OptimizationCallback` from `experiment.optimize_rotations()`
 - `reference_callback` (optional): `OptimizationCallback` from `experiment.run_simulation()`
   - When provided, reference values are shown as horizontal benchmark lines
 - `show_contrast` (bool, default=True): Display contrast evolution plot
@@ -45,7 +45,7 @@ from qsopt.utils.visualization import plot_optimization_dashboard
 
 # Run simulation and optimization
 results = experiment.run_simulation()
-history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
 
 # Create dashboard with all plots
 fig = plot_optimization_dashboard(
@@ -103,7 +103,7 @@ Most comprehensive visualization showing optimization improvement over reference
 results = experiment.run_simulation()
 
 # Optimize parameters
-history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
 
 # Create dashboard with reference benchmarks
 fig = plot_optimization_dashboard(
@@ -138,7 +138,7 @@ When you only have optimization results (no baseline simulation):
 
 ```python
 # Just optimization (no reference)
-history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
 
 # Dashboard without reference benchmarks
 fig = plot_optimization_dashboard(

@@ -39,17 +39,17 @@ def plot_optimization_dashboard(
     - Detection probabilities (with and without photon)
     
     Args:
-        optimization_callback: OptimizationCallback from optimize() method
+        optimization_callback: OptimizationCallback from ``optimize_rotations()``
             Contains history of epochs, contrast, probabilities, and parameters
-        reference_callback: Optional SimulationCallback from run_simulation()
+        reference_callback: Optional SimulationCallback from ``run_simulation()``
             If provided, reference values are shown as horizontal benchmark lines
-        show_contrast: Display sensing contrast evolution plot
-        show_gradients: Display gradient magnitude evolution plot
-        show_parameters: Display parameter evolution plot
+        show_contrast: Display sensing contrast evolution plot when True
+        show_gradients: Display gradient magnitude evolution plot when True
+        show_parameters: Display parameter evolution plot when True
         show_trajectory: Display optimization trajectory in parameter space
         show_probabilities: Display detection probabilities plot
-        figsize: Figure size as (width, height) in inches
-        save_path: Optional path to save the figure (e.g., 'dashboard.pdf')
+        figsize: Figure size as ``(width, height)`` in inches
+        save_path: Optional path to save the figure (e.g., ``'dashboard.pdf'``)
             If None, figure is displayed but not saved
         dpi: Resolution for saved figure (default: 300)
     
@@ -58,12 +58,12 @@ def plot_optimization_dashboard(
     
     Example:
         >>> # Basic usage with optimization only
-        >>> history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+    >>> history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
         >>> fig = plot_optimization_dashboard(history)
         >>> 
         >>> # With reference comparison
         >>> results = experiment.run_simulation()
-        >>> history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+    >>> history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
         >>> fig = plot_optimization_dashboard(history, reference_callback=results,
         ...                                   save_path='opt_dashboard.pdf')
         >>> 
@@ -289,11 +289,11 @@ def plot_contrast_evolution(
     Create a standalone plot of sensing contrast evolution.
     
     Args:
-        optimization_callback: OptimizationCallback from optimize()
-        reference_callback: Optional reference from run_simulation()
-        figsize: Figure size as (width, height)
-        save_path: Optional path to save figure
-        dpi: Resolution for saved figure
+        optimization_callback: OptimizationCallback from ``optimize_rotations()``
+        reference_callback: Optional reference output from ``run_simulation()``
+        figsize: Figure size as ``(width, height)`` in inches
+        save_path: Optional path to save the figure
+        dpi: Resolution (dots-per-inch) for saved figure
     
     Returns:
         matplotlib Figure object
@@ -344,12 +344,12 @@ def plot_parameter_trajectory(
     Create a standalone plot of optimization trajectory in parameter space.
     
     Args:
-        optimization_callback: OptimizationCallback from optimize()
-        reference_callback: Optional reference from run_simulation()
-        param_indices: Tuple of parameter indices to plot (default: (0, 1))
-        figsize: Figure size as (width, height)
-        save_path: Optional path to save figure
-        dpi: Resolution for saved figure
+        optimization_callback: OptimizationCallback returned by ``optimize_rotations()``
+        reference_callback: Optional reference callback from ``run_simulation()``
+        param_indices: Pair of parameter indices to display (default: ``(0, 1)``)
+        figsize: Figure size as ``(width, height)`` in inches
+        save_path: Optional path to save the figure
+        dpi: Resolution (dots-per-inch) for saved figure
     
     Returns:
         matplotlib Figure object
@@ -487,8 +487,8 @@ def plot_parameter_landscape(
     # Extract data
     theta1_vals = landscape_data['theta1_vals']
     theta2_vals = landscape_data['theta2_vals']
-    contrast_map = landscape_data['contrast_map']
-    detection_map = landscape_data['detection_map']
+    contrast_map = np.asarray(landscape_data['contrast_map'])
+    detection_map = np.asarray(landscape_data['detection_map'])
     center_theta1 = landscape_data['center_theta1']
     center_theta2 = landscape_data['center_theta2']
     
@@ -619,7 +619,7 @@ def plot_time_interval_landscape(
     - Optimal interval statistics
     
     Args:
-        landscape_data: Dictionary from compute_time_interval_landscape() containing:
+        landscape_data: Dictionary from ``compute_time_interval_landscape()`` containing:
             - 'interval_vals': Array of time interval values
             - 'contrast_vals': Array of contrast values
             - 'detection_with': Array of detection probabilities with photon
@@ -632,8 +632,8 @@ def plot_time_interval_landscape(
             - 'initial_time_uncertainty': Uncertainty value
         exp_params: ExperimentalParameters instance with system configuration
         save_path: Optional file path to save figure. If None, figure is not saved.
-    dpi: Resolution for saved figure. Default: 300.
-    show_measurement_count: Include measurement count subplot when True (default: False)
+        dpi: Resolution for saved figure. Default: 300.
+        show_measurement_count: Include measurement count subplot when True (default: False)
         
     Returns:
         matplotlib Figure object
@@ -670,16 +670,16 @@ def plot_time_interval_landscape(
         ax3 = None
     
     # Extract data
-    interval_vals = landscape_data['interval_vals']
-    contrast_vals = landscape_data['contrast_vals']
-    detection_with = landscape_data['detection_with']
-    detection_without = landscape_data['detection_without']
-    n_measurements = landscape_data['n_measurements']
-    theta1 = landscape_data['theta1']
-    theta2 = landscape_data['theta2']
-    mode = landscape_data['mode']
-    batch_size = landscape_data['batch_size']
-    uncertainty = landscape_data['initial_time_uncertainty']
+    interval_vals = np.asarray(landscape_data['interval_vals'])
+    contrast_vals = np.asarray(landscape_data['contrast_vals'])
+    detection_with = np.asarray(landscape_data['detection_with'])
+    detection_without = np.asarray(landscape_data['detection_without'])
+    n_measurements = np.asarray(landscape_data['n_measurements'])
+    theta1 = float(landscape_data['theta1'])
+    theta2 = float(landscape_data['theta2'])
+    mode = str(landscape_data['mode'])
+    batch_size = int(landscape_data['batch_size'])
+    uncertainty = float(landscape_data['initial_time_uncertainty'])
     uncertainty_spec = landscape_data.get('initial_time_uncertainty_spec')
     
     # Find optimal interval
@@ -890,7 +890,7 @@ def plot_pulse_shape_with_measurements(
                label='Measurement window')
     
     # Formatting
-    ax.set_xlabel('Time (1/σ)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Time', fontsize=12, fontweight='bold')
     ax.set_ylabel('Pulse amplitude |u₀(t)|', fontsize=12, fontweight='bold')
     ax.set_title('Gaussian Pulse Shape with Measurement Protocol', 
                 fontsize=14, fontweight='bold', pad=15)
@@ -902,7 +902,8 @@ def plot_pulse_shape_with_measurements(
     system_info = f"""PULSE AND MEASUREMENT CONFIGURATION
 
 Physical Parameters:
-  • Inverse pulse width (σ):        {exp_params.inverse_pulse_width:.6f} 1/time
+  • Pulse width (σ):        {1/exp_params.inverse_pulse_width:.6f}
+  • Uncertainty:    {exp_params.measurement.initial_time_uncertainty:.6f}
 
 Measurement Protocol:
   • Initial time:       {initial_time:.6f}

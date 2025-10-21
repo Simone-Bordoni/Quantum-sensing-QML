@@ -41,7 +41,7 @@ def create_experiment_setup():
         initial_time=-9.0/inverse_pulse_width,
         final_time=9.0/inverse_pulse_width,
         time_interval=5.0/inverse_pulse_width,
-        initial_time_uncertainty=4.0/inverse_pulse_width
+        initial_time_uncertainty=2.0/inverse_pulse_width
     )
 
     # Define initial state configuration (SINGLE_PHOTON)
@@ -51,9 +51,9 @@ def create_experiment_setup():
 
     # Define noise configuration
     noise_config = NoiseConfiguration(
-        depolarizing = 0.000,  
-        dephasing = 0.000,      
-        relaxation = 0.000
+        depolarizing = 0.0001,  
+        dephasing = 0.0001,      
+        relaxation = 0.0001
     )
 
     # Create parameters with custom configuration
@@ -78,15 +78,18 @@ def main():
     exp_params = create_experiment_setup()
     
     # Define fixed rotation angles (optimal from parameter landscape)
-    theta1 = np.pi / 2  # 90 degrees
-    theta2 = -np.pi / 2  # -90 degrees
-    
+    #theta1 = np.pi / 2  # 90 degrees
+    theta1 = 1.5614751446622785
+    #theta2 = -np.pi / 2  # -90 degrees
+    theta2 = -1.5556073614887143
+
     data = compute_time_interval_landscape(
         exp_params,
         theta1=theta1,
         theta2=theta2,
-        resolution=15,
-        min_interval=0.2/inverse_pulse_width,
+        resolution=7,
+        min_interval=40,
+        max_interval=150,
         mode='discrete',
         batch_size=30, 
         verbose=True
@@ -95,7 +98,8 @@ def main():
     fig = plot_time_interval_landscape(
         data,
         exp_params,
-        save_path=str(output_dir / 'time_interval_landscape_discrete_no_noise.png')
+        save_path=str(output_dir / 'time_interval_landscape_theta_optimized.png'),
+        show_measurement_count=True
     )
 
 

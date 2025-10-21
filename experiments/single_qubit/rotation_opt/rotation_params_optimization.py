@@ -52,7 +52,7 @@ experiment = SingleQubitExperiment(exp_parameters, parameters)
 
 benchmark_results = experiment.run_simulation()
 
-history = experiment.optimize(
+history = experiment.optimize_rotations(
     theta_init=[1.5, -1.5],
     num_steps=70,
     verbose=True,

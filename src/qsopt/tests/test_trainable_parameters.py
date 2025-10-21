@@ -103,7 +103,9 @@ class TestTrainableParameters:
         assert len(params) == 1
         assert params.parameters[0].param_type == ParameterType.MEASUREMENT_TIME
         assert params.parameters[0].value == 0.5
-        assert params.parameters[0].trainable is True
+        assert params.parameters[0].trainable is False
+        defaults = params.get_measurement_interval_defaults()
+        assert defaults == {"grid_min": None, "grid_max": None, "grid_resolution": None}
         
         # Test that min_value constraint is set
         assert params.constraints[0].min_value is not None
@@ -117,6 +119,26 @@ class TestTrainableParameters:
         # Test that zero values are rejected
         with pytest.raises(ValueError, match="Measurement interval values must be > 0"):
             params2.add_measurement_interval("time_interval", 0.0)
+
+        # Test grid search defaults validation
+        with pytest.raises(ValueError, match="Grid resolution must be positive"):
+            params2.add_measurement_interval("time_interval", 0.5, grid_resolution=0)
+
+    def test_measurement_interval_grid_defaults(self):
+        """Test storing and retrieving grid-search defaults for intervals."""
+        params = TrainableParameters()
+        params.add_measurement_interval(
+            "time_interval",
+            0.5,
+            grid_min=0.1,
+            grid_max=1.0,
+            grid_resolution=75,
+        )
+
+        defaults = params.get_measurement_interval_defaults()
+        assert defaults["grid_min"] == pytest.approx(0.1)
+        assert defaults["grid_max"] == pytest.approx(1.0)
+        assert defaults["grid_resolution"] == 75
 
     def test_add_custom_parameters(self):
         """Test adding custom parameters."""

@@ -38,7 +38,7 @@ constants = PhysicalConstants(
 exp_params = ExperimentalParameters(
     physical_constants=constants,
     system_dims=SystemDimensions(cavity_levels=2, qubit_levels=2),
-    measurement=MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0]),
+    measurement=MeasurementProtocol(initial_time=-5.0, final_time=5.0, time_interval=1.0),
     initial_state=InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
 )
 
@@ -53,8 +53,8 @@ experiment = SingleQubitExperiment(exp_params, params)
 results = experiment.run_simulation()
 print(results)
 
-# Optimize parameters
-history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=50)
+# Optimize rotation parameters
+history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
 print(history)
 ```
 
@@ -90,7 +90,8 @@ The `SingleQubitExperiment` class is the main interface for running simulations 
 
 **Key Methods:**
 - `run_simulation()`: Execute quantum evolution with current parameters
-- `optimize()`: Gradient-based parameter optimization
+- `optimize_rotations()`: Gradient-based rotation optimization routine
+- `optimize_measurement_times()`: Adaptive measurement interval optimization
 - `get_sensing_contrast()`: Calculate detection metric
 
 **See:** [Experiment Class Reference](./experiment.md)
@@ -112,8 +113,21 @@ Create comprehensive plots and dashboards.
 - `plot_optimization_dashboard()`: Multi-panel optimization visualization
 - `plot_contrast_evolution()`: Tracking sensing contrast
 - `plot_parameter_trajectory()`: Parameter space exploration
+- `plot_time_interval_landscape()`: Measurement interval landscape with uncertainty
+- `plot_pulse_shape_with_measurements()`: Pulse envelope annotated with measurement times
 
 **See:** [Visualization Module](./VISUALIZATION_MODULE.md)
+
+### 6. Measurement Time Optimization
+
+Optimize, visualize, and interpret measurement schedules alongside rotation controls.
+
+**Key Functions:**
+- `compute_time_interval_landscape()`: Evaluate sensing contrast across interval grids
+- `optimize_measurement_times()`: Execute the adaptive measurement interval search
+- `plot_time_interval_landscape()`: Present interval landscapes with system metadata
+
+**See:** [Measurement Time Optimization Guide](./measurement_time_optimization.md)
 
 ## API Reference
 
@@ -154,7 +168,8 @@ Main experiment class for quantum sensing simulations.
 
 **Methods:**
 - `run_simulation() -> OptimizationCallback`: Execute single simulation
-- `optimize(theta_init, num_steps, verbose) -> OptimizationCallback`: Run optimization
+- `optimize_rotations(theta_init, num_steps, verbose) -> OptimizationCallback`: Run optimization
+- `optimize_measurement_times(resolution, mode, batch_size, ...) -> Dict`: Search over measurement intervals
 - `get_sensing_contrast() -> float`: Calculate current contrast
 
 #### TrainableParameters
@@ -213,7 +228,7 @@ print(f"Sensing contrast: {results.best_metrics['contrast']:.4f}")
 
 ```python
 # Run optimization
-history = experiment.optimize(
+history = experiment.optimize_rotations(
     theta_init=[np.pi/2, -np.pi/2],  # Initial guess
     num_steps=100,                    # Optimization steps
     verbose=True,                     # Show progress
@@ -264,7 +279,7 @@ for noise in noise_levels:
     )
     
     exp = SingleQubitExperiment(exp_params_noisy, params)
-    history = exp.optimize(theta_init=[1.5, -1.3], num_steps=50)
+    history = exp.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
     contrasts.append(history.best_contrast)
 
 # Plot results
@@ -273,6 +288,45 @@ plt.xlabel('Noise Level')
 plt.ylabel('Best Contrast')
 plt.xscale('log')
 plt.show()
+```
+
+### Example 5: Measurement Time Optimization
+
+```python
+# Required imports
+import numpy as np
+from qsopt.utils.landscape_analysis import compute_time_interval_landscape
+from qsopt.utils.visualization import plot_time_interval_landscape
+
+# Compute contrast landscape over time intervals
+landscape = compute_time_interval_landscape(
+    exp_params,
+    theta1=np.pi / 2,
+    theta2=-np.pi / 2,
+    resolution=40,
+    mode='continuous',
+    batch_size=10,
+    verbose=False
+)
+
+# Plot with measurement-count subplot enabled
+fig = plot_time_interval_landscape(
+    landscape,
+    exp_params,
+    show_measurement_count=True
+)
+
+# Run adaptive measurement-time optimization
+measurement_results = experiment.optimize_measurement_times(
+    resolution=60,
+    mode='continuous',
+    batch_size=15,
+    min_interval=0.05,
+    max_interval=1.5,
+    verbose=True
+)
+
+print(f"Optimal interval: {measurement_results['best_interval']:.4f}")
 ```
 
 ## Advanced Topics
@@ -385,14 +439,14 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 }
 ```
 
-### Example 5: Saving and Loading Experiment Reports
+### Example 6: Saving and Loading Experiment Reports
 
 Save your experimental configuration for reproducibility:
 
 ```python
 # After running an optimization
 experiment = SingleQubitExperiment(exp_params, params)
-history = experiment.optimize(theta_init=[1.5, -1.3], num_steps=100)
+history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=100)
 
 # Save comprehensive report with all parameters and optimization data
 experiment.save_experiment_report('results/my_experiment.json')

@@ -11,6 +11,7 @@ A streamlined parameter management system with three supported parameter types:
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional, Union
+import warnings
 
 import jax.numpy as jnp
 import numpy as np
@@ -51,11 +52,16 @@ class TrainableParameters:
         self.parameters: List[Parameter] = []
         self.constraints: Dict[int, ParameterConstraints] = {}
         self.optimizers: Dict[int, optax.GradientTransformation] = {}
+        self.rotation_optimizer: Optional[optax.GradientTransformation] = None
+        self.measurement_interval_defaults: Dict[str, Dict[str, Optional[Union[float, int]]]] = {}
     
-    def add_rotation_angles(self, names: Union[str, List[str]], 
-                           initial_values: Union[float, List[float], np.ndarray],
-                           optimizer: Optional[optax.GradientTransformation] = None,
-                           trainable: Union[bool, List[bool]] = True) -> None:
+    def add_rotation_angles(
+        self,
+        names: Union[str, List[str]],
+        initial_values: Union[float, List[float], np.ndarray],
+        optimizer: Optional[optax.GradientTransformation] = None,
+        trainable: Union[bool, List[bool]] = True,
+    ) -> None:
         """Add rotation angle parameters (periodic, 0 to 2π).
         
         Args:
@@ -79,8 +85,16 @@ class TrainableParameters:
             if len(trainable_list) != len(names_list):
                 raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
         
-        # Use default optimizer if not provided
-        param_optimizer = optimizer or optax.adam(0.01)
+        # Enforce a single optimizer for all rotation parameters
+        if self.rotation_optimizer is None:
+            self.rotation_optimizer = optimizer or optax.adam(0.01)
+        elif optimizer is not None and optimizer is not self.rotation_optimizer:
+            warnings.warn(
+                "Rotation optimizer already configured; ignoring new optimizer argument.",
+                UserWarning,
+                stacklevel=2,
+            )
+        param_optimizer = self.rotation_optimizer
         
         for param_name, value, is_trainable in zip(names_list, values, trainable_list):
             idx = len(self.parameters)
@@ -93,27 +107,37 @@ class TrainableParameters:
                 period=2 * np.pi
             )
             self.optimizers[idx] = param_optimizer
-    
-    def add_measurement_interval(self, names: Union[str, List[str]], 
-                             initial_values: Union[float, List[float], np.ndarray],
-                             min_interval: float = 1e-6,
-                             optimizer: Optional[optax.GradientTransformation] = None,
-                             trainable: Union[bool, List[bool]] = True) -> None:
+
+    def add_measurement_interval(
+        self,
+        names: Union[str, List[str]],
+        initial_values: Union[float, List[float], np.ndarray],
+        min_interval: float = 1e-6,
+        trainable: Union[bool, List[bool]] = False,
+        grid_min: Optional[float] = None,
+        grid_max: Optional[float] = None,
+        grid_resolution: Optional[int] = None,
+    ) -> None:
         """Add measurement interval parameters (time_interval for measurement protocol).
         
-        These parameters represent the time interval between consecutive measurements.
-        They must be strictly positive (> 0).
+    These parameters represent the time interval between consecutive measurements.
+    They must be strictly positive (> 0). Measurement intervals are not optimized
+    via gradient descent; instead, optional ``grid_min``, ``grid_max``, and
+    ``grid_resolution`` values are stored for default grid-search sweeps.
         
         Args:
             names: Parameter name(s) (typically 'time_interval')
             initial_values: Initial interval value(s) (must be > 0)
             min_interval: Minimum allowed interval (default: 1e-6, must be > 0)
-            optimizer: Optimizer for trainable parameters (default: Adam with lr=0.001)
-            trainable: Whether parameter(s) are trainable (default: True).
+            trainable: Whether parameter(s) are marked as trainable (default: False).
                       Can be a single bool or a list matching the number of parameters.
+            grid_min: Optional default lower bound for grid search
+            grid_max: Optional default upper bound for grid search
+            grid_resolution: Optional default resolution for grid search
         
         Raises:
-            ValueError: If initial values are not positive or if min_interval is not positive
+            ValueError: If initial values are not positive, if min_interval is not positive,
+                or if grid_resolution is provided but not positive
         """
         names_list = [names] if isinstance(names, str) else names
         values = np.atleast_1d(initial_values)
@@ -136,8 +160,8 @@ class TrainableParameters:
             if len(trainable_list) != len(names_list):
                 raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
         
-        # Use a smaller learning rate for time intervals (more sensitive parameter)
-        param_optimizer = optimizer or optax.adam(0.001)
+        if grid_resolution is not None and grid_resolution <= 0:
+            raise ValueError(f"Grid resolution must be positive when provided, got {grid_resolution}")
         
         for param_name, value, is_trainable in zip(names_list, values, trainable_list):
             idx = len(self.parameters)
@@ -150,7 +174,11 @@ class TrainableParameters:
                 max_value=None,  # No upper bound
                 periodic=False
             )
-            self.optimizers[idx] = param_optimizer
+            self.measurement_interval_defaults[param_name] = {
+                "grid_min": grid_min,
+                "grid_max": grid_max,
+                "grid_resolution": grid_resolution,
+            }
     
     def add_custom_parameters(self, names: Union[str, List[str]], 
                              initial_values: Union[float, List[float], np.ndarray],
@@ -231,6 +259,13 @@ class TrainableParameters:
         for param in self.parameters:
             if param.param_type == ParameterType.MEASUREMENT_TIME and param.name in times:
                 param.value = times[param.name]
+
+    def get_measurement_interval_defaults(self) -> Dict[str, Optional[Union[float, int]]]:
+        """Return stored default grid-search settings for measurement intervals."""
+        if not self.measurement_interval_defaults:
+            return {}
+        first_defaults = next(iter(self.measurement_interval_defaults.values()))
+        return dict(first_defaults)
     
     def get_optimizer(self, parameter_index: int) -> optax.GradientTransformation:
         """Get the optimizer for a specific parameter."""

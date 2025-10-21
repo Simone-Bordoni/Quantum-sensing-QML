@@ -1,4 +1,0 @@
-Pylint Analysis Report
-==================================================
-
-No issues found! 🎉

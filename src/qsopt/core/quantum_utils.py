@@ -22,21 +22,12 @@ def gu(t, **kwargs):
     """
     Time-dependent coupling function for input cavity transparency.
     
-    This function calculates the time-dependent coupling strength for a cavity
-    with Gaussian temporal mode matching. The coupling is normalized to ensure
-    proper energy exchange during the pulse interaction.
-    
     Args:
         t: float or JAX array, time variable
         **kwargs: Dictionary containing 'sigma' parameter (pulse bandwidth)
         
     Returns:
         JAX array: Normalized coupling strength g(t)
-        
-    Physical Interpretation:
-        The coupling function represents the effective interaction strength between
-        the input field and the cavity mode, accounting for the temporal profile
-        of the input pulse. The erfc function ensures causality and smooth turn-on.
     """
     sigma = kwargs.get("sigma", 0.1)
     dx = sigma * t
@@ -96,11 +87,6 @@ def generate_single_qubit_operators(
         
     Returns:
         Dictionary containing all operators in composite space
-        
-    Example:
-        >>> operators = generate_single_qubit_operators(2, 2, 2)
-        >>> sigma_z = operators['sigma_z']
-        >>> P0 = operators['P0']
     """
     # Generate operators with JAX backend for autodiff compatibility
     with qt.CoreOptions(default_dtype="jax"):
