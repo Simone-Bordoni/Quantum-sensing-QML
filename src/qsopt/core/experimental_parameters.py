@@ -78,7 +78,7 @@ class MeasurementProtocol:
         initial_time: Initial time for interval mode (absolute time)
         final_time: Final time for interval mode (absolute time)
         time_interval: Time interval between measurements for interval mode (absolute time)
-    initial_time_uncertainty: Initial time uncertainty specification (absolute time).
+        initial_time_uncertainty: Initial time uncertainty specification (absolute time).
                  Can be a float or special string keywords (e.g., 'max_interval') that
                  will be resolved dynamically. When numeric, represents the half-width of
                  a uniform distribution [-initial_time_uncertainty, initial_time_uncertainty].

@@ -778,7 +778,6 @@ class SingleQubitExperiment:
             grads, (prob_with, prob_without, sensing_contrast) = \
                 jax.grad(objective_function, has_aux=True)(params)
             
-            print(grads)
             # Track best parameters
             if sensing_contrast > best_contrast:
                 best_contrast = sensing_contrast
