@@ -320,8 +320,26 @@ def compute_time_interval_landscape(
             print(f"  Initial time uncertainty: ±{uncertainty_val:.4f}{extra}")
     
     # Generate time interval values based on mode
+    # Helper to select approximately uniform samples from a sorted array.
+    def _sample_uniform(values: np.ndarray, count: int) -> np.ndarray:
+        """Select ``count`` approximately uniform samples from ``values``."""
+        if values.size == 0:
+            raise ValueError("No candidate intervals available within the requested bounds")
+        if count == 1:
+            return np.array([values[values.size // 2]])
+        if values.size == 1:
+            return np.repeat(values, count)
+
+        positions = np.linspace(0, values.size - 1, count)
+        indices = np.round(positions).astype(int)
+        indices = np.clip(indices, 0, values.size - 1)
+        # Ensure non-decreasing indices to keep the sequence sorted
+        for idx in range(1, len(indices)):
+            if indices[idx] < indices[idx - 1]:
+                indices[idx] = indices[idx - 1]
+        return values[indices]
+
     if mode == 'continuous':
-        # Continuous: linearly spaced from min to max
         min_val = total_time / 100.0 if min_interval is None else float(min_interval)
         max_val = total_time if max_interval is None else float(max_interval)
         if min_val <= 0:
@@ -334,7 +352,29 @@ def compute_time_interval_landscape(
             raise ValueError(
                 f"min_interval ({min_val}) must be less than max_interval ({max_val})"
             )
-        interval_vals = np.linspace(min_val, max_val, resolution)
+
+        # Generate ideal continuous targets and approximate using available spacing.
+        target_vals = np.linspace(min_val, max_val, resolution)
+
+        # Derive feasible intervals based on integer partitions of the total time
+        n_min = max(1, int(math.ceil(total_time / max_val)))
+        n_max = int(math.floor(total_time / min_val))
+        candidate_ns = np.arange(n_min, n_max + 1, dtype=int)
+        candidate_intervals = total_time / candidate_ns.astype(float)
+        candidate_intervals = np.sort(candidate_intervals)
+
+        if candidate_intervals.size == 0:
+            interval_vals = target_vals
+        else:
+            selected = np.empty_like(target_vals)
+            prev_idx = 0
+            for i, target in enumerate(target_vals):
+                idx = int(np.abs(candidate_intervals - target).argmin())
+                if i > 0 and idx < prev_idx:
+                    idx = prev_idx
+                prev_idx = idx
+                selected[i] = candidate_intervals[idx]
+            interval_vals = selected
     else:  # mode == 'discrete'
         max_val = total_time if max_interval is None else float(max_interval)
         if max_val <= 0 or max_val > total_time:
@@ -343,7 +383,6 @@ def compute_time_interval_landscape(
             )
 
         if min_interval is None:
-            # Default to the smallest interval produced by the requested resolution
             min_val = total_time / float(resolution)
         else:
             min_val = float(min_interval)
@@ -364,18 +403,11 @@ def compute_time_interval_landscape(
                 f"Computed n_start={n_start}, n_end={n_end}."
             )
 
-        n_values = np.arange(n_start, n_end + 1, dtype=int)
-        if n_values.size == 0:
-            n_values = np.array([n_start], dtype=int)
+        candidate_ns = np.arange(n_start, n_end + 1, dtype=int)
+        candidate_intervals = total_time / candidate_ns.astype(float)
+        candidate_intervals = np.sort(candidate_intervals)
 
-        if n_values.size >= resolution:
-            n_values = n_values[:resolution]
-        else:
-            # Pad with the last valid interval to maintain desired resolution
-            pad_count = resolution - n_values.size
-            n_values = np.concatenate([n_values, np.repeat(n_values[-1], pad_count)])
-
-        interval_vals = total_time / n_values.astype(float)
+        interval_vals = _sample_uniform(candidate_intervals, resolution)
     
     # Initialize result arrays
     contrast_vals = np.zeros(resolution)

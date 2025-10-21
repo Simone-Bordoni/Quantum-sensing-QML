@@ -5,6 +5,7 @@ Tests for Simplified Trainable Parameters Classes
 Test suite for the simplified TrainableParameters class.
 """
 
+import inspect
 import numpy as np
 import optax
 import pytest
@@ -144,25 +145,27 @@ class TestTrainableParameters:
         """Test adding custom parameters."""
         constraints = ParameterConstraints(min_value=-1.0, max_value=1.0)
         params = TrainableParameters()
-        params.add_custom_parameters(["x", "y"], [0.5, -0.3], constraints)
+        with pytest.warns(UserWarning, match="Custom parameter optimization is not supported"):
+            params.add_custom_parameters(["x", "y"], [0.5, -0.3], constraints)
         
         assert len(params) == 2
         vector = params.get_parameter_vector()
         assert np.allclose(vector, [0.5, -0.3])
-        
-        # Check optimizers were created
-        optimizers = params.get_all_optimizers()
-        assert len(optimizers) == 2
+        assert all(not p.trainable for p in params.parameters)
 
-    def test_add_custom_parameters_with_optimizer(self):
-        """Test adding custom parameters with custom optimizer."""
+        # No optimizers should be returned for custom parameters
+        optimizers = params.get_all_optimizers()
+        assert len(optimizers) == 0
+
+    def test_add_custom_parameters_with_optimizer_argument(self):
+        """Ensure custom optimizer argument is no longer accepted for custom parameters."""
         constraints = ParameterConstraints(min_value=-1.0, max_value=1.0)
-        custom_optimizer = optax.sgd(0.05)
         params = TrainableParameters()
-        params.add_custom_parameters("x", 0.5, constraints, optimizer=custom_optimizer)
-        
-        retrieved_optimizer = params.get_optimizer(0)
-        assert retrieved_optimizer is custom_optimizer
+
+        import inspect
+
+        signature = inspect.signature(params.add_custom_parameters)
+        assert "optimizer" not in signature.parameters
 
     def test_parameter_vector_operations(self):
         """Test parameter vector get/set operations."""
@@ -188,7 +191,8 @@ class TestTrainableParameters:
         
         # Add custom parameter (bounded)
         constraints = ParameterConstraints(min_value=-1.0, max_value=1.0)
-        params.add_custom_parameters("x", 0.0, constraints)
+        with pytest.warns(UserWarning, match="Custom parameter optimization is not supported"):
+            params.add_custom_parameters("x", 0.0, constraints)
         
         # Test constraint application
         test_values = np.array([7.0, 2.0])  # Should be [7%2π, 1.0]
@@ -220,7 +224,7 @@ class TestTrainableParameters:
         """Test getting optimizer with invalid index."""
         params = TrainableParameters()
         
-        with pytest.raises(ValueError, match="No optimizer found for parameter index 0"):
+        with pytest.raises(ValueError, match="Invalid parameter index 0"):
             params.get_optimizer(0)
 
     def test_validation_errors(self):
@@ -244,7 +248,8 @@ class TestTrainableParameters:
         """Test string representation."""
         params = TrainableParameters()
         params.add_rotation_angles("theta", 0.0)
-        params.add_custom_parameters("x", 2.0)
+        with pytest.warns(UserWarning):
+            params.add_custom_parameters("x", 2.0)
         
         repr_str = repr(params)
         # Check structure
@@ -304,17 +309,19 @@ class TestTrainableParameters:
         constraints = ParameterConstraints(min_value=-1.0, max_value=1.0)
         
         # Single with trainable=False
-        params.add_custom_parameters("x", 0.5, constraints, trainable=False)
+        with pytest.warns(UserWarning):
+            params.add_custom_parameters("x", 0.5, constraints, trainable=False)
         assert params.parameters[0].trainable is False
         
         # Multiple with mixed flags
-        params.add_custom_parameters(
-            ["y", "z"], 
-            [0.3, 0.7], 
-            constraints, 
-            trainable=[True, False]
-        )
-        assert params.parameters[1].trainable is True
+        with pytest.warns(UserWarning):
+            params.add_custom_parameters(
+                ["y", "z"],
+                [0.3, 0.7],
+                constraints,
+                trainable=[True, False],
+            )
+        assert params.parameters[1].trainable is False
         assert params.parameters[2].trainable is False
     
     def test_get_trainable_indices(self):

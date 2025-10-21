@@ -51,7 +51,6 @@ class TrainableParameters:
         """Initialize empty parameter manager."""
         self.parameters: List[Parameter] = []
         self.constraints: Dict[int, ParameterConstraints] = {}
-        self.optimizers: Dict[int, optax.GradientTransformation] = {}
         self.rotation_optimizer: Optional[optax.GradientTransformation] = None
         self.measurement_interval_defaults: Dict[str, Dict[str, Optional[Union[float, int]]]] = {}
     
@@ -67,7 +66,7 @@ class TrainableParameters:
         Args:
             names: Parameter name(s)
             initial_values: Initial angle value(s) in radians
-            optimizer: Optimizer for trainable parameters (default: Adam with lr=0.01)
+            optimizer: Optimizer for trainable parameters (default: SGD with lr=0.01)
             trainable: Whether parameter(s) are trainable (default: True).
                       Can be a single bool or a list matching the number of parameters.
         """
@@ -85,16 +84,8 @@ class TrainableParameters:
             if len(trainable_list) != len(names_list):
                 raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
         
-        # Enforce a single optimizer for all rotation parameters
-        if self.rotation_optimizer is None:
-            self.rotation_optimizer = optimizer or optax.adam(0.01)
-        elif optimizer is not None and optimizer is not self.rotation_optimizer:
-            warnings.warn(
-                "Rotation optimizer already configured; ignoring new optimizer argument.",
-                UserWarning,
-                stacklevel=2,
-            )
-        param_optimizer = self.rotation_optimizer
+        # Set or enforce rotation optimizer
+        self.rotation_optimizer = optimizer or self.rotation_optimizer or optax.sgd(0.01)
         
         for param_name, value, is_trainable in zip(names_list, values, trainable_list):
             idx = len(self.parameters)
@@ -106,14 +97,13 @@ class TrainableParameters:
                 periodic=True,
                 period=2 * np.pi
             )
-            self.optimizers[idx] = param_optimizer
 
     def add_measurement_interval(
         self,
-        names: Union[str, List[str]],
-        initial_values: Union[float, List[float], np.ndarray],
+        name: Union[str, List[str]],
+        initial_value: Union[float, List[float], np.ndarray],
         min_interval: float = 1e-6,
-        trainable: Union[bool, List[bool]] = False,
+        trainable: Union[bool, List[bool]] = True,
         grid_min: Optional[float] = None,
         grid_max: Optional[float] = None,
         grid_resolution: Optional[int] = None,
@@ -129,7 +119,7 @@ class TrainableParameters:
             names: Parameter name(s) (typically 'time_interval')
             initial_values: Initial interval value(s) (must be > 0)
             min_interval: Minimum allowed interval (default: 1e-6, must be > 0)
-            trainable: Whether parameter(s) are marked as trainable (default: False).
+            trainable: Whether parameter(s) are marked as trainable (default: True).
                       Can be a single bool or a list matching the number of parameters.
             grid_min: Optional default lower bound for grid search
             grid_max: Optional default upper bound for grid search
@@ -139,9 +129,9 @@ class TrainableParameters:
             ValueError: If initial values are not positive, if min_interval is not positive,
                 or if grid_resolution is provided but not positive
         """
-        names_list = [names] if isinstance(names, str) else names
-        values = np.atleast_1d(initial_values)
-        
+        names_list = [name] if isinstance(name, str) else name
+        values = np.atleast_1d(initial_value)
+
         if len(names_list) != len(values):
             raise ValueError(f"Number of names ({len(names_list)}) must match number of values ({len(values)})")
         
@@ -180,11 +170,13 @@ class TrainableParameters:
                 "grid_resolution": grid_resolution,
             }
     
-    def add_custom_parameters(self, names: Union[str, List[str]], 
-                             initial_values: Union[float, List[float], np.ndarray],
-                             constraints: Optional[ParameterConstraints] = None,
-                             optimizer: Optional[optax.GradientTransformation] = None,
-                             trainable: Union[bool, List[bool]] = True) -> None:
+    def add_custom_parameters(
+        self,
+        names: Union[str, List[str]],
+        initial_values: Union[float, List[float], np.ndarray],
+        constraints: Optional[ParameterConstraints] = None,
+        trainable: Union[bool, List[bool]] = True,
+    ) -> None:
         """Add custom parameters with user-defined constraints.
         
         Args:
@@ -210,14 +202,19 @@ class TrainableParameters:
                 raise ValueError(f"Number of trainable flags ({len(trainable_list)}) must match number of parameters ({len(names_list)})")
         
         default_constraints = constraints or ParameterConstraints()
-        param_optimizer = optimizer or optax.sgd(0.01)
         
         for param_name, value, is_trainable in zip(names_list, values, trainable_list):
+            if is_trainable:
+                warnings.warn(
+                    "Custom parameter optimization is not supported; marking parameter as fixed.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                is_trainable = False
             idx = len(self.parameters)
             param = Parameter(idx, param_name, ParameterType.CUSTOM, float(value), is_trainable)
             self.parameters.append(param)
             self.constraints[idx] = default_constraints
-            self.optimizers[idx] = param_optimizer
     
     def get_parameter_vector(self) -> np.ndarray:
         """Get all parameter values as a vector."""
@@ -269,13 +266,28 @@ class TrainableParameters:
     
     def get_optimizer(self, parameter_index: int) -> optax.GradientTransformation:
         """Get the optimizer for a specific parameter."""
-        if parameter_index not in self.optimizers:
-            raise ValueError(f"No optimizer found for parameter index {parameter_index}")
-        return self.optimizers[parameter_index]
+        if parameter_index < 0 or parameter_index >= len(self.parameters):
+            raise ValueError(f"Invalid parameter index {parameter_index}")
+
+        param = self.parameters[parameter_index]
+        if param.param_type != ParameterType.ROTATION_ANGLE:
+            raise ValueError(
+                "Optimizers are only defined for rotation angle parameters in this configuration."
+            )
+
+        if self.rotation_optimizer is None:
+            raise ValueError("Rotation optimizer has not been configured.")
+        return self.rotation_optimizer
     
     def get_all_optimizers(self) -> Dict[int, optax.GradientTransformation]:
         """Get all optimizers."""
-        return self.optimizers.copy()
+        if self.rotation_optimizer is None:
+            return {}
+        return {
+            param.index: self.rotation_optimizer
+            for param in self.parameters
+            if param.param_type == ParameterType.ROTATION_ANGLE and param.trainable
+        }
     
     def get_trainable_indices(self) -> List[int]:
         """Get indices of trainable parameters."""

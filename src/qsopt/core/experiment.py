@@ -13,7 +13,7 @@ and are disabled in .pylintrc. The code executes correctly at runtime.
 """Quantum sensing experiment module."""
 # type: ignore  # Suppress Pylance type warnings for JAX arrays
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -21,13 +21,12 @@ import numpy as np
 import optax
 import qutip as qt
 from qsopt.core.experimental_parameters import ExperimentalParameters
-from qsopt.core.trainable_parameters import TrainableParameters, ParameterType
+from qsopt.core.trainable_parameters import TrainableParameters, ParameterType, Parameter
 from qsopt.core.quantum_utils import gu
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.quantum_utils import (
     generate_single_qubit_operators,
     generate_initial_state,
-    apply_single_qubit_rotation,
     create_measurement_projector,
 )
 
@@ -74,6 +73,7 @@ class SingleQubitExperiment:
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_caches()
+        self._ensure_measurement_interval_sync()
 
     def _generate_operators(self):
         """
@@ -266,6 +266,24 @@ class SingleQubitExperiment:
             )
         
         return self._cached_solvers['no_interaction']
+
+    def _build_rotation_gate(self, axis: str, theta: float) -> qt.Qobj:
+        """Construct embedded single-qubit rotation gate for the specified axis."""
+        if self.operators is None:
+            raise RuntimeError("Operators not initialized")
+
+        axis_key = f"sigma_{axis.lower()}"
+        if axis_key not in self.operators:
+            raise ValueError(f"Unsupported rotation axis '{axis}'. Expected one of x, y, z.")
+
+        generator = self.operators[axis_key]
+        return (-1j * generator * theta / 2).expm()
+
+    def _prepare_rotation_gates(self, theta1: float, theta2: float) -> Tuple[qt.Qobj, qt.Qobj]:
+        """Build rotation gates for optimization angles θ₁ and θ₂."""
+        rotation_theta1 = self._build_rotation_gate('y', theta1)
+        rotation_theta2 = self._build_rotation_gate('y', theta2)
+        return rotation_theta1, rotation_theta2
     
     def ry_rotation(self, rho: qt.Qobj, theta: float) -> qt.Qobj:
         """
@@ -282,17 +300,8 @@ class SingleQubitExperiment:
         Returns:
             QuTiP Qobj: Rotated density matrix
         """
-        if self.operators is None:
-            raise RuntimeError("Operators not initialized")
-        
-        # Use utility function for rotation
-        return apply_single_qubit_rotation(
-            rho,
-            theta,
-            'y',
-            self.operators['I_field'],
-            self.operators['I_cavity']
-        )
+        rotation_gate = self._build_rotation_gate('y', theta)
+        return rotation_gate * rho * rotation_gate.dag()  # type: ignore
     
     def proj0(self, rho: qt.Qobj) -> qt.Qobj:
         """
@@ -339,10 +348,16 @@ class SingleQubitExperiment:
         P1 = self._cached_projector_1
         return jnp.real((P1 * rho * P1.dag()).tr())  # type: ignore
     
-    def simulation(self, solver: qt.MESolver, rho: qt.Qobj, 
-                   theta1: float, theta2: float, 
-                   measurements: Union[List[float], np.ndarray],
-                   args: Optional[Dict] = None):
+    def simulation(
+        self,
+        solver: qt.MESolver,
+        rho: qt.Qobj,
+        theta1: float,
+        theta2: float,
+        measurements: Union[List[float], np.ndarray],
+        args: Optional[Dict] = None,
+        precomputed_rotations: Optional[Tuple[qt.Qobj, qt.Qobj]] = None,
+    ) -> jnp.ndarray:
         """
         Complete quantum photon detection simulation workflow.
         
@@ -360,6 +375,8 @@ class SingleQubitExperiment:
             theta2: float/JAX array, Second Ry rotation angle 
             measurements: List or array of measurement times (sorted)
             args: dict, System parameters (optional, uses experimental_params if None)
+            precomputed_rotations: Optional tuple of rotation gates ``(R_y(θ₁), R_y(θ₂))``
+                to avoid recomputing exponentials when shared across simulations.
                 
         Returns:
             float: Probability of detecting at least one excited state
@@ -367,36 +384,39 @@ class SingleQubitExperiment:
         """
         if args is None:
             args = {'sigma': self.experimental_params.inverse_pulse_width}
-            
-        tmeas = measurements
-        probability_list = []
-        
-        # Process each measurement interval sequentially
-        for kt in range(len(tmeas)-1):
-            t0, t1 = tmeas[kt], tmeas[kt+1]
-            
-            # Step 1: Apply first rotation Ry(θ₁) for state preparation
-            rho_after_ry = self.ry_rotation(rho, theta1)
-            
-            # Step 2: Time evolution under system Hamiltonian H(t)
+        if self._cached_projector_0 is None:
+            raise RuntimeError("Measurement projectors are not initialized.")
+
+        measurement_array = np.asarray(measurements, dtype=float)
+        if measurement_array.ndim != 1 or measurement_array.size < 2:
+            raise ValueError("Measurement times must be a 1D array with at least two entries.")
+
+        if precomputed_rotations is None:
+            rotation_theta1, rotation_theta2 = self._prepare_rotation_gates(theta1, theta2)
+        else:
+            rotation_theta1, rotation_theta2 = precomputed_rotations
+
+        rotation_theta1_dag = rotation_theta1.dag()
+        rotation_theta2_dag = rotation_theta2.dag()
+        projector_0 = self._cached_projector_0
+
+        rho_current = rho
+        prob_all_ground = jnp.array(1.0)
+
+        for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
+            rho_after_ry = rotation_theta1 * rho_current * rotation_theta1_dag  # type: ignore
             evolution_result = solver.run(rho_after_ry, [t0, t1], args=args)
             rho_evolved = evolution_result.states[-1]
-            
-            # Step 3: Apply second rotation Ry(θ₂) for measurement optimization
-            rho_final = self.ry_rotation(rho_evolved, theta2)
-            
-            # Step 4: Measure qubit in |0⟩ state (ground state probability)
-            prob_ground = self.prob0(rho_final)
-            probability_list.append(prob_ground)
-            
-            # Step 5: Project onto measurement result for conditional evolution
-            rho = self.proj0(rho_final)  # Always project to |0⟩
-            rho = rho / rho.tr()          # Normalize
 
-        # Calculate detection probability: P(at least one |1⟩) = 1 - P(all |0⟩)
-        prob_all_ground = jnp.prod(jnp.array(probability_list))
+            rho_final = rotation_theta2 * rho_evolved * rotation_theta2_dag  # type: ignore
+            prob_ground = jnp.real((projector_0 * rho_final * projector_0).tr())  # type: ignore
+            prob_all_ground = prob_all_ground * prob_ground
+
+            rho_projected = projector_0 * rho_final * projector_0  # type: ignore  # Always project to |0⟩
+            trace_val = rho_projected.tr()
+            rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
+
         prob_detection = 1 - prob_all_ground
-
         return prob_detection
     
     def run_simulation(self, batch_size: int = 1) -> OptimizationCallback:
@@ -423,6 +443,8 @@ class SingleQubitExperiment:
         Raises:
             ValueError: If fewer than 2 rotation parameters are defined
         """
+        self._ensure_measurement_interval_sync()
+
         # Get rotation parameters using the dedicated method
         rotation_angles = self.trainable_params.get_rotation_angles()
         
@@ -438,6 +460,8 @@ class SingleQubitExperiment:
         
         # Get initial state and solvers
         rho0 = self._cached_initial_state
+        if rho0 is None:
+            raise RuntimeError("Initial state cache is not initialized.")
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
         
@@ -448,13 +472,29 @@ class SingleQubitExperiment:
         else:
             measurement_sequences = [measurement_times_batch[i] for i in range(measurement_times_batch.shape[0])]
 
+        rotation_pair = self._prepare_rotation_gates(theta1, theta2)
+
         # Run simulations with batch averaging over uncertainty realizations
         prob_with_list = []
         prob_without_list = []
 
         for measurement_times in measurement_sequences:
-            prob_with_batch = self.simulation(solver_with, rho0, theta1, theta2, measurement_times)
-            prob_without_batch = self.simulation(solver_without, rho0, theta1, theta2, measurement_times)
+            prob_with_batch = self.simulation(
+                solver_with,
+                rho0,
+                theta1,
+                theta2,
+                measurement_times,
+                precomputed_rotations=rotation_pair,
+            )
+            prob_without_batch = self.simulation(
+                solver_without,
+                rho0,
+                theta1,
+                theta2,
+                measurement_times,
+                precomputed_rotations=rotation_pair,
+            )
 
             prob_with_list.append(prob_with_batch)
             prob_without_list.append(prob_without_batch)
@@ -480,6 +520,7 @@ class SingleQubitExperiment:
     
     def _get_cached_measurement_times(self) -> List[float]:
         """Return cached measurement times, ensuring they are up to date."""
+        self._ensure_measurement_interval_sync()
         times_list = self.experimental_params._measurement_times_list
         if times_list is None:
             self.experimental_params._update_measurement_times()
@@ -487,6 +528,35 @@ class SingleQubitExperiment:
         if times_list is None:
             return []
         return [float(t) for t in times_list]
+
+    def _get_measurement_interval_parameter(self) -> Optional[Parameter]:
+        """Return the first measurement-interval parameter if configured."""
+        for param in self.trainable_params.parameters:
+            if param.param_type == ParameterType.MEASUREMENT_TIME:
+                return param
+        return None
+
+    def _ensure_measurement_interval_sync(self) -> float:
+        """Ensure experiment and trainable parameter time intervals stay aligned."""
+        param = self._get_measurement_interval_parameter()
+        if param is not None:
+            interval = float(param.value)
+            if interval <= 0:
+                raise ValueError("Measurement interval in trainable parameters must be positive")
+            current = float(self.experimental_params.measurement.time_interval)
+            if not np.isclose(current, interval):
+                self.experimental_params.measurement.time_interval = interval
+                self.experimental_params.measurement.measurement_times = None
+                self.experimental_params._update_measurement_times()
+        else:
+            interval = float(self.experimental_params.measurement.time_interval)
+            if interval <= 0:
+                raise ValueError("Measurement interval must be positive")
+        return interval
+
+    def get_measurement_interval(self) -> float:
+        """Return the unified measurement interval value used by the experiment."""
+        return self._ensure_measurement_interval_sync()
 
     def optimize_rotations(self, 
                  num_steps: int = 100,
@@ -525,6 +595,8 @@ class SingleQubitExperiment:
         # Reset callback at start of new optimization
         callback.reset()
         
+        self._ensure_measurement_interval_sync()
+
         # Get initial state
         rho0 = self._cached_initial_state
         if rho0 is None:
@@ -601,13 +673,29 @@ class SingleQubitExperiment:
             theta0_raw, theta1_raw = opt_params
             theta0 = theta0_raw if trainable_mask[0] else jax.lax.stop_gradient(theta0_raw)
             theta1 = theta1_raw if trainable_mask[1] else jax.lax.stop_gradient(theta1_raw)
+
+            rotation_pair = self._prepare_rotation_gates(theta0, theta1)
             
             if batch_size == 1:
                 # Single realization: use current measurement times (supports uncertainty)
                 measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty()
                 # Calculate sensing contrast for this realization
-                prob_with = self.simulation(solver_with, rho0, theta0, theta1, measurement_times_batch)
-                prob_without = self.simulation(solver_without, rho0, theta0, theta1, measurement_times_batch)
+                prob_with = self.simulation(
+                    solver_with,
+                    rho0,
+                    theta0,
+                    theta1,
+                    measurement_times_batch,
+                    precomputed_rotations=rotation_pair,
+                )
+                prob_without = self.simulation(
+                    solver_without,
+                    rho0,
+                    theta0,
+                    theta1,
+                    measurement_times_batch,
+                    precomputed_rotations=rotation_pair,
+                )
                 sensing_contrast = prob_with - prob_without
                 
             else:
@@ -619,10 +707,24 @@ class SingleQubitExperiment:
                 for i in range(batch_size):
                     measurement_times = measurement_times_batch[i]
                     prob_with_batch = prob_with_batch.at[i].set(
-                        self.simulation(solver_with, rho0, theta0, theta1, measurement_times)
+                        self.simulation(
+                            solver_with,
+                            rho0,
+                            theta0,
+                            theta1,
+                            measurement_times,
+                            precomputed_rotations=rotation_pair,
+                        )
                     )
                     prob_without_batch = prob_without_batch.at[i].set(
-                        self.simulation(solver_without, rho0, theta0, theta1, measurement_times)
+                        self.simulation(
+                            solver_without,
+                            rho0,
+                            theta0,
+                            theta1,
+                            measurement_times,
+                            precomputed_rotations=rotation_pair,
+                        )
                     )
                 
                 # Average over batch using JAX operations (efficient)
@@ -646,12 +748,20 @@ class SingleQubitExperiment:
                 f"    Initial rotation parameters: {theta1_name}={theta_initial_vals[0]:.3f} rad{theta1_status}, "
                 f"{theta2_name}={theta_initial_vals[1]:.3f} rad{theta2_status}"
             )
-            print(f"    Optimizer: {type(optimizer).__name__}")
             uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:
                 spec = self.experimental_params.initial_time_uncertainty_spec
                 extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
                 print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
+            measurement_params = [
+                param for param in self.trainable_params.parameters
+                if param.param_type == ParameterType.MEASUREMENT_TIME
+            ]
+            if measurement_params:
+                print("    Measurement interval:")
+                for param in measurement_params:
+                    status = " [FIXED]" if not param.trainable else ""
+                    print(f"        {param.name}={param.value:.6f}{status}")
             print("="*70)
             print(f"{'Step':<6}{theta1_name:<12}{theta2_name:<12}{'Contrast':<12}{'Grad Norm'}")
             print("-"*70)
@@ -769,6 +879,8 @@ class SingleQubitExperiment:
 
         from qsopt.utils.landscape_analysis import compute_time_interval_landscape
 
+        self._ensure_measurement_interval_sync()
+
         rotation_angles = self.rotation_angles
         if len(rotation_angles) < 2:
             raise ValueError("Need at least 2 rotation angle parameters")
@@ -776,6 +888,7 @@ class SingleQubitExperiment:
         theta_values = list(rotation_angles.values())
         theta1 = theta_values[0]
         theta2 = theta_values[1]
+
 
         interval_defaults = self.trainable_params.get_measurement_interval_defaults()
         default_resolution = interval_defaults.get('grid_resolution') if interval_defaults else None
@@ -788,6 +901,20 @@ class SingleQubitExperiment:
             resolved_min_interval = interval_defaults.get('grid_min')
         if resolved_max_interval is None and interval_defaults:
             resolved_max_interval = interval_defaults.get('grid_max')
+
+        if resolved_min_interval is not None:
+            resolved_min_interval = float(resolved_min_interval)
+        if resolved_max_interval is not None:
+            resolved_max_interval = float(resolved_max_interval)
+        if (
+            resolved_min_interval is not None
+            and resolved_max_interval is not None
+            and resolved_min_interval > resolved_max_interval
+        ):
+            resolved_min_interval, resolved_max_interval = (
+                resolved_max_interval,
+                resolved_min_interval,
+            )
 
         results = compute_time_interval_landscape(
             self.experimental_params,
@@ -821,6 +948,8 @@ class SingleQubitExperiment:
         results_with_best['best_interval'] = best_interval
         results_with_best['best_contrast'] = best_contrast
         results_with_best['best_index'] = best_index
+
+        self._ensure_measurement_interval_sync()
 
         return results_with_best
 
@@ -871,6 +1000,7 @@ class SingleQubitExperiment:
         save_path_obj.parent.mkdir(parents=True, exist_ok=True)
         
         # Build report dictionary
+        self._ensure_measurement_interval_sync()
         cached_times = self._get_cached_measurement_times()
         report = {
             "experiment_type": "SingleQubitExperiment",
