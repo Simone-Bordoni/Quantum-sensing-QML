@@ -308,21 +308,20 @@ class TestTrainableParameters:
         params = TrainableParameters()
         constraints = ParameterConstraints(min_value=-1.0, max_value=1.0)
         
-        # Single with trainable=False
-        with pytest.warns(UserWarning):
-            params.add_custom_parameters("x", 0.5, constraints, trainable=False)
+        # Single with trainable=False (no warning expected, already False)
+        params.add_custom_parameters("x", 0.5, constraints, trainable=False)
         assert params.parameters[0].trainable is False
         
-        # Multiple with mixed flags
+        # Multiple with mixed flags (warning only for True values)
         with pytest.warns(UserWarning):
             params.add_custom_parameters(
                 ["y", "z"],
                 [0.3, 0.7],
                 constraints,
-                trainable=[True, False],
+                trainable=[True, False],  # Warning for the True value
             )
-        assert params.parameters[1].trainable is False
-        assert params.parameters[2].trainable is False
+        assert params.parameters[1].trainable is False  # Forced to False
+        assert params.parameters[2].trainable is False  # Already False
     
     def test_get_trainable_indices(self):
         """Test get_trainable_indices method."""

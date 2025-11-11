@@ -192,7 +192,8 @@ class TestExperimentLoader:
             # Check trainable flags
             assert trainable_params.parameters[0].trainable is True
             assert trainable_params.parameters[1].trainable is False
-            assert trainable_params.parameters[2].trainable is True
+            # Custom parameters are now forced to be non-trainable
+            assert trainable_params.parameters[2].trainable is False
             
             # Check parameter values
             vector = trainable_params.get_parameter_vector()

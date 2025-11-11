@@ -12,9 +12,9 @@ from .experimental_parameters import (ExperimentalParameters,
                                       SystemDimensions)
 from .trainable_parameters import (Parameter, ParameterConstraints, 
                                    ParameterType, TrainableParameters)
-from .experiment import SingleQubitExperiment
+from .experiment import Experiment, SingleQubitExperiment, TwoQubitExperiment
 from .callback import OptimizationCallback
-from .quantum_utils import (
+from .experiment.quantum_utils import (
     generate_single_qubit_operators,
     generate_two_qubit_operators,
     generate_initial_state,
@@ -23,3 +23,4 @@ from .quantum_utils import (
     project_and_measure,
     measure_qubit_probability
 )
+

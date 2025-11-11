@@ -1,51 +1,8 @@
-""""""
+"""
+Quantum Sensing Experiment Class
+================================
 
-Experiment Module (Compatibility Layer)Experiment Module (Compatibility Layer)
-
-==============================================================================
-
-
-
-This module provides backward compatibility for imports.This module provides backward compatibility for imports.
-
-All experiment classes have been moved to the experiment submodule.All experiment classes have been moved to the experiment submodule.
-
-
-
-Deprecated:Deprecated:
-
-    Direct imports from this module are deprecated. Use:    Direct imports from this module are deprecated. Use:
-
-    - from qsopt.core.experiment import Experiment    - from qsopt.core.experiment import Experiment
-
-    - from qsopt.core.experiment import SingleQubitExperiment    - from qsopt.core.experiment import SingleQubitExperiment
-
-    - from qsopt.core.experiment import TwoQubitExperiment    - from qsopt.core.experiment import TwoQubitExperiment
-
-""""""
-
-
-
-# Re-export from new location for backward compatibilityimport warnings
-
-from .experiment import Experiment, SingleQubitExperiment, TwoQubitExperiment
-
-# Re-export from new location for backward compatibility
-
-__all__ = ['Experiment', 'SingleQubitExperiment', 'TwoQubitExperiment']from .experiment import Experiment, SingleQubitExperiment, TwoQubitExperiment
-
-
-__all__ = ['Experiment', 'SingleQubitExperiment', 'TwoQubitExperiment']
-
-# Warn about deprecated import
-warnings.warn(
-    "Importing from qsopt.core.experiment (file) is deprecated. "
-    "Use 'from qsopt.core.experiment import SingleQubitExperiment' instead. "
-    "The experiment classes have been reorganized into a submodule.",
-    DeprecationWarning,
-    stacklevel=2
-)
-
+Main experiment class that orchestrates quantum sensing protocols with configurable
 parameters, noise models, and optimization strategies.
 
 Note: This module uses JAX arrays extensively. Type checker warnings about JAX array
@@ -65,9 +22,10 @@ import optax
 import qutip as qt
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.core.trainable_parameters import TrainableParameters, ParameterType, Parameter
-from qsopt.core.quantum_utils import gu
 from qsopt.core.callback import OptimizationCallback
-from qsopt.core.quantum_utils import (
+from .base import Experiment
+from .quantum_utils import (
+    gu,
     generate_single_qubit_operators,
     generate_initial_state,
     create_measurement_projector,
@@ -79,7 +37,7 @@ import qutip_jax  # pylint: disable=unused-import
 # Suppress Diffrax complex dtype warning
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
 
-class SingleQubitExperiment:
+class SingleQubitExperiment(Experiment):
     """
     A class representing a single qubit photon detection experiment.
     
@@ -91,16 +49,8 @@ class SingleQubitExperiment:
     """
     
     def __init__(self, experimental_params: ExperimentalParameters, trainable_params: TrainableParameters):
-        self.experimental_params = experimental_params
-        self.trainable_params = trainable_params
-        
-        # Storage for operators and Hamiltonians
-        self.operators: Optional[Dict[str, qt.Qobj]] = None
-        self.hamiltonians: Optional[Dict[str, Union[qt.QobjEvo, qt.Qobj]]] = None
-        self.lindblad_operators: Optional[Dict[str, List[Union[qt.Qobj, qt.QobjEvo]]]] = None
-        
-        # Optimization callback (default: save every epoch)
-        self.callback: OptimizationCallback = OptimizationCallback(save_every=1, save_best=True)
+        # Call parent constructor
+        super().__init__(experimental_params, trainable_params)
         
         # Cache for frequently used objects (significant speedup during optimization)
         self._cached_initial_state: Optional[qt.Qobj] = None
@@ -1201,7 +1151,7 @@ class SingleQubitExperiment:
             - Pulse shape computed using u0() function from quantum_utils
             - Measurement times extracted from experimental_params.measurement
         """
-        from ..utils.visualization import plot_pulse_shape_with_measurements
+        from qsopt.utils.visualization import plot_pulse_shape_with_measurements
         
         return plot_pulse_shape_with_measurements(
             self.experimental_params,
