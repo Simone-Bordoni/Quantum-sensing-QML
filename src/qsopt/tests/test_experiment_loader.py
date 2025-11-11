@@ -164,10 +164,10 @@ class TestExperimentLoader:
             
             # Check experimental parameters
             assert isinstance(exp_params, ExperimentalParameters)
-            assert exp_params.physical_constants.chi == 0.5
+            assert exp_params.physical_constants.chi == [0.5]  # Now a list
             assert exp_params.physical_constants.photon_cavity_coupling == 1.0
             assert exp_params.system_dims.cavity_levels == 10
-            assert exp_params.system_dims.qubit_levels == 2
+            assert exp_params.system_dims.qubit_levels == [2]  # Now a list
             
             # Check measurement protocol
             assert exp_params.measurement.measurement_times is not None
@@ -245,12 +245,14 @@ class TestExperimentLoader:
             exp_params, trainable_params, metadata = load_experiment_from_report(temp_path)
             
             # Check trainable indices
+            # Custom parameters are now forced to be non-trainable, so only theta1 is trainable
             trainable_indices = trainable_params.get_trainable_indices()
-            assert trainable_indices == [0, 2]  # theta1 and custom_param
+            assert trainable_indices == [0]  # Only theta1 (custom_param is forced to non-trainable)
             
             # Check trainable mask
             mask = trainable_params.get_trainable_mask()
-            expected = np.array([True, False, True])
+            # Custom parameter is now forced to be non-trainable
+            expected = np.array([True, False, False])
             assert np.array_equal(mask, expected)
             
         finally:

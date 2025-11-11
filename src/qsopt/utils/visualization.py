@@ -553,20 +553,26 @@ def plot_parameter_landscape(
         interval_text = "N/A"
         n_measurements = 0
     
+    # Format chi and noise rates for display (handle list format)
+    chi_display = exp_params.chi if isinstance(exp_params.chi, (int, float)) else exp_params.chi[0] if len(exp_params.chi) == 1 else str(exp_params.chi)
+    relaxation_display = exp_params.noise_config.relaxation if isinstance(exp_params.noise_config.relaxation, (int, float)) else exp_params.noise_config.relaxation[0] if len(exp_params.noise_config.relaxation) == 1 else str(exp_params.noise_config.relaxation)
+    dephasing_display = exp_params.noise_config.dephasing if isinstance(exp_params.noise_config.dephasing, (int, float)) else exp_params.noise_config.dephasing[0] if len(exp_params.noise_config.dephasing) == 1 else str(exp_params.noise_config.dephasing)
+    depolarizing_display = exp_params.noise_config.depolarizing if isinstance(exp_params.noise_config.depolarizing, (int, float)) else exp_params.noise_config.depolarizing[0] if len(exp_params.noise_config.depolarizing) == 1 else str(exp_params.noise_config.depolarizing)
+    
     system_info = f"""SYSTEM PARAMETERS AND CONFIGURATION
 
 Physical Constants:
   • Photon-cavity coupling (γ):    {exp_params.photon_cavity_coupling:.6f} rad/time
   • Inverse pulse width (σ):        {exp_params.inverse_pulse_width:.6f} 1/time
-  • Dispersive coupling (χ):        {exp_params.chi:.6f} rad/time
+  • Dispersive coupling (χ):        {chi_display if isinstance(chi_display, str) else f'{chi_display:.6f}'} rad/time
 
 System Dimensions:
-  • Cavity levels:  {exp_params.cavity_levels}  |  Qubit levels:  {exp_params.qubit_levels}  |  Field levels:  {exp_params.field_levels}
+  • Number of qubits: {exp_params.n_qubits}  |  Cavity levels:  {exp_params.cavity_levels}  |  Qubit levels:  {exp_params.qubit_levels}  |  Field levels:  {exp_params.field_levels}
 
 Noise Configuration:
-  • Relaxation (γ_relax):   {exp_params.noise_config.relaxation:.6f} rad/time
-  • Dephasing (γ_deph):     {exp_params.noise_config.dephasing:.6f} rad/time
-  • Depolarizing (γ_depol): {exp_params.noise_config.depolarizing:.6f} rad/time
+  • Relaxation (γ_relax):   {relaxation_display if isinstance(relaxation_display, str) else f'{relaxation_display:.6f}'} rad/time
+  • Dephasing (γ_deph):     {dephasing_display if isinstance(dephasing_display, str) else f'{dephasing_display:.6f}'} rad/time
+  • Depolarizing (γ_depol): {depolarizing_display if isinstance(depolarizing_display, str) else f'{depolarizing_display:.6f}'} rad/time
 
 Measurement Protocol:
   • Initial time:     {exp_params.measurement.initial_time:.6f}  |  Final time:  {exp_params.measurement.final_time:.6f}
@@ -760,21 +766,27 @@ def plot_time_interval_landscape(
     elif batch_size == 1 and uncertainty > 0:
         batch_info += f" (uncertainty available: ±{uncertainty:.4f}{spec_suffix}, not used)"
     
+    # Format chi and noise rates for display (handle list format)
+    chi_display = exp_params.chi if isinstance(exp_params.chi, (int, float)) else exp_params.chi[0] if len(exp_params.chi) == 1 else str(exp_params.chi)
+    relaxation_display = exp_params.noise_config.relaxation if isinstance(exp_params.noise_config.relaxation, (int, float)) else exp_params.noise_config.relaxation[0] if len(exp_params.noise_config.relaxation) == 1 else str(exp_params.noise_config.relaxation)
+    dephasing_display = exp_params.noise_config.dephasing if isinstance(exp_params.noise_config.dephasing, (int, float)) else exp_params.noise_config.dephasing[0] if len(exp_params.noise_config.dephasing) == 1 else str(exp_params.noise_config.dephasing)
+    depolarizing_display = exp_params.noise_config.depolarizing if isinstance(exp_params.noise_config.depolarizing, (int, float)) else exp_params.noise_config.depolarizing[0] if len(exp_params.noise_config.depolarizing) == 1 else str(exp_params.noise_config.depolarizing)
+    
     system_info = f"""SYSTEM PARAMETERS AND CONFIGURATION
 
 Physical Constants:
   • Photon-cavity coupling (γ):    {exp_params.photon_cavity_coupling:.6f} rad/time
   • Inverse pulse width (σ):        {exp_params.inverse_pulse_width:.6f} 1/time
-  • Dispersive coupling (χ):        {exp_params.chi:.6f} rad/time
+  • Dispersive coupling (χ):        {chi_display if isinstance(chi_display, str) else f'{chi_display:.6f}'} rad/time
 
 Rotation Parameters:
   • θ₁ (first rotation):   {np.degrees(theta1):>7.2f}° ({theta1:.6f} rad)
   • θ₂ (second rotation):  {np.degrees(theta2):>7.2f}° ({theta2:.6f} rad)
 
 Noise Configuration:
-  • Relaxation (γ_relax):   {exp_params.noise_config.relaxation:.6f} rad/time
-  • Dephasing (γ_deph):     {exp_params.noise_config.dephasing:.6f} rad/time
-  • Depolarizing (γ_depol): {exp_params.noise_config.depolarizing:.6f} rad/time
+  • Relaxation (γ_relax):   {relaxation_display if isinstance(relaxation_display, str) else f'{relaxation_display:.6f}'} rad/time
+  • Dephasing (γ_deph):     {dephasing_display if isinstance(dephasing_display, str) else f'{dephasing_display:.6f}'} rad/time
+  • Depolarizing (γ_depol): {depolarizing_display if isinstance(depolarizing_display, str) else f'{depolarizing_display:.6f}'} rad/time
 
 Measurement Protocol:
   • Initial time:     {exp_params.measurement.initial_time:.6f}  |  Final time:  {exp_params.measurement.final_time:.6f}
@@ -839,7 +851,7 @@ def plot_pulse_shape_with_measurements(
         - Measurement times are extracted from exp_params.measurement
         - The plot window extends beyond the measurement range to show pulse decay
     """
-    from ..core.quantum_utils import u0
+    from ..core.experiment.quantum_utils import u0
     
     # Extract measurement protocol information
     initial_time = exp_params.measurement.initial_time

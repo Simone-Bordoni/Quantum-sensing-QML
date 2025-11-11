@@ -142,37 +142,208 @@ def generate_single_qubit_operators(
 def generate_two_qubit_operators(
     field_levels: int,
     cavity_levels: int,
-    qubit_levels: int
+    qubit_levels: Union[int, List[int]]
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for a two-qubit composite system.
     
-    NOT IMPLEMENTED YET - Placeholder for future two-qubit experiments.
-    
-    Will create operators for (field ⊗ cavity ⊗ qubit1 ⊗ qubit2) composite space.
+    Creates operators for (field ⊗ cavity ⊗ qubit1 ⊗ qubit2) composite space.
+    Each qubit can have different level truncation for flexibility.
     
     Args:
         field_levels: Number of Fock levels for input field mode
         cavity_levels: Number of Fock levels for resonator cavity mode
-        qubit_levels: Number of levels for each qubit (typically 2)
+        qubit_levels: Number of levels for each qubit. Can be:
+                     - int: Same levels for both qubits (typically 2)
+                     - List[int]: Individual levels [qubit1_levels, qubit2_levels]
         
     Returns:
-        Dictionary containing all operators in composite space
+        Dictionary containing all operators in composite space:
+        - Field operators: a_in, a_in_dag
+        - Cavity operators: a, a_dag
+        - Qubit1 operators: sigma_z1, sigma_x1, sigma_y1, sigma_minus1, sigma_plus1
+        - Qubit2 operators: sigma_z2, sigma_x2, sigma_y2, sigma_minus2, sigma_plus2
+        - Measurement projectors: P00, P01, P10, P11 (joint qubit states)
+        - Individual projectors: P0_q1, P1_q1, P0_q2, P1_q2
+        - Rotation operators: 
+            * roty_q1: Y-rotation on qubit1 only
+            * roty_q2: Y-rotation on qubit2 only
+            * roty: Simultaneous Y-rotation on both qubits
         
-    Raises:
-        NotImplementedError: This function is not yet implemented
+    Example:
+        >>> ops = generate_two_qubit_operators(2, 2, 2)
+        >>> # Access operators for each qubit
+        >>> sz1 = ops['sigma_z1']
+        >>> sz2 = ops['sigma_z2']
+        >>> # Joint measurement projector |00⟩⟨00|
+        >>> P00 = ops['P00']
     """
-    raise NotImplementedError(
-        "Two-qubit operator generation is not yet implemented. "
-        "This will be added in a future version to support multi-qubit experiments."
-    )
+    # Handle qubit_levels as list or int
+    if isinstance(qubit_levels, int):
+        q1_levels = qubit_levels
+        q2_levels = qubit_levels
+    elif isinstance(qubit_levels, list):
+        if len(qubit_levels) < 2:
+            raise ValueError(f"qubit_levels list must have at least 2 elements, got {len(qubit_levels)}")
+        q1_levels = qubit_levels[0]
+        q2_levels = qubit_levels[1]
+    else:
+        raise TypeError(f"qubit_levels must be int or list, got {type(qubit_levels)}")
+    
+    # Generate operators with JAX backend for autodiff compatibility
+    with qt.CoreOptions(default_dtype="jax"):
+        # Identity operators for each subsystem
+        I_field = qt.identity(field_levels)
+        I_cavity = qt.identity(cavity_levels)
+        I_q1 = qt.identity(q1_levels)
+        I_q2 = qt.identity(q2_levels)
+        
+        # Individual subsystem operators
+        a_field = qt.destroy(field_levels)        # Field annihilation
+        a_cavity = qt.destroy(cavity_levels)      # Cavity annihilation
+        
+        # Qubit 1 operators
+        sigma_z1 = qt.sigmaz() if q1_levels == 2 else qt.jmat(q1_levels-1, 'z')
+        sigma_x1 = qt.sigmax() if q1_levels == 2 else qt.jmat(q1_levels-1, 'x')
+        sigma_y1 = qt.sigmay() if q1_levels == 2 else qt.jmat(q1_levels-1, 'y')
+        sigma_minus1 = qt.destroy(q1_levels)
+        
+        # Qubit 2 operators
+        sigma_z2 = qt.sigmaz() if q2_levels == 2 else qt.jmat(q2_levels-1, 'z')
+        sigma_x2 = qt.sigmax() if q2_levels == 2 else qt.jmat(q2_levels-1, 'x')
+        sigma_y2 = qt.sigmay() if q2_levels == 2 else qt.jmat(q2_levels-1, 'y')
+        sigma_minus2 = qt.destroy(q2_levels)
+        
+        # Measurement projectors for 2-level qubits
+        P0 = qt.Qobj([[1, 0], [0, 0]])  # Ground state |0⟩⟨0|
+        P1 = qt.Qobj([[0, 0], [0, 1]])  # Excited state |1⟩⟨1|
+        
+        # Rotation operators (Y-rotation by π/2)
+        # Ry(π/2) = [[cos(π/4), -sin(π/4)], [sin(π/4), cos(π/4)]]
+        # = (1/√2)[[1, -1], [1, 1]]
+        rot_single = qt.Qobj([[1, -1], [1, 1]]) / jnp.sqrt(2.0)
+        
+        # Embed operators in composite space (input_field ⊗ cavity ⊗ qubit1 ⊗ qubit2)
+        operators = {
+            # Input field operators
+            'a_in': qt.tensor(a_field, I_cavity, I_q1, I_q2),
+            'a_in_dag': qt.tensor(a_field.dag(), I_cavity, I_q1, I_q2),
+            
+            # Resonator cavity operators
+            'a': qt.tensor(I_field, a_cavity, I_q1, I_q2),
+            'a_dag': qt.tensor(I_field, a_cavity.dag(), I_q1, I_q2),
+            
+            # Qubit 1 operators
+            'sigma_z1': qt.tensor(I_field, I_cavity, sigma_z1, I_q2),
+            'sigma_x1': qt.tensor(I_field, I_cavity, sigma_x1, I_q2),
+            'sigma_y1': qt.tensor(I_field, I_cavity, sigma_y1, I_q2),
+            'sigma_minus1': qt.tensor(I_field, I_cavity, sigma_minus1, I_q2),
+            'sigma_plus1': qt.tensor(I_field, I_cavity, sigma_minus1.dag(), I_q2),
+            
+            # Qubit 2 operators
+            'sigma_z2': qt.tensor(I_field, I_cavity, I_q1, sigma_z2),
+            'sigma_x2': qt.tensor(I_field, I_cavity, I_q1, sigma_x2),
+            'sigma_y2': qt.tensor(I_field, I_cavity, I_q1, sigma_y2),
+            'sigma_minus2': qt.tensor(I_field, I_cavity, I_q1, sigma_minus2),
+            'sigma_plus2': qt.tensor(I_field, I_cavity, I_q1, sigma_minus2.dag()),
+            
+            # Joint measurement projectors (for 2-level qubits)
+            'P00': qt.tensor(I_field, I_cavity, P0, P0),  # |00⟩⟨00|
+            'P01': qt.tensor(I_field, I_cavity, P0, P1),  # |01⟩⟨01|
+            'P10': qt.tensor(I_field, I_cavity, P1, P0),  # |10⟩⟨10|
+            'P11': qt.tensor(I_field, I_cavity, P1, P1),  # |11⟩⟨11|
+            
+            # Individual qubit projectors
+            'P0_q1': qt.tensor(I_field, I_cavity, P0, I_q2),  # |0⟩⟨0| ⊗ I for qubit1
+            'P1_q1': qt.tensor(I_field, I_cavity, P1, I_q2),  # |1⟩⟨1| ⊗ I for qubit1
+            'P0_q2': qt.tensor(I_field, I_cavity, I_q1, P0),  # I ⊗ |0⟩⟨0| for qubit2
+            'P1_q2': qt.tensor(I_field, I_cavity, I_q1, P1),  # I ⊗ |1⟩⟨1| for qubit2
+            
+            # Rotation operators (Y-rotation by π/2, can be applied independently)
+            'roty_q1': qt.tensor(I_field, I_cavity, rot_single, I_q2),  # Ry on qubit1 only
+            'roty_q2': qt.tensor(I_field, I_cavity, I_q1, rot_single),  # Ry on qubit2 only
+            'roty': qt.tensor(I_field, I_cavity, rot_single, rot_single),  # Simultaneous Ry on both
+            
+            # Identity operators for reference
+            'I_field': I_field,
+            'I_cavity': I_cavity,
+            'I_q1': I_q1,
+            'I_q2': I_q2,
+        }
+        
+        return operators
+
+
+def build_qubit_noise_operators(
+    sigma_x: qt.Qobj,
+    sigma_y: qt.Qobj,
+    sigma_z: qt.Qobj,
+    sigma_minus: qt.Qobj,
+    depolarizing_rate: float,
+    dephasing_rate: float,
+    relaxation_rate: float
+) -> List[qt.Qobj]:
+    """
+    Build Lindblad noise operators for a single qubit.
+    
+    Creates noise operators for common decoherence channels:
+    - Depolarizing: Equal probability of X, Y, Z errors (√(γ/3) σᵢ)
+    - Dephasing: Pure Z errors causing phase decoherence (√γ σz)
+    - Relaxation: Energy decay from |1⟩ to |0⟩ (√γ σ₋)
+    
+    Args:
+        sigma_x: Pauli X operator in composite space
+        sigma_y: Pauli Y operator in composite space
+        sigma_z: Pauli Z operator in composite space
+        sigma_minus: Lowering operator σ₋ = |0⟩⟨1| in composite space
+        depolarizing_rate: Depolarizing noise rate γ_depol
+        dephasing_rate: Pure dephasing noise rate γ_deph
+        relaxation_rate: Relaxation (T1) noise rate γ_relax
+        
+    Returns:
+        List of Lindblad operators for this qubit
+        
+    Example:
+        >>> # For single qubit system
+        >>> ops = generate_single_qubit_operators(2, 2, 2)
+        >>> noise_ops = build_qubit_noise_operators(
+        ...     ops['sigma_x'], ops['sigma_y'], ops['sigma_z'], ops['sigma_minus'],
+        ...     depolarizing_rate=0.01, dephasing_rate=0.005, relaxation_rate=0.002
+        ... )
+        
+        >>> # For two-qubit system, qubit 1
+        >>> ops = generate_two_qubit_operators(2, 2, 2)
+        >>> noise_ops_q1 = build_qubit_noise_operators(
+        ...     ops['sigma_x1'], ops['sigma_y1'], ops['sigma_z1'], ops['sigma_minus1'],
+        ...     depolarizing_rate=0.01, dephasing_rate=0.005, relaxation_rate=0.002
+        ... )
+    """
+    noise_operators = []
+    
+    # Depolarizing noise: equal probability of X, Y, Z errors
+    if depolarizing_rate != 0.0:
+        noise_operators.extend([
+            np.sqrt(depolarizing_rate / 3) * sigma_x,
+            np.sqrt(depolarizing_rate / 3) * sigma_y,
+            np.sqrt(depolarizing_rate / 3) * sigma_z
+        ])
+    
+    # Pure dephasing noise: Z errors only (phase decoherence)
+    if dephasing_rate != 0.0:
+        noise_operators.append(np.sqrt(dephasing_rate) * sigma_z)
+    
+    # Relaxation noise: energy decay |1⟩ → |0⟩
+    if relaxation_rate != 0.0:
+        noise_operators.append(np.sqrt(relaxation_rate) * sigma_minus)
+    
+    return noise_operators
 
 
 def generate_initial_state(
     initial_config,
     field_levels: int,
     cavity_levels: int,
-    qubit_levels: int,
+    qubit_levels: Union[int, List[int]],
     num_qubits: int = 1
 ) -> qt.Qobj:
     """
@@ -180,16 +351,19 @@ def generate_initial_state(
     
     Supports multiple initial state types:
     - VACUUM: All subsystems in ground state
-    - SINGLE_PHOTON: One photon in field, vacuum cavity, qubits in ground
+    - SINGLE_PHOTON: One photon in field, vacuum cavity, qubits in ground or superposition
     - COHERENT: Coherent state in field
     - THERMAL: Thermal state in cavity
     - CUSTOM: User-defined superposition
+    
+    For multi-qubit systems, qubits are initialized in equal superposition (|0⟩+|1⟩)/√2
+    unless otherwise specified.
     
     Args:
         initial_config: InitialStateConfig object with state type and parameters
         field_levels: Number of Fock levels for input field
         cavity_levels: Number of Fock levels for resonator cavity
-        qubit_levels: Number of levels for each qubit
+        qubit_levels: Number of levels for each qubit (int or list)
         num_qubits: Number of qubits in the system (1 or 2)
         
     Returns:
@@ -197,56 +371,62 @@ def generate_initial_state(
         
     Raises:
         ValueError: If required parameters are missing or invalid
-        NotImplementedError: If num_qubits > 1 (not yet supported)
+        NotImplementedError: If num_qubits > 2
         
     Example:
         >>> from qsopt.core.experimental_parameters import InitialStateConfig, InitialStateType
         >>> config = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
         >>> rho0 = generate_initial_state(config, 2, 2, 2, num_qubits=1)
     """
-    if num_qubits > 1:
+    if num_qubits > 2:
         raise NotImplementedError(
             f"Initial state generation for {num_qubits} qubits is not yet implemented. "
-            "Currently only single-qubit systems are supported."
+            "Currently supports 1-2 qubit systems."
         )
     
     state_type = initial_config.state_type
     
     # Use JAX backend for compatibility
     with qt.CoreOptions(default_dtype="jax"):
-        if state_type == InitialStateType.VACUUM:
-            # Vacuum state: |0,0,0⟩
-            return _create_vacuum_state(field_levels, cavity_levels, qubit_levels)
-            
-        elif state_type == InitialStateType.SINGLE_PHOTON:
-            # Single photon in field: |1,0,0⟩
-            return _create_single_photon_state(field_levels, cavity_levels, qubit_levels)
-            
-        elif state_type == InitialStateType.COHERENT:
-            # Coherent state in field: |α,0,0⟩
-            alpha = initial_config.coherent_alpha
-            if alpha is None:
-                raise ValueError("coherent_alpha must be specified for COHERENT state type")
-            return _create_coherent_state(alpha, field_levels, cavity_levels, qubit_levels)
-            
-        elif state_type == InitialStateType.THERMAL:
-            # Thermal state in cavity with average photon number n_bar
-            n_bar = initial_config.thermal_n_bar
-            if n_bar is None:
-                raise ValueError("thermal_n_bar must be specified for THERMAL state type")
-            return _create_thermal_state(n_bar, field_levels, cavity_levels, qubit_levels)
-            
-        elif state_type == InitialStateType.CUSTOM:
-            # Custom state from user-provided amplitudes
-            custom_amps = initial_config.custom_amplitudes
-            if custom_amps is None:
-                raise ValueError("custom_amplitudes must be specified for CUSTOM state type")
-            return _create_custom_state(
-                custom_amps, field_levels, cavity_levels, qubit_levels
-            )
-            
-        else:
-            raise ValueError(f"Unknown initial state type: {state_type}")
+        if num_qubits == 1:
+            # Single qubit system - use original logic
+            if state_type == InitialStateType.VACUUM:
+                return _create_vacuum_state(field_levels, cavity_levels, qubit_levels)
+            elif state_type == InitialStateType.SINGLE_PHOTON:
+                return _create_single_photon_state(field_levels, cavity_levels, qubit_levels)
+            elif state_type == InitialStateType.COHERENT:
+                alpha = initial_config.coherent_alpha
+                if alpha is None:
+                    raise ValueError("coherent_alpha must be specified for COHERENT state type")
+                return _create_coherent_state(alpha, field_levels, cavity_levels, qubit_levels)
+            elif state_type == InitialStateType.THERMAL:
+                n_bar = initial_config.thermal_n_bar
+                if n_bar is None:
+                    raise ValueError("thermal_n_bar must be specified for THERMAL state type")
+                return _create_thermal_state(n_bar, field_levels, cavity_levels, qubit_levels)
+            elif state_type == InitialStateType.CUSTOM:
+                custom_amps = initial_config.custom_amplitudes
+                if custom_amps is None:
+                    raise ValueError("custom_amplitudes must be specified for CUSTOM state type")
+                return _create_custom_state(custom_amps, field_levels, cavity_levels, qubit_levels)
+            else:
+                raise ValueError(f"Unknown initial state type: {state_type}")
+                
+        elif num_qubits == 2:
+            # Two qubit system
+            if state_type == InitialStateType.SINGLE_PHOTON:
+                # |1⟩_field ⊗ |0⟩_cavity ⊗ (|0⟩+|1⟩)/√2_q1 ⊗ (|0⟩+|1⟩)/√2_q2
+                return _create_two_qubit_single_photon_state(field_levels, cavity_levels, qubit_levels)
+            elif state_type == InitialStateType.VACUUM:
+                return _create_two_qubit_vacuum_state(field_levels, cavity_levels, qubit_levels)
+            else:
+                # For other state types, use single qubit logic and extend to 2 qubits
+                raise NotImplementedError(
+                    f"Initial state type {state_type} not yet implemented for two-qubit systems. "
+                    "Currently only SINGLE_PHOTON and VACUUM are supported."
+                )
+        
+        raise ValueError(f"Unknown initial state type: {state_type}")
 
 
 # ==================== Private Helper Functions ====================
@@ -348,6 +528,79 @@ def _create_custom_state(
     
     # Create QuTiP state
     psi = qt.Qobj(psi_array, dims=[[field_levels, cavity_levels, qubit_levels], [1, 1, 1]])
+    return psi * psi.dag()  # type: ignore
+
+
+def _create_two_qubit_vacuum_state(
+    field_levels: int,
+    cavity_levels: int,
+    qubit_levels: Union[int, List[int]]
+) -> qt.Qobj:
+    """
+    Create vacuum state for two-qubit system: |0⟩_field ⊗ |0⟩_cavity ⊗ |0⟩_q1 ⊗ |0⟩_q2.
+    
+    Args:
+        field_levels: Number of field levels
+        cavity_levels: Number of cavity levels
+        qubit_levels: Qubit levels (int or list of 2 ints)
+    
+    Returns:
+        Density matrix for vacuum state in 4-subsystem composite space
+    """
+    if isinstance(qubit_levels, int):
+        q1_levels = qubit_levels
+        q2_levels = qubit_levels
+    else:
+        q1_levels = qubit_levels[0]
+        q2_levels = qubit_levels[1]
+    
+    psi = qt.tensor(
+        qt.basis(field_levels, 0),
+        qt.basis(cavity_levels, 0),
+        qt.basis(q1_levels, 0),
+        qt.basis(q2_levels, 0)
+    )
+    return psi * psi.dag()  # type: ignore
+
+
+def _create_two_qubit_single_photon_state(
+    field_levels: int,
+    cavity_levels: int,
+    qubit_levels: Union[int, List[int]]
+) -> qt.Qobj:
+    """
+    Create single photon state for two-qubit system.
+    
+    State: |1⟩_field ⊗ |0⟩_cavity ⊗ (|0⟩+|1⟩)/√2_q1 ⊗ (|0⟩+|1⟩)/√2_q2
+    
+    Both qubits are initialized in equal superposition as per Fabio's notebook.
+    
+    Args:
+        field_levels: Number of field levels
+        cavity_levels: Number of cavity levels
+        qubit_levels: Qubit levels (int or list of 2 ints)
+    
+    Returns:
+        Density matrix for single photon state with qubits in superposition
+    """
+    if isinstance(qubit_levels, int):
+        q1_levels = qubit_levels
+        q2_levels = qubit_levels
+    else:
+        q1_levels = qubit_levels[0]
+        q2_levels = qubit_levels[1]
+    
+    # Field: single photon |1⟩
+    field_state = qt.basis(field_levels, 1)
+    
+    # Cavity: vacuum |0⟩
+    cavity_state = qt.basis(cavity_levels, 0)
+    
+    # Qubits: equal superposition (|0⟩ + |1⟩)/√2
+    qubit1_state = (qt.basis(q1_levels, 0) + qt.basis(q1_levels, 1)) / jnp.sqrt(2.0)
+    qubit2_state = (qt.basis(q2_levels, 0) + qt.basis(q2_levels, 1)) / jnp.sqrt(2.0)
+    
+    psi = qt.tensor(field_state, cavity_state, qubit1_state, qubit2_state)
     return psi * psi.dag()  # type: ignore
 
 

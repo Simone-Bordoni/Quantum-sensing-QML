@@ -13,7 +13,7 @@ import sys
 src_path = Path(__file__).parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
-from qsopt.core.quantum_utils import u0
+from qsopt.core.experiment.quantum_utils import u0
 from qsopt.utils.visualization import plot_pulse_shape_with_measurements
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,

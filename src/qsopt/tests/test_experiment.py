@@ -90,9 +90,14 @@ class TestSingleQubitExperiment:
     def test_hilbert_space_dimension(self, experiment):
         """Test that composite Hilbert space has correct dimension."""
         # Should be field_levels * cavity_levels * qubit_levels = 2 * 2 * 2 = 8
-        expected_dim = (experiment.experimental_params.field_levels * 
-                       experiment.experimental_params.cavity_levels * 
-                       experiment.experimental_params.qubit_levels)
+        # qubit_levels is now a list, so extract first element for single qubit
+        qubit_levels = experiment.experimental_params.qubit_levels
+        if isinstance(qubit_levels, list):
+            qubit_levels = qubit_levels[0]
+        
+        expected_dim = (experiment.experimental_params.field_levels *
+                       experiment.experimental_params.cavity_levels *
+                       qubit_levels)
         
         # Check dimension through an operator
         actual_dim = experiment.operators['a_in'].dims[0][0]
@@ -136,9 +141,13 @@ class TestSingleQubitExperiment:
         
         # Projectors should sum to identity on qubit subspace (in full composite space)
         # P0 + P1 = I_field ⊗ I_cavity ⊗ I_qubit, check by trace
+        qubit_levels = experiment.experimental_params.qubit_levels
+        if isinstance(qubit_levels, list):
+            qubit_levels = qubit_levels[0]
+        
         total_dim = (experiment.experimental_params.field_levels * 
                      experiment.experimental_params.cavity_levels * 
-                     experiment.experimental_params.qubit_levels)
+                     qubit_levels)
         assert abs(P0.tr() + P1.tr() - total_dim) < 1e-10
     
     def test_hamiltonian_structure(self, experiment):
@@ -165,9 +174,20 @@ class TestSingleQubitExperiment:
         
         # Should have noise operators if any noise is present
         noise_config = experiment.experimental_params.noise_config
-        if (noise_config.relaxation > 0 or 
-            noise_config.dephasing > 0 or 
-            noise_config.depolarizing > 0):
+        
+        # Handle both scalar and list noise rates
+        relaxation = noise_config.relaxation
+        dephasing = noise_config.dephasing
+        depolarizing = noise_config.depolarizing
+        
+        if isinstance(relaxation, list):
+            relaxation = relaxation[0]
+        if isinstance(dephasing, list):
+            dephasing = dephasing[0]
+        if isinstance(depolarizing, list):
+            depolarizing = depolarizing[0]
+        
+        if (relaxation > 0 or dephasing > 0 or depolarizing > 0):
             assert len(lindblad_ops['no_interaction']) > 0, "No collapse operators with nonzero noise"
         
         # All should be Qobj or QobjEvo

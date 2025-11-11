@@ -25,13 +25,14 @@ def experimental_params():
     """Create experimental parameters for two-qubit testing."""
     return ExperimentalParameters(
         physical_constants=PhysicalConstants(
-            chi=0.01,
+            n_qubits=2,
+            chi=[0.01, 0.015],  # Different chi for each qubit
             photon_cavity_coupling=0.1,
             inverse_pulse_width=1.0
         ),
         system_dims=SystemDimensions(
             cavity_levels=3,
-            qubit_levels=2,  # For two qubits, this will be extended
+            qubit_levels=[2, 2],  # Two qubits
             field_levels=3
         ),
         measurement=MeasurementProtocol(
@@ -39,8 +40,12 @@ def experimental_params():
             final_time=10.0,
             time_interval=1.0
         ),
-        noise_config=NoiseConfiguration(),
-        initial_state=InitialStateConfig(state_type=InitialStateType.VACUUM)
+        noise_config=NoiseConfiguration(
+            depolarizing=[0.0, 0.0],
+            dephasing=[0.0, 0.0],
+            relaxation=[0.0, 0.0]
+        ),
+        initial_state=InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
     )
 
 
@@ -72,38 +77,116 @@ class TestTwoQubitExperiment:
         exp = TwoQubitExperiment(experimental_params, trainable_params)
         
         assert hasattr(exp, '_cached_initial_state')
-        assert hasattr(exp, '_cached_two_qubit_gates')
-        assert isinstance(exp._cached_two_qubit_gates, dict)
+        assert hasattr(exp, '_cached_joint_projectors')
+        assert hasattr(exp, '_cached_qubit1_projectors')
+        assert hasattr(exp, '_cached_qubit2_projectors')
+        assert isinstance(exp._cached_joint_projectors, dict)
+        assert isinstance(exp._cached_qubit1_projectors, dict)
+        assert isinstance(exp._cached_qubit2_projectors, dict)
     
-    def test_generate_operators_not_fully_implemented(self, experimental_params, trainable_params):
-        """Test that _generate_operators calls two-qubit utility (not yet implemented)."""
+    def test_generate_operators_implemented(self, experimental_params, trainable_params):
+        """Test that _generate_operators creates two-qubit operators."""
         exp = TwoQubitExperiment(experimental_params, trainable_params)
         
-        # Call _generate_operators explicitly - should raise NotImplementedError
-        # because generate_two_qubit_operators is not yet implemented
-        with pytest.raises(NotImplementedError, match="Two-qubit operator generation"):
-            exp._generate_operators()
+        # Check that operators were generated
+        assert exp.operators is not None
+        assert isinstance(exp.operators, dict)
+        
+        # Check for two-qubit specific operators
+        assert 'sigma_z1' in exp.operators
+        assert 'sigma_z2' in exp.operators
+        assert 'P00' in exp.operators
+        assert 'P01' in exp.operators
+        assert 'P10' in exp.operators
+        assert 'P11' in exp.operators
+        assert 'roty_q1' in exp.operators
+        assert 'roty_q2' in exp.operators
     
-    def test_generate_hamiltonian_not_implemented(self, experimental_params, trainable_params):
-        """Test that _generate_hamiltonian raises NotImplementedError."""
+    def test_generate_hamiltonian_implemented(self, experimental_params, trainable_params):
+        """Test that _generate_hamiltonian creates two-qubit Hamiltonian."""
         exp = TwoQubitExperiment(experimental_params, trainable_params)
         
-        with pytest.raises(NotImplementedError, match="TwoQubitExperiment._generate_hamiltonian"):
-            exp._generate_hamiltonian()
+        # Check that Hamiltonians were created
+        assert exp.hamiltonians is not None
+        assert 'total' in exp.hamiltonians
+        assert 'dispersive' in exp.hamiltonians
+        assert 'dispersive1' in exp.hamiltonians
+        assert 'dispersive2' in exp.hamiltonians
     
-    def test_initialize_caches_not_implemented(self, experimental_params, trainable_params):
-        """Test that _initialize_caches raises NotImplementedError."""
+    def test_initialize_caches_implemented(self, experimental_params, trainable_params):
+        """Test that _initialize_caches creates proper cache structures."""
         exp = TwoQubitExperiment(experimental_params, trainable_params)
         
-        with pytest.raises(NotImplementedError, match="TwoQubitExperiment._initialize_caches"):
-            exp._initialize_caches()
+        # Check that caches are initialized
+        assert exp._cached_initial_state is not None
+        assert exp._cached_joint_projectors is not None
+        assert exp._cached_qubit1_projectors is not None
+        assert exp._cached_qubit2_projectors is not None
+        
+        # Check joint projectors
+        assert '00' in exp._cached_joint_projectors
+        assert '01' in exp._cached_joint_projectors
+        assert '10' in exp._cached_joint_projectors
+        assert '11' in exp._cached_joint_projectors
+        
+        # Check individual qubit projectors
+        assert '0' in exp._cached_qubit1_projectors
+        assert '1' in exp._cached_qubit1_projectors
+        assert '0' in exp._cached_qubit2_projectors
+        assert '1' in exp._cached_qubit2_projectors
     
-    def test_get_initial_state_not_implemented(self, experimental_params, trainable_params):
-        """Test that get_initial_state raises NotImplementedError."""
+    def test_get_initial_state_implemented(self, experimental_params, trainable_params):
+        """Test that get_initial_state returns cached state."""
         exp = TwoQubitExperiment(experimental_params, trainable_params)
         
-        with pytest.raises(NotImplementedError, match="TwoQubitExperiment.get_initial_state"):
-            exp.get_initial_state()
+        state = exp.get_initial_state()
+        assert state is not None
+        assert state.isoper  # Should be a density matrix
+    
+    def test_get_joint_projector(self, experimental_params, trainable_params):
+        """Test that get_joint_projector returns correct projectors."""
+        exp = TwoQubitExperiment(experimental_params, trainable_params)
+        
+        # Test each joint state
+        P00 = exp.get_joint_projector('00')
+        P01 = exp.get_joint_projector('01')
+        P10 = exp.get_joint_projector('10')
+        P11 = exp.get_joint_projector('11')
+        
+        assert P00 is not None
+        assert P01 is not None
+        assert P10 is not None
+        assert P11 is not None
+        
+        # Test invalid state raises error
+        with pytest.raises(ValueError, match="Invalid joint state"):
+            exp.get_joint_projector('invalid')
+    
+    def test_get_qubit_projector(self, experimental_params, trainable_params):
+        """Test that get_qubit_projector returns correct projectors."""
+        exp = TwoQubitExperiment(experimental_params, trainable_params)
+        
+        # Test qubit 1
+        P0_q1 = exp.get_qubit_projector(1, '0')
+        P1_q1 = exp.get_qubit_projector(1, '1')
+        
+        assert P0_q1 is not None
+        assert P1_q1 is not None
+        
+        # Test qubit 2
+        P0_q2 = exp.get_qubit_projector(2, '0')
+        P1_q2 = exp.get_qubit_projector(2, '1')
+        
+        assert P0_q2 is not None
+        assert P1_q2 is not None
+        
+        # Test invalid qubit index
+        with pytest.raises(ValueError, match="Invalid qubit index"):
+            exp.get_qubit_projector(3, '0')
+        
+        # Test invalid state
+        with pytest.raises(ValueError, match="Invalid qubit state"):
+            exp.get_qubit_projector(1, 'invalid')
     
     def test_simulation_not_implemented(self, experimental_params, trainable_params):
         """Test that simulation raises NotImplementedError."""

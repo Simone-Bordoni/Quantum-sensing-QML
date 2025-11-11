@@ -9,7 +9,7 @@ initial state preparation, and quantum gates.
 import pytest
 import numpy as np
 import qutip as qt
-from qsopt.core.quantum_utils import (
+from qsopt.core.experiment.quantum_utils import (
     gu,
     generate_single_qubit_operators,
     generate_two_qubit_operators,
@@ -118,10 +118,31 @@ class TestOperatorGeneration:
         sum_proj = P0 + P1
         assert sum_proj.tr() > 0, "Projectors don't sum correctly"
     
-    def test_two_qubit_not_implemented(self):
-        """Test that two-qubit operators raise NotImplementedError."""
-        with pytest.raises(NotImplementedError):
-            generate_two_qubit_operators(2, 2, 2)
+    def test_two_qubit_operators_implemented(self):
+        """Test that two-qubit operators are generated correctly."""
+        ops = generate_two_qubit_operators(2, 2, 2)
+        
+        # Check that all expected operators are present
+        assert 'a_in' in ops
+        assert 'a' in ops
+        assert 'sigma_z1' in ops
+        assert 'sigma_z2' in ops
+        assert 'sigma_x1' in ops
+        assert 'sigma_x2' in ops
+        assert 'sigma_y1' in ops
+        assert 'sigma_y2' in ops
+        assert 'P00' in ops
+        assert 'P01' in ops
+        assert 'P10' in ops
+        assert 'P11' in ops
+        assert 'roty_q1' in ops
+        assert 'roty_q2' in ops
+        assert 'roty' in ops
+        
+        # Check that operators are QuTiP objects
+        for key, op in ops.items():
+            if not key.startswith('I_'):
+                assert isinstance(op, qt.Qobj)
 
 
 class TestInitialStateGeneration:
@@ -228,12 +249,24 @@ class TestInitialStateGeneration:
         with pytest.raises(ValueError, match="Field index.*out of range"):
             generate_initial_state(config, 2, 2, 2, num_qubits=1)
     
-    def test_two_qubit_not_implemented(self):
-        """Test that multi-qubit states raise NotImplementedError."""
-        config = InitialStateConfig(state_type=InitialStateType.VACUUM)
+    def test_two_qubit_states_implemented(self):
+        """Test that two-qubit states are generated correctly."""
+        # Test single photon state for two qubits
+        config = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
+        rho = generate_initial_state(config, 2, 2, 2, num_qubits=2)
         
-        with pytest.raises(NotImplementedError):
-            generate_initial_state(config, 2, 2, 2, num_qubits=2)
+        assert rho is not None
+        assert rho.isoper, "Should be a density matrix"
+        assert rho.isherm, "Should be Hermitian"
+        assert abs(rho.tr() - 1.0) < 1e-10, "Should be normalized"
+        
+        # Test vacuum state for two qubits
+        config_vac = InitialStateConfig(state_type=InitialStateType.VACUUM)
+        rho_vac = generate_initial_state(config_vac, 2, 2, 2, num_qubits=2)
+        
+        assert rho_vac is not None
+        assert rho_vac.isherm, "Should be Hermitian"
+        assert abs(rho_vac.tr() - 1.0) < 1e-10, "Should be normalized"
 
 
 class TestQuantumGates:

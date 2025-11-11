@@ -104,7 +104,8 @@ class TestTrainableParameters:
         assert len(params) == 1
         assert params.parameters[0].param_type == ParameterType.MEASUREMENT_TIME
         assert params.parameters[0].value == 0.5
-        assert params.parameters[0].trainable is False
+        # Default is trainable=True (though gradient descent is not used for intervals)
+        assert params.parameters[0].trainable is True
         defaults = params.get_measurement_interval_defaults()
         assert defaults == {"grid_min": None, "grid_max": None, "grid_resolution": None}
         

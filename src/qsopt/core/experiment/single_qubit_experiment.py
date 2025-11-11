@@ -29,6 +29,7 @@ from .quantum_utils import (
     generate_single_qubit_operators,
     generate_initial_state,
     create_measurement_projector,
+    build_qubit_noise_operators,
 )
 
 # Import qutip_jax to enable JAX backend
@@ -80,7 +81,10 @@ class SingleQubitExperiment(Experiment):
         # Get system dimensions
         field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
-        qubit_levels = self.experimental_params.qubit_levels
+        qubit_levels_list = self.experimental_params.qubit_levels
+        
+        # For single qubit experiment, use the first (and only) qubit's levels
+        qubit_levels = qubit_levels_list[0] if isinstance(qubit_levels_list, list) else qubit_levels_list
         
         # Use utility function to generate all operators
         self.operators = generate_single_qubit_operators(
@@ -103,7 +107,9 @@ class SingleQubitExperiment(Experiment):
             
         # Extract coupling constants
         gm = self.experimental_params.photon_cavity_coupling
-        chi = self.experimental_params.chi
+        chi_list = self.experimental_params.chi
+        # For single qubit experiment, use the first (and only) qubit's chi
+        chi = chi_list[0] if isinstance(chi_list, list) else chi_list
         sigma = self.experimental_params.inverse_pulse_width
         
         # Get operators
@@ -132,25 +138,21 @@ class SingleQubitExperiment(Experiment):
         # Noise configuration
         noise_config = self.experimental_params.noise_config
         
-        # Build Lindblad noise operators
-        lindblad_noise: List[Union[qt.Qobj, qt.QobjEvo]] = []
+        # Extract noise rates for the first (and only) qubit
+        depolarizing = noise_config.depolarizing[0] if isinstance(noise_config.depolarizing, list) else noise_config.depolarizing
+        dephasing = noise_config.dephasing[0] if isinstance(noise_config.dephasing, list) else noise_config.dephasing
+        relaxation = noise_config.relaxation[0] if isinstance(noise_config.relaxation, list) else noise_config.relaxation
         
-        # Depolarizing noise (σx, σy, σz components)
-        if noise_config.depolarizing != 0.0:
-            gamma_depol = noise_config.depolarizing
-            lindblad_noise.extend([
-                np.sqrt(gamma_depol/3) * sigma_x,  # σx component
-                np.sqrt(gamma_depol/3) * sigma_y,  # σy component  
-                np.sqrt(gamma_depol/3) * sigma_z   # σz component
-            ])
-        
-        # Pure dephasing noise (σz)
-        if noise_config.dephasing != 0.0:
-            lindblad_noise.append(np.sqrt(noise_config.dephasing) * sigma_z)
-        
-        # Relaxation noise (σ-)
-        if noise_config.relaxation != 0.0:
-            lindblad_noise.append(np.sqrt(noise_config.relaxation) * sigma_minus)
+        # Build Lindblad noise operators using helper function
+        lindblad_noise = build_qubit_noise_operators(
+            sigma_x=sigma_x,
+            sigma_y=sigma_y,
+            sigma_z=sigma_z,
+            sigma_minus=sigma_minus,
+            depolarizing_rate=depolarizing,
+            dephasing_rate=dephasing,
+            relaxation_rate=relaxation
+        )
         
         # Add custom Lindblad operators if provided
         if noise_config.custom_operators is not None:

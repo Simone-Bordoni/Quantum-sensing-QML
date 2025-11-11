@@ -14,13 +14,13 @@ import numpy as np
 
 
 class InitialStateType(Enum):
-    """Enumeration of supported initial state configurations."""
+    """Enumeration of supported initial state configurations (for input field)."""
 
-    VACUUM = "vacuum"  # |0,0,0⟩
-    SINGLE_PHOTON = "single_photon"  # |1,0,0⟩
-    COHERENT = "coherent"  # |α,0,0⟩ with qubit ground
-    THERMAL = "thermal"  # Thermal state with qubit ground
-    CUSTOM = "custom"  # User-defined state amplitudes
+    VACUUM = "vacuum"  
+    SINGLE_PHOTON = "single_photon" 
+    COHERENT = "coherent"  
+    THERMAL = "thermal"  
+    CUSTOM = "custom"  
 
 
 @dataclass
@@ -29,14 +29,29 @@ class PhysicalConstants:
     Physical constants and coupling parameters for the quantum system.
 
     Attributes:
-        chi: Dispersive coupling strength between resonator and qubit (Hz)
+        n_qubits: Number of qubits in the system
+        chi: Dispersive coupling strength between resonator and qubit(s) (Hz).
+             Can be a float (same coupling for all qubits) or a list of floats
+             (individual coupling per qubit).
         photon_cavity_coupling: Photon-cavity coupling strength (Hz)
         inverse_pulse_width: Inverse of the pulse width (1/time units, typically 1/ns)
     """
 
-    chi: float = 0.5  # Dispersive coupling in units of cavity decay rate
+    n_qubits: int = 1  # Number of qubits
+    chi: Union[float, List[float]] = 0.5  # Dispersive coupling in units of cavity decay rate
     photon_cavity_coupling: float = 1.0  # Photon-cavity coupling
     inverse_pulse_width: float = 0.1  # Inverse pulse width parameter
+    
+    def __post_init__(self):
+        """Convert chi to list format if necessary."""
+        if isinstance(self.chi, (int, float)):
+            self.chi = [float(self.chi)] * self.n_qubits
+        elif isinstance(self.chi, list):
+            if len(self.chi) != self.n_qubits:
+                raise ValueError(f"chi list length ({len(self.chi)}) must match n_qubits ({self.n_qubits})")
+            self.chi = [float(c) for c in self.chi]
+        else:
+            raise TypeError("chi must be a float or a list of floats")
 
 
 @dataclass
@@ -44,22 +59,46 @@ class SystemDimensions:
     """
     Hilbert space dimensions for the composite quantum system.
 
-    The total system consists of three subsystems:
+    The total system consists of subsystems:
     - Field mode (field_levels)
     - Resonator cavity mode (cavity_levels)
-    - Qubit (qubit_levels)
+    - Qubit(s) (qubit_levels per qubit)
 
-    Total Hilbert space dimension = field_levels × cavity_levels × qubit_levels
+    Total Hilbert space dimension = field_levels × cavity_levels × (qubit_levels)^n_qubits
 
     Attributes:
         cavity_levels: Number of levels for cavity modes
-        qubit_levels: Number of levels for qubit (typically 2)
+        qubit_levels: Number of levels for qubit(s) (typically 2).
+                     Can be an int (same for all qubits) or a list of ints
+                     (individual levels per qubit).
         field_levels: Number of levels for field modes
     """
 
     cavity_levels: int = 2  # Cavity truncation level
-    qubit_levels: int = 2  # Qubit levels
+    qubit_levels: Union[int, List[int]] = 2  # Qubit levels
     field_levels: int = 2  # Field mode levels
+    
+    def __post_init__(self):
+        """Store original input and convert qubit_levels to list format if necessary."""
+        # We need n_qubits from PhysicalConstants, but we can't access it here
+        # So we'll handle this in the ExperimentalParameters.__init__
+        pass
+    
+    def _normalize_qubit_levels(self, n_qubits: int):
+        """
+        Normalize qubit_levels to list format.
+        
+        Args:
+            n_qubits: Number of qubits from PhysicalConstants
+        """
+        if isinstance(self.qubit_levels, int):
+            self.qubit_levels = [self.qubit_levels] * n_qubits
+        elif isinstance(self.qubit_levels, list):
+            if len(self.qubit_levels) != n_qubits:
+                raise ValueError(f"qubit_levels list length ({len(self.qubit_levels)}) must match n_qubits ({n_qubits})")
+            self.qubit_levels = [int(q) for q in self.qubit_levels]
+        else:
+            raise TypeError("qubit_levels must be an int or a list of ints")
 
 @dataclass
 class MeasurementProtocol:
@@ -117,16 +156,37 @@ class NoiseConfiguration:
     Noise model configuration.
 
     Attributes:
-        depolarizing: Depolarization rate
-        dephasing: Dephasing rate
-        relaxation: Relaxation rate
+        depolarizing: Depolarization rate. Can be a float (same for all qubits) 
+                     or a list of floats (individual rate per qubit).
+        dephasing: Dephasing rate. Can be a float (same for all qubits)
+                  or a list of floats (individual rate per qubit).
+        relaxation: Relaxation rate. Can be a float (same for all qubits)
+                   or a list of floats (individual rate per qubit).
         custom_operators: Custom Lindblad operators
     """
 
-    depolarizing: float = 0.0  # Depolarization rate
-    dephasing: float = 0.0  # Dephasing rate
-    relaxation: float = 0.0  # Relaxation rate
+    depolarizing: Union[float, List[float]] = 0.0  # Depolarization rate
+    dephasing: Union[float, List[float]] = 0.0  # Dephasing rate
+    relaxation: Union[float, List[float]] = 0.0  # Relaxation rate
     custom_operators: Optional[List[Any]] = None  # Custom Lindblad operators
+    
+    def _normalize_noise_rates(self, n_qubits: int):
+        """
+        Normalize noise rates to list format.
+        
+        Args:
+            n_qubits: Number of qubits from PhysicalConstants
+        """
+        for attr in ['depolarizing', 'dephasing', 'relaxation']:
+            value = getattr(self, attr)
+            if isinstance(value, (int, float)):
+                setattr(self, attr, [float(value)] * n_qubits)
+            elif isinstance(value, list):
+                if len(value) != n_qubits:
+                    raise ValueError(f"{attr} list length ({len(value)}) must match n_qubits ({n_qubits})")
+                setattr(self, attr, [float(v) for v in value])
+            else:
+                raise TypeError(f"{attr} must be a float or a list of floats")
 
 
 class ExperimentalParameters:
@@ -166,6 +226,11 @@ class ExperimentalParameters:
         self.measurement = measurement or MeasurementProtocol()
         self.noise_config = noise_config or NoiseConfiguration()
         self.initial_state = initial_state or InitialStateConfig()
+        
+        # Normalize multi-qubit parameters based on n_qubits
+        n_qubits = self.physical_constants.n_qubits
+        self.system_dims._normalize_qubit_levels(n_qubits)
+        self.noise_config._normalize_noise_rates(n_qubits)
         
         # Random seed for uncertainty calculations
         self.random_seed = random_seed
@@ -305,24 +370,43 @@ class ExperimentalParameters:
             raise ValueError("Cavity levels (cavity_levels) must be >= 2")
         if self.system_dims.field_levels < 2:
             raise ValueError("External field levels (field_levels) must be >= 2")
-        if self.system_dims.qubit_levels < 2:
-            raise ValueError("Qubit levels (qubit_levels) must be >= 2")
+        
+        # Validate qubit levels (now a list)
+        if not isinstance(self.system_dims.qubit_levels, list):
+            raise TypeError("qubit_levels must be normalized to a list")
+        for i, levels in enumerate(self.system_dims.qubit_levels):
+            if levels < 2:
+                raise ValueError(f"Qubit {i} levels must be >= 2, got {levels}")
 
-        # Validate coupling constants
-        if self.physical_constants.chi <= 0:
-            raise ValueError("Dispersive coupling (chi) must be > 0")
+        # Validate coupling constants (chi is now a list)
+        if not isinstance(self.physical_constants.chi, list):
+            raise TypeError("chi must be normalized to a list")
+        for i, chi_val in enumerate(self.physical_constants.chi):
+            if chi_val <= 0:
+                raise ValueError(f"Dispersive coupling (chi) for qubit {i} must be > 0, got {chi_val}")
+        
         if self.physical_constants.photon_cavity_coupling <= 0:
             raise ValueError("Photon-cavity coupling (photon_cavity_coupling) must be > 0")
         if self.physical_constants.inverse_pulse_width <= 0:
             raise ValueError("Pulse width parameter (inverse_pulse_width) must be > 0")
 
-        # Validate noise rates
-        if self.noise_config.depolarizing < 0:
-            raise ValueError("Depolarization rate must be >= 0")
-        if self.noise_config.dephasing < 0:
-            raise ValueError("Dephasing rate must be >= 0")
-        if self.noise_config.relaxation < 0:
-            raise ValueError("Relaxation rate must be >= 0")
+        # Validate noise rates (now lists)
+        if not isinstance(self.noise_config.depolarizing, list):
+            raise TypeError("depolarizing must be normalized to a list")
+        if not isinstance(self.noise_config.dephasing, list):
+            raise TypeError("dephasing must be normalized to a list")
+        if not isinstance(self.noise_config.relaxation, list):
+            raise TypeError("relaxation must be normalized to a list")
+        
+        for i, rate in enumerate(self.noise_config.depolarizing):
+            if rate < 0:
+                raise ValueError(f"Depolarization rate for qubit {i} must be >= 0, got {rate}")
+        for i, rate in enumerate(self.noise_config.dephasing):
+            if rate < 0:
+                raise ValueError(f"Dephasing rate for qubit {i} must be >= 0, got {rate}")
+        for i, rate in enumerate(self.noise_config.relaxation):
+            if rate < 0:
+                raise ValueError(f"Relaxation rate for qubit {i} must be >= 0, got {rate}")
 
         # Validate measurement protocol
         if self.measurement.time_interval <= 0:
@@ -348,6 +432,11 @@ class ExperimentalParameters:
     # Direct access to commonly used parameters for easier integration
 
     @property
+    def n_qubits(self) -> int:
+        """Direct access to number of qubits."""
+        return self.physical_constants.n_qubits
+
+    @property
     def cavity_levels(self) -> int:
         """Direct access to cavity levels."""
         return self.system_dims.cavity_levels
@@ -358,14 +447,17 @@ class ExperimentalParameters:
         self.system_dims.cavity_levels = value
 
     @property
-    def qubit_levels(self) -> int:
-        """Direct access to qubit levels."""
+    def qubit_levels(self) -> Union[int, List[int]]:
+        """Direct access to qubit levels (returns list after normalization)."""
         return self.system_dims.qubit_levels
 
     @qubit_levels.setter
-    def qubit_levels(self, value: int) -> None:
+    def qubit_levels(self, value: Union[int, List[int]]) -> None:
         """Set qubit levels."""
         self.system_dims.qubit_levels = value
+        # Re-normalize if necessary
+        if hasattr(self, 'physical_constants'):
+            self.system_dims._normalize_qubit_levels(self.physical_constants.n_qubits)
 
     @property
     def field_levels(self) -> int:
@@ -378,14 +470,23 @@ class ExperimentalParameters:
         self.system_dims.field_levels = value
 
     @property
-    def chi(self) -> float:
-        """Direct access to dispersive coupling."""
+    def chi(self) -> Union[float, List[float]]:
+        """Direct access to dispersive coupling (returns list after normalization)."""
         return self.physical_constants.chi
 
     @chi.setter
-    def chi(self, value: float) -> None:
+    def chi(self, value: Union[float, List[float]]) -> None:
         """Set dispersive coupling."""
-        self.physical_constants.chi = value
+        # Store the value and re-normalize through __post_init__
+        n_qubits = self.physical_constants.n_qubits
+        if isinstance(value, (int, float)):
+            self.physical_constants.chi = [float(value)] * n_qubits
+        elif isinstance(value, list):
+            if len(value) != n_qubits:
+                raise ValueError(f"chi list length ({len(value)}) must match n_qubits ({n_qubits})")
+            self.physical_constants.chi = [float(c) for c in value]
+        else:
+            raise TypeError("chi must be a float or a list of floats")
 
     @property
     def photon_cavity_coupling(self) -> float:
@@ -533,34 +634,55 @@ class ExperimentalParameters:
         lines = []
         # System Dimensions Group
         lines.append("SYSTEM DIMENSIONS")
+        
+        # Calculate total dimension
+        n_qubits = self.physical_constants.n_qubits
+        qubit_levels_list = self.system_dims.qubit_levels
+        if isinstance(qubit_levels_list, list):
+            qubit_dim = np.prod(qubit_levels_list)
+        else:
+            qubit_dim = qubit_levels_list
+        
         total_dim = (
             self.system_dims.cavity_levels
-            * self.system_dims.qubit_levels
+            * qubit_dim
             * self.system_dims.field_levels
         )
+        lines.append(f"  Number of qubits:     {n_qubits:>6}")
         lines.append(f"  Cavity levels:        {self.system_dims.cavity_levels:>6}")
-        lines.append(f"  Qubit levels:         {self.system_dims.qubit_levels:>6}")
+        lines.append(f"  Qubit levels:         {self.system_dims.qubit_levels}")
         lines.append(f"  Field levels:         {self.system_dims.field_levels:>6}")
         lines.append(f"  Total dimension:      {total_dim:>6}")
 
         # Validation flags for dimensions
+        if isinstance(qubit_levels_list, list):
+            qubit_valid = all(q >= 2 for q in qubit_levels_list)
+        else:
+            qubit_valid = qubit_levels_list >= 2
+        
         dim_valid = (
             self.system_dims.cavity_levels >= 2
-            and self.system_dims.qubit_levels >= 2
+            and qubit_valid
             and self.system_dims.field_levels >= 2
         )
 
         # Physical Constants Group
         lines.append("PHYSICAL CONSTANTS")
-        lines.append(f"  Chi:                  {self.physical_constants.chi:>8.4f}")
+        lines.append(f"  Chi:                  {self.physical_constants.chi}")
         lines.append(
             f"  Photon cavity coupling: {self.physical_constants.photon_cavity_coupling:>6.4f}"
         )
         lines.append(f"  Inverse pulse width:  {self.physical_constants.inverse_pulse_width:>8.4f}")
 
         # Validation flags for constants
+        chi_list = self.physical_constants.chi
+        if isinstance(chi_list, list):
+            chi_valid = all(c > 0 for c in chi_list)
+        else:
+            chi_valid = chi_list > 0
+        
         const_valid = (
-            self.physical_constants.chi > 0
+            chi_valid
             and self.physical_constants.photon_cavity_coupling > 0
             and self.physical_constants.inverse_pulse_width > 0
         )
@@ -597,9 +719,9 @@ class ExperimentalParameters:
 
         # Noise Configuration Group
         lines.append("NOISE MODEL")
-        lines.append(f"  Depolarizing rate:    {self.noise_config.depolarizing:>8.4f}")
-        lines.append(f"  Dephasing rate:       {self.noise_config.dephasing:>8.4f}")
-        lines.append(f"  Relaxation rate:      {self.noise_config.relaxation:>8.4f}")
+        lines.append(f"  Depolarizing rate:    {self.noise_config.depolarizing}")
+        lines.append(f"  Dephasing rate:       {self.noise_config.dephasing}")
+        lines.append(f"  Relaxation rate:      {self.noise_config.relaxation}")
 
         if self.noise_config.custom_operators is not None:
             lines.append(f"  Custom operators:     {len(self.noise_config.custom_operators):>6}")

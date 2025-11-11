@@ -28,14 +28,15 @@ class TestPhysicalConstants:
     def test_default_initialization(self):
         """Test default initialization of PhysicalConstants."""
         constants = PhysicalConstants()
-        assert constants.chi == 0.5
+        assert constants.n_qubits == 1
+        assert constants.chi == [0.5]  # Now a list
         assert constants.photon_cavity_coupling == 1.0
         assert constants.inverse_pulse_width == 0.1
 
     def test_custom_initialization(self):
         """Test custom initialization of PhysicalConstants."""
         constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=2.0, inverse_pulse_width=0.2)
-        assert constants.chi == 1.0
+        assert constants.chi == [1.0]  # Now a list
         assert constants.photon_cavity_coupling == 2.0
         assert constants.inverse_pulse_width == 0.2
 
@@ -158,9 +159,10 @@ class TestExperimentalParameters:
             physical_constants=constants, system_dims=dims, measurement=measurement
         )
 
-        assert params.physical_constants.chi == 1.0
+        assert params.physical_constants.chi == [1.0]  # Now a list
         assert params.physical_constants.photon_cavity_coupling == 2.0
         assert params.system_dims.cavity_levels == 8
+        assert params.system_dims.qubit_levels == [2]  # Now a list
         assert params.system_dims.field_levels == 10
         assert len(params.measurement.measurement_times) == 5
 
@@ -211,14 +213,14 @@ class TestExperimentalParameters:
         """Test validation error when qubit levels < 2."""
         dims = SystemDimensions(qubit_levels=1)
 
-        with pytest.raises(ValueError, match="Qubit levels \\(qubit_levels\\) must be >= 2"):
+        with pytest.raises(ValueError, match="Qubit 0 levels must be >= 2"):
             ExperimentalParameters(system_dims=dims)
 
     def test_validation_chi_non_positive(self):
         """Test validation error when chi <= 0."""
         constants = PhysicalConstants(chi=0.0)
 
-        with pytest.raises(ValueError, match="Dispersive coupling \\(chi\\) must be > 0"):
+        with pytest.raises(ValueError, match="Dispersive coupling \\(chi\\) for qubit 0 must be > 0"):
             ExperimentalParameters(physical_constants=constants)
 
     def test_validation_photon_cavity_coupling_non_positive(self):
@@ -243,21 +245,21 @@ class TestExperimentalParameters:
         """Test validation error when depolarizing rate < 0."""
         noise = NoiseConfiguration(depolarizing=-0.1)
 
-        with pytest.raises(ValueError, match="Depolarization rate must be >= 0"):
+        with pytest.raises(ValueError, match="Depolarization rate for qubit 0 must be >= 0"):
             ExperimentalParameters(noise_config=noise)
 
     def test_validation_negative_dephasing_rate(self):
         """Test validation error when dephasing rate < 0."""
         noise = NoiseConfiguration(dephasing=-0.1)
 
-        with pytest.raises(ValueError, match="Dephasing rate must be >= 0"):
+        with pytest.raises(ValueError, match="Dephasing rate for qubit 0 must be >= 0"):
             ExperimentalParameters(noise_config=noise)
 
     def test_validation_negative_relaxation_rate(self):
         """Test validation error when relaxation rate < 0."""
         noise = NoiseConfiguration(relaxation=-0.1)
 
-        with pytest.raises(ValueError, match="Relaxation rate must be >= 0"):
+        with pytest.raises(ValueError, match="Relaxation rate for qubit 0 must be >= 0"):
             ExperimentalParameters(noise_config=noise)
 
     def test_validation_insufficient_measurement_times(self):
@@ -297,8 +299,8 @@ class TestExperimentalParameters:
 
         # Test setter
         params.qubit_levels = 3
-        assert params.system_dims.qubit_levels == 3
-        assert params.qubit_levels == 3
+        assert params.system_dims.qubit_levels == [3]  # Now a list
+        assert params.qubit_levels == [3]  # Now a list
 
     def test_primary_properties_field_levels(self):
         """Test primary field_levels property."""
@@ -321,8 +323,8 @@ class TestExperimentalParameters:
 
         # Test setter
         params.chi = 1.5
-        assert params.physical_constants.chi == 1.5
-        assert params.chi == 1.5
+        assert params.physical_constants.chi == [1.5]  # Now a list
+        assert params.chi == [1.5]  # Now a list
 
     def test_primary_properties_photon_cavity_coupling(self):
         """Test primary photon_cavity_coupling property."""

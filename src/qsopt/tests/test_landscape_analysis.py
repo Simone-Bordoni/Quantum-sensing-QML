@@ -267,6 +267,8 @@ def test_compute_time_interval_landscape_discrete():
     total_time = exp_params.measurement.final_time - exp_params.measurement.initial_time
     expected_fractions = np.arange(1, resolution + 1)
     expected_intervals = total_time / expected_fractions
+    # Intervals are now sorted in ascending order
+    expected_intervals = np.sort(expected_intervals)
 
     np.testing.assert_allclose(interval_vals, expected_intervals, rtol=1e-5)
 
@@ -299,9 +301,11 @@ def test_compute_time_interval_landscape_discrete_with_bounds():
     assert intervals.shape == (resolution,)
     assert np.all(intervals <= max_interval + 1e-8)
     assert np.all(intervals >= min_interval - 1e-8)
-    assert np.all(np.diff(intervals) <= 1e-12)
+    # Intervals are sorted in ascending order, so diffs should be >= 0
+    assert np.all(np.diff(intervals) >= -1e-12)
 
-    expected_first = total_time / math.ceil(total_time / max_interval)
+    # First interval should be the smallest (not largest anymore)
+    expected_first = total_time / math.floor(total_time / min_interval)
     assert np.isclose(intervals[0], expected_first)
 
 

@@ -279,16 +279,6 @@ class TrainableParameters:
             raise ValueError("Rotation optimizer has not been configured.")
         return self.rotation_optimizer
     
-    def get_all_optimizers(self) -> Dict[int, optax.GradientTransformation]:
-        """Get all optimizers."""
-        if self.rotation_optimizer is None:
-            return {}
-        return {
-            param.index: self.rotation_optimizer
-            for param in self.parameters
-            if param.param_type == ParameterType.ROTATION_ANGLE and param.trainable
-        }
-    
     def get_trainable_indices(self) -> List[int]:
         """Get indices of trainable parameters."""
         return [i for i, param in enumerate(self.parameters) if param.trainable]
