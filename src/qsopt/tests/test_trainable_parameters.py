@@ -56,7 +56,6 @@ class TestTrainableParameters:
         params = TrainableParameters()
         assert len(params) == 0
         assert len(params.get_parameter_vector()) == 0
-        assert len(params.get_all_optimizers()) == 0
 
     def test_add_single_rotation_angle(self):
         """Test adding single rotation angle."""
@@ -67,10 +66,9 @@ class TestTrainableParameters:
         vector = params.get_parameter_vector()
         assert np.isclose(vector[0], 1.57)
         
-        # Check optimizer was created
-        optimizers = params.get_all_optimizers()
-        assert len(optimizers) == 1
-        assert 0 in optimizers
+        # Check optimizer was created for this parameter
+        optimizer = params.get_optimizer(0)
+        assert optimizer is not None
 
     def test_add_single_rotation_angle_with_optimizer(self):
         """Test adding single rotation angle with custom optimizer."""
@@ -91,9 +89,11 @@ class TestTrainableParameters:
         vector = params.get_parameter_vector()
         assert np.allclose(vector, [0.0, 1.57])
         
-        # Check optimizers were created
-        optimizers = params.get_all_optimizers()
-        assert len(optimizers) == 2
+        # Check optimizers were created for both parameters
+        optimizer_0 = params.get_optimizer(0)
+        optimizer_1 = params.get_optimizer(1)
+        assert optimizer_0 is not None
+        assert optimizer_1 is not None
 
     def test_add_measurement_interval(self):
         """Test adding measurement interval parameters."""
@@ -153,10 +153,6 @@ class TestTrainableParameters:
         vector = params.get_parameter_vector()
         assert np.allclose(vector, [0.5, -0.3])
         assert all(not p.trainable for p in params.parameters)
-
-        # No optimizers should be returned for custom parameters
-        optimizers = params.get_all_optimizers()
-        assert len(optimizers) == 0
 
     def test_add_custom_parameters_with_optimizer_argument(self):
         """Ensure custom optimizer argument is no longer accepted for custom parameters."""

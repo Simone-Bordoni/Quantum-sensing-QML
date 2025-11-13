@@ -9,6 +9,7 @@ physical constants, system dimensions, measurement protocols, and initial states
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Callable, Union
+import warnings
 
 import numpy as np
 
@@ -23,6 +24,52 @@ class InitialStateType(Enum):
     CUSTOM = "custom"  
 
 
+class InteractionType(Enum):
+    """Enumeration of supported qubit-qubit interaction types."""
+    
+    ZZ = "sz-sz"  # σz ⊗ σz interaction
+    XX = "sx-sx"  # σx ⊗ σx interaction
+    YY = "sy-sy"  # σy ⊗ σy interaction
+
+
+@dataclass
+class QubitInteraction:
+    """
+    Configuration for qubit-qubit interaction.
+    
+    Attributes:
+        qubit_indices: Tuple of qubit indices involved in the interaction (e.g., (0, 1))
+        chi: Interaction strength (coupling constant)
+        interaction_type: Type of interaction (ZZ, XX, or YY)
+    """
+    
+    qubit_indices: Tuple[int, int] = (0, 1)
+    chi: float = 0.0
+    interaction_type: InteractionType = InteractionType.ZZ
+    
+    def __post_init__(self):
+        """Validate interaction parameters."""
+        if len(self.qubit_indices) != 2:
+            raise ValueError("qubit_indices must be a tuple of exactly 2 indices")
+        if self.qubit_indices[0] == self.qubit_indices[1]:
+            raise ValueError("qubit_indices must refer to different qubits")
+        if self.qubit_indices[0] < 0 or self.qubit_indices[1] < 0:
+            raise ValueError("qubit_indices must be non-negative")
+        # Ensure canonical ordering (smaller index first)
+        if self.qubit_indices[0] > self.qubit_indices[1]:
+            self.qubit_indices = (self.qubit_indices[1], self.qubit_indices[0])
+        
+        # Validate interaction strength
+        if self.chi < 0:
+            raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.chi}")
+        elif self.chi == 0:
+            warnings.warn(
+                f"Qubit-qubit interaction strength (chi) is zero for qubits {self.qubit_indices}. "
+                "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
+                UserWarning
+            )
+
+
 @dataclass
 class PhysicalConstants:
     """
@@ -35,15 +82,19 @@ class PhysicalConstants:
              (individual coupling per qubit).
         photon_cavity_coupling: Photon-cavity coupling strength (Hz)
         inverse_pulse_width: Inverse of the pulse width (1/time units, typically 1/ns)
+        qubit_interactions: List of qubit-qubit interactions. For two-qubit systems,
+                           defaults to a single ZZ interaction between qubits 0 and 1.
+                           For single-qubit systems, this is ignored.
     """
 
     n_qubits: int = 1  # Number of qubits
     chi: Union[float, List[float]] = 0.5  # Dispersive coupling in units of cavity decay rate
     photon_cavity_coupling: float = 1.0  # Photon-cavity coupling
     inverse_pulse_width: float = 0.1  # Inverse pulse width parameter
+    qubit_interactions: Optional[List[QubitInteraction]] = None  # Qubit-qubit interactions
     
     def __post_init__(self):
-        """Convert chi to list format if necessary."""
+        """Convert chi to list format if necessary and set default interactions."""
         if isinstance(self.chi, (int, float)):
             self.chi = [float(self.chi)] * self.n_qubits
         elif isinstance(self.chi, list):
@@ -52,6 +103,19 @@ class PhysicalConstants:
             self.chi = [float(c) for c in self.chi]
         else:
             raise TypeError("chi must be a float or a list of floats")
+        
+        # Set empty list if None
+        if self.qubit_interactions is None:
+            self.qubit_interactions = []
+        
+        # Validate interactions
+        for interaction in self.qubit_interactions:
+            if not isinstance(interaction, QubitInteraction):
+                raise TypeError("All qubit_interactions must be QubitInteraction instances")
+            # Check that qubit indices are valid
+            for idx in interaction.qubit_indices:
+                if idx >= self.n_qubits:
+                    raise ValueError(f"Interaction involves qubit {idx}, but only {self.n_qubits} qubits in system")
 
 
 @dataclass
@@ -382,11 +446,25 @@ class ExperimentalParameters:
         if not isinstance(self.physical_constants.chi, list):
             raise TypeError("chi must be normalized to a list")
         for i, chi_val in enumerate(self.physical_constants.chi):
-            if chi_val <= 0:
-                raise ValueError(f"Dispersive coupling (chi) for qubit {i} must be > 0, got {chi_val}")
+            if chi_val < 0:
+                raise ValueError(f"Dispersive coupling (chi) for qubit {i} must be >= 0, got {chi_val}")
+            elif chi_val == 0:
+                warnings.warn(
+                    f"Dispersive coupling (chi) for qubit {i} is zero. "
+                    "This means no qubit-cavity interaction for this qubit, "
+                    "which may not produce meaningful sensing results.",
+                    UserWarning
+                )
         
-        if self.physical_constants.photon_cavity_coupling <= 0:
-            raise ValueError("Photon-cavity coupling (photon_cavity_coupling) must be > 0")
+        if self.physical_constants.photon_cavity_coupling < 0:
+            raise ValueError("Photon-cavity coupling (photon_cavity_coupling) must be >= 0")
+        elif self.physical_constants.photon_cavity_coupling == 0:
+            warnings.warn(
+                "Photon-cavity coupling (gamma/photon_cavity_coupling) is zero. This means no "
+                "coupling between the input field and the cavity, which will result in no sensing dynamics.",
+                UserWarning
+            )
+        
         if self.physical_constants.inverse_pulse_width <= 0:
             raise ValueError("Pulse width parameter (inverse_pulse_width) must be > 0")
 
@@ -673,17 +751,26 @@ class ExperimentalParameters:
             f"  Photon cavity coupling: {self.physical_constants.photon_cavity_coupling:>6.4f}"
         )
         lines.append(f"  Inverse pulse width:  {self.physical_constants.inverse_pulse_width:>8.4f}")
+        
+        # Qubit Interactions
+        if self.physical_constants.qubit_interactions:
+            lines.append(f"  Qubit interactions:   {len(self.physical_constants.qubit_interactions)} interaction(s)")
+            for i, interaction in enumerate(self.physical_constants.qubit_interactions):
+                lines.append(f"    [{i}] Qubits {interaction.qubit_indices}: "
+                           f"{interaction.interaction_type.value}, χ={interaction.chi:.4f}")
+        else:
+            lines.append("  Qubit interactions:   None")
 
         # Validation flags for constants
         chi_list = self.physical_constants.chi
         if isinstance(chi_list, list):
-            chi_valid = all(c > 0 for c in chi_list)
+            chi_valid = all(c >= 0 for c in chi_list)
         else:
-            chi_valid = chi_list > 0
+            chi_valid = chi_list >= 0
         
         const_valid = (
             chi_valid
-            and self.physical_constants.photon_cavity_coupling > 0
+            and self.physical_constants.photon_cavity_coupling >= 0
             and self.physical_constants.inverse_pulse_width > 0
         )
 

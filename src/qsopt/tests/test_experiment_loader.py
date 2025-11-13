@@ -181,9 +181,9 @@ class TestExperimentLoader:
             assert exp_params.initial_state.state_type.value == "coherent"
             assert exp_params.initial_state.coherent_alpha == 2.0
             
-            # Check noise config
-            assert exp_params.noise_config.depolarizing == 0.01
-            assert exp_params.noise_config.dephasing == 0.005
+            # Check noise config (now stored as lists)
+            assert exp_params.noise_config.depolarizing == [0.01] or exp_params.noise_config.depolarizing == 0.01
+            assert exp_params.noise_config.dephasing == [0.005] or exp_params.noise_config.dephasing == 0.005
             
             # Check trainable parameters
             assert isinstance(trainable_params, TrainableParameters)

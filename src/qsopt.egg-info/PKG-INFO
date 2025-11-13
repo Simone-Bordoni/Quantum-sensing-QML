@@ -2,31 +2,43 @@ Metadata-Version: 2.4
 Name: qsopt
 Version: 0.1.0
 Summary: Quantum Sensing Optimization Library using JAX and QuTiP
-Author: QML Research Team
-Author-email: qml@example.com
+Author: Simone Bordoni
+Author-email: simone.bordoni@uniroma1.it
 Keywords: quantum sensing,optimization,quantum optics,jax,qutip
-Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Science/Research
-Classifier: License :: OSI Approved :: MIT License
 Classifier: Programming Language :: Python :: 3
-Classifier: Programming Language :: Python :: 3.8
-Classifier: Programming Language :: Python :: 3.9
-Classifier: Programming Language :: Python :: 3.10
-Classifier: Programming Language :: Python :: 3.11
-Classifier: Programming Language :: Python :: 3.12
 Classifier: Topic :: Scientific/Engineering :: Physics
-Requires-Python: >=3.8
+Requires-Python: >=3.13
 Description-Content-Type: text/markdown
-Requires-Dist: numpy
-Requires-Dist: jax[cpu]
-Requires-Dist: qutip>=5.0
-Requires-Dist: optax
-Requires-Dist: matplotlib
-Requires-Dist: scipy
+Requires-Dist: numpy>=2.3.2
+Requires-Dist: jax>=0.7.1
+Requires-Dist: jaxlib>=0.7.1
+Requires-Dist: qutip>=5.2.1
+Requires-Dist: qutip-jax>=0.1.1
+Requires-Dist: optax>=0.2.5
+Requires-Dist: matplotlib>=3.10.6
+Requires-Dist: scipy>=1.16.1
+Requires-Dist: ml-dtypes>=0.5.3
+Requires-Dist: opt-einsum>=3.4.0
+Requires-Dist: chex>=0.1.91
 Provides-Extra: dev
-Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest>=8.4.0; extra == "dev"
+Requires-Dist: pytest-cov>=6.0.0; extra == "dev"
+Requires-Dist: coverage>=6.0.0; extra == "dev"
+Requires-Dist: pylint>=3.0.0; extra == "dev"
+Requires-Dist: black>=24.0.0; extra == "dev"
+Requires-Dist: isort>=5.13.0; extra == "dev"
+Requires-Dist: mypy>=1.11.0; extra == "dev"
 Requires-Dist: jupyter; extra == "dev"
 Requires-Dist: ipykernel; extra == "dev"
+Provides-Extra: test
+Requires-Dist: pytest>=8.4.0; extra == "test"
+Requires-Dist: pytest-cov>=6.0.0; extra == "test"
+Requires-Dist: coverage>=6.0.0; extra == "test"
+Requires-Dist: flake8>=7.0.0; extra == "test"
+Requires-Dist: black>=24.0.0; extra == "test"
+Requires-Dist: isort>=5.13.0; extra == "test"
+Requires-Dist: mypy>=1.11.0; extra == "test"
 Dynamic: author
 Dynamic: author-email
 Dynamic: classifier

@@ -513,6 +513,164 @@ class SingleQubitExperiment(Experiment):
         
         return callback
     
+    def time_evolution(
+        self,
+        t_start: float = -5.0,
+        t_end: float = 5.0,
+        n_points: int = 200,
+        with_interaction: bool = True
+    ) -> Dict[str, np.ndarray]:
+        """
+        Compute time evolution of qubit probabilities.
+        
+        Simulates the quantum system evolution over time and returns probability
+        distributions for visualization. The system starts in superposition (after
+        first rotation), evolves under the Hamiltonian, and the probabilities are
+        measured after the second rotation.
+        
+        This method is useful for understanding the temporal dynamics and creating
+        time evolution plots for quantum sensing protocols.
+        
+        Args:
+            t_start: Start time for evolution (default: -5.0)
+            t_end: End time for evolution (default: 5.0)
+            n_points: Number of time points to sample (default: 200)
+            with_interaction: If True, use Hamiltonian with chi coupling.
+                             If False, use Hamiltonian without chi (default: True)
+        
+        Returns:
+            Dictionary containing:
+                - 'times': Array of time points, shape (n_points,)
+                - 'prob_0': Probability of qubit in |0⟩ state, shape (n_points,)
+                - 'prob_1': Probability of qubit in |1⟩ state, shape (n_points,)
+                - 'pulse_shape': Pulse envelope u(t), shape (n_points,)
+        
+        Example:
+            >>> # Get time evolution data
+            >>> evolution = experiment.time_evolution(t_start=-5, t_end=5, n_points=200)
+            >>> 
+            >>> # Plot with matplotlib
+            >>> import matplotlib.pyplot as plt
+            >>> plt.plot(evolution['times'], evolution['prob_0'], label='P(|0⟩)')
+            >>> plt.plot(evolution['times'], evolution['prob_1'], label='P(|1⟩)')
+            >>> plt.fill_between(evolution['times'], 0, evolution['pulse_shape'], alpha=0.2)
+            >>> plt.legend()
+            >>> plt.show()
+            >>> 
+            >>> # Or use the visualization utility
+            >>> from qsopt.utils import plot_time_evolution
+            >>> fig = plot_time_evolution(evolution)
+        """
+        # Get current rotation angles
+        rotation_angles = self.trainable_params.get_rotation_angles()
+        if len(rotation_angles) < 2:
+            raise ValueError("Need at least 2 rotation angle parameters")
+        
+        param_names = list(rotation_angles.keys())
+        theta1 = float(rotation_angles[param_names[0]][0])
+        theta2 = float(rotation_angles[param_names[1]][0])
+        
+        # Get initial state and solver
+        rho0 = self._cached_initial_state
+        if rho0 is None:
+            raise RuntimeError("Initial state cache is not initialized.")
+        
+        solver = self.get_solver_with_interaction() if with_interaction else self.get_solver_no_interaction()
+        
+        # Prepare rotation gates
+        rotation_theta1, _ = self._prepare_rotation_gates(theta1, theta2)
+        rotation_theta1_dag = rotation_theta1.dag()
+        rotation_theta2, rotation_theta2_dag = self._prepare_rotation_gates(theta2, theta2)
+        rotation_theta2_dag = rotation_theta2.dag()
+        
+        # Apply first rotation
+        rho_rotated = rotation_theta1 * rho0 * rotation_theta1_dag  # type: ignore
+        
+        # Time evolution
+        times = np.linspace(t_start, t_end, n_points)
+        args = {'sigma': self.experimental_params.inverse_pulse_width}
+        result = solver.run(rho_rotated, tlist=times, args=args)
+        
+        # Extract probabilities at each time point
+        prob_0_list = []
+        prob_1_list = []
+        
+        for rho_t in result.states:
+            # Apply second rotation
+            rho_final = rotation_theta2 * rho_t * rotation_theta2_dag  # type: ignore
+            
+            # Measure qubit probabilities
+            p0 = float(self.prob0(rho_final))
+            p1 = float(self.prob1(rho_final))
+            
+            prob_0_list.append(p0)
+            prob_1_list.append(p1)
+        
+        # Compute pulse shape u(t) = exp(-t^2)
+        pulse_shape = np.exp(-times**2)
+        
+        return {
+            'times': times,
+            'prob_0': np.array(prob_0_list),
+            'prob_1': np.array(prob_1_list),
+            'pulse_shape': pulse_shape
+        }
+    
+    def sweep_chi_gamma(
+        self,
+        chi_interval: list = [0.1, 100.0],
+        gamma_interval: list = [1.0, 100.0],
+        resolution_chi: int = 20,
+        resolution_gamma: int = 20,
+        chi_scale: str = 'linear',
+        gamma_scale: str = 'linear',
+        batch_size: int = 1,
+        verbose: bool = True
+    ) -> Dict[str, Union[np.ndarray, float, str]]:
+        """
+        Sweep over chi and gamma parameters to find optimal values.
+        
+        This method evaluates sensing contrast and detection probability across
+        a 2D grid of chi (dispersive coupling) and gamma (cavity decay rate)
+        values.
+        
+        Args:
+            chi_interval: List [min, max] for chi values. Default: [0.1, 100.0].
+            gamma_interval: List [min, max] for gamma values. Default: [1.0, 100.0].
+            resolution_chi: Number of chi points. Default: 20.
+            resolution_gamma: Number of gamma points. Default: 20.
+            chi_scale: Scale type for chi: 'linear' or 'log'. Default: 'linear'.
+            gamma_scale: Scale type for gamma: 'linear' or 'log'. Default: 'linear'.
+            batch_size: Number of random realizations to average over. Default: 1.
+            verbose: Print progress information. Default: True.
+            
+        Returns:
+            Dictionary with 'chi_vals', 'gamma_vals', 'contrast_map', 
+            'detection_map', 'detection_without_map', 'chi_scale', 'gamma_scale'.
+            
+        Example:
+            >>> results = experiment.sweep_chi_gamma(
+            ...     chi_interval=[0.1, 50.0],
+            ...     resolution_chi=15,
+            ...     resolution_gamma=15,
+            ...     chi_scale='log'
+            ... )
+            >>> max_idx = np.unravel_index(
+            ...     np.argmax(results['contrast_map']),
+            ...     results['contrast_map'].shape
+            ... )
+            >>> print(f"Optimal chi: {results['chi_vals'][max_idx[1]]:.3f}")
+        """
+        from qsopt.utils.chi_lambda_sweep import compute_chi_gamma_sweep
+        return compute_chi_gamma_sweep(
+            self, chi_interval, gamma_interval,
+            resolution_chi, resolution_gamma,
+            chi_scale, gamma_scale, batch_size, verbose
+        )
+    
+    # Backward compatibility alias
+    sweep_chi_lambda = sweep_chi_gamma
+    
     def _get_cached_measurement_times(self) -> List[float]:
         """Return cached measurement times, ensuring they are up to date."""
         self._ensure_measurement_interval_sync()
@@ -993,18 +1151,28 @@ class SingleQubitExperiment(Experiment):
         # Build report dictionary
         self._ensure_measurement_interval_sync()
         cached_times = self._get_cached_measurement_times()
+        
+        # Handle chi and qubit_levels which may be lists
+        chi = self.experimental_params.chi
+        if isinstance(chi, list):
+            chi = chi[0]  # Single qubit uses first element
+        
+        qubit_levels = self.experimental_params.qubit_levels
+        if isinstance(qubit_levels, list):
+            qubit_levels = qubit_levels[0]
+        
         report = {
             "experiment_type": "SingleQubitExperiment",
             "version": "0.1.0",
             "experimental_parameters": {
                 "physical_constants": {
-                    "chi": float(self.experimental_params.chi),
+                    "chi": float(chi),
                     "photon_cavity_coupling": float(self.experimental_params.photon_cavity_coupling),
                     "inverse_pulse_width": float(self.experimental_params.inverse_pulse_width)
                 },
                 "system_dimensions": {
                     "cavity_levels": int(self.experimental_params.cavity_levels),
-                    "qubit_levels": int(self.experimental_params.qubit_levels),
+                    "qubit_levels": int(qubit_levels),
                     "field_levels": int(self.experimental_params.field_levels)
                 },
                 "measurement_protocol": {
@@ -1037,9 +1205,9 @@ class SingleQubitExperiment(Experiment):
                     "has_custom_amplitudes": self.experimental_params.initial_state.custom_amplitudes is not None
                 },
                 "noise_configuration": {
-                    "depolarizing": float(self.experimental_params.noise_config.depolarizing),
-                    "dephasing": float(self.experimental_params.noise_config.dephasing),
-                    "relaxation": float(self.experimental_params.noise_config.relaxation)
+                    "depolarizing": float(self.experimental_params.noise_config.depolarizing[0]) if isinstance(self.experimental_params.noise_config.depolarizing, list) else float(self.experimental_params.noise_config.depolarizing),
+                    "dephasing": float(self.experimental_params.noise_config.dephasing[0]) if isinstance(self.experimental_params.noise_config.dephasing, list) else float(self.experimental_params.noise_config.dephasing),
+                    "relaxation": float(self.experimental_params.noise_config.relaxation[0]) if isinstance(self.experimental_params.noise_config.relaxation, list) else float(self.experimental_params.noise_config.relaxation)
                 }
             },
             "trainable_parameters": {
@@ -1047,7 +1215,7 @@ class SingleQubitExperiment(Experiment):
                     {
                         "name": param.name,
                         "type": param.param_type.value,
-                        "value": float(param.value),
+                        "value": float(param.value) if not isinstance(param.value, list) else [float(v) for v in param.value],
                         "trainable": param.trainable
                     }
                     for param in self.trainable_params.parameters

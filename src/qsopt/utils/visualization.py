@@ -156,9 +156,9 @@ def plot_optimization_dashboard(
             ax.axhline(y=reference_contrast, color='red', linestyle='--', 
                       linewidth=2, alpha=0.7, label='Reference')
         
-        ax.set_xlabel('Epoch', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Sensing Contrast', fontsize=12, fontweight='bold')
-        ax.set_title('Sensing Contrast Evolution', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Sensing Contrast', fontsize=12)
+        ax.set_title('Sensing Contrast Evolution', fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
     
@@ -169,9 +169,9 @@ def plot_optimization_dashboard(
         plot_idx += 1
         
         ax.semilogy(epochs, grad_norms, 'm-', linewidth=2, alpha=0.8)
-        ax.set_xlabel('Epoch', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Gradient Magnitude', fontsize=12, fontweight='bold')
-        ax.set_title('Gradient Evolution (Log Scale)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Gradient Magnitude', fontsize=12)
+        ax.set_title('Gradient Evolution (Log Scale)', fontsize=14)
         ax.grid(True, alpha=0.3)
     
     # Plot 3: Parameter Evolution
@@ -194,9 +194,9 @@ def plot_optimization_dashboard(
                 ax.axhline(y=ref_deg, color=color, linestyle='--', 
                           alpha=0.5, linewidth=1.5)
         
-        ax.set_xlabel('Epoch', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Rotation Angle (degrees)', fontsize=12, fontweight='bold')
-        ax.set_title('Parameter Evolution', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Rotation Angle (degrees)', fontsize=12)
+        ax.set_title('Parameter Evolution', fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
     
@@ -228,9 +228,9 @@ def plot_optimization_dashboard(
             ax.plot(ref_theta1_deg, ref_theta2_deg, 'b^', markersize=10,
                    label='Reference', markeredgecolor='black')
         
-        ax.set_xlabel(f'{param_names[0]} (degrees)', fontsize=12, fontweight='bold')
-        ax.set_ylabel(f'{param_names[1]} (degrees)', fontsize=12, fontweight='bold')
-        ax.set_title('Optimization Trajectory', fontsize=14, fontweight='bold')
+        ax.set_xlabel(f'{param_names[0]} (degrees)', fontsize=12)
+        ax.set_ylabel(f'{param_names[1]} (degrees)', fontsize=12)
+        ax.set_title('Optimization Trajectory', fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
         
@@ -257,14 +257,14 @@ def plot_optimization_dashboard(
             ax.axhline(y=reference_prob_without, color='red', linestyle='--',
                       linewidth=2, alpha=0.6, label='Without Photon (Reference)')
         
-        ax.set_xlabel('Epoch', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Detection Probability', fontsize=12, fontweight='bold')
-        ax.set_title('Detection Probabilities Evolution', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Detection Probability', fontsize=12)
+        ax.set_title('Detection Probabilities Evolution', fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
     
     # Overall title
-    plt.suptitle('Optimization Dashboard', fontsize=18, fontweight='bold')
+    plt.suptitle('Optimization Dashboard', fontsize=18)
     plt.tight_layout()
     
     # Save if path provided
@@ -314,9 +314,9 @@ def plot_contrast_evolution(
             ax.axhline(y=reference_contrast, color='red', linestyle='--',
                       linewidth=2, alpha=0.7, label='Reference')
     
-    ax.set_xlabel('Epoch', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Sensing Contrast', fontsize=14, fontweight='bold')
-    ax.set_title('Sensing Contrast Evolution', fontsize=16, fontweight='bold')
+    ax.set_xlabel('Epoch', fontsize=14)
+    ax.set_ylabel('Sensing Contrast', fontsize=14)
+    ax.set_title('Sensing Contrast Evolution', fontsize=16)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     
@@ -403,9 +403,9 @@ def plot_parameter_trajectory(
             ax.plot(ref_theta1_deg, ref_theta2_deg, 'b^', markersize=14,
                    label='Reference', markeredgecolor='black', markeredgewidth=2)
     
-    ax.set_xlabel(f'{param_names[idx1]} (degrees)', fontsize=14, fontweight='bold')
-    ax.set_ylabel(f'{param_names[idx2]} (degrees)', fontsize=14, fontweight='bold')
-    ax.set_title('Optimization Trajectory', fontsize=16, fontweight='bold')
+    ax.set_xlabel(f'{param_names[idx1]} (degrees)', fontsize=14)
+    ax.set_ylabel(f'{param_names[idx2]} (degrees)', fontsize=14)
+    ax.set_title('Optimization Trajectory', fontsize=16)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
     
@@ -506,7 +506,7 @@ def plot_parameter_landscape(
                        levels=30, cmap='viridis')
     ax1.set_xlabel('θ₁ (degrees)', fontsize=12)
     ax1.set_ylabel('θ₂ (degrees)', fontsize=12)
-    ax1.set_title('Sensing Contrast Landscape', fontsize=14, fontweight='bold')
+    ax1.set_title('Sensing Contrast Landscape', fontsize=14)
     ax1.grid(True, alpha=0.3)
     cbar1 = plt.colorbar(im1, ax=ax1, label='Contrast')
     
@@ -530,7 +530,7 @@ def plot_parameter_landscape(
     ax2.set_xlabel('θ₁ (degrees)', fontsize=12)
     ax2.set_ylabel('θ₂ (degrees)', fontsize=12)
     ax2.set_title('Detection Probability Landscape (with photon)', 
-                  fontsize=14, fontweight='bold')
+                  fontsize=14)
     ax2.grid(True, alpha=0.3)
     cbar2 = plt.colorbar(im2, ax=ax2, label='Detection Probability')
     
@@ -709,7 +709,7 @@ def plot_time_interval_landscape(
     ax1.set_xlabel('Time Interval (Δt)', fontsize=12)
     ax1.set_ylabel('Sensing Contrast', fontsize=12)
     ax1.set_title(f'Sensing Contrast vs Time Interval ({mode} mode)', 
-                  fontsize=14, fontweight='bold')
+                  fontsize=14)
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc='best', fontsize=10)
     
@@ -730,7 +730,7 @@ def plot_time_interval_landscape(
     
     ax2.set_xlabel('Time Interval (Δt)', fontsize=12)
     ax2.set_ylabel('Detection Probability', fontsize=12)
-    ax2.set_title('Detection Probabilities vs Time Interval', fontsize=14, fontweight='bold')
+    ax2.set_title('Detection Probabilities vs Time Interval', fontsize=14)
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc='best', fontsize=10)
     
@@ -750,7 +750,7 @@ def plot_time_interval_landscape(
 
         ax3.set_xlabel('Time Interval (Δt)', fontsize=12)
         ax3.set_ylabel('Number of Measurements', fontsize=12)
-        ax3.set_title('Measurement Count vs Time Interval', fontsize=14, fontweight='bold')
+        ax3.set_title('Measurement Count vs Time Interval', fontsize=14)
         ax3.grid(True, alpha=0.3)
         ax3.legend(loc='best', fontsize=10)
 
@@ -902,10 +902,10 @@ def plot_pulse_shape_with_measurements(
                label='Measurement window')
     
     # Formatting
-    ax.set_xlabel('Time', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Pulse amplitude |u₀(t)|', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Pulse amplitude |u₀(t)|', fontsize=12)
     ax.set_title('Gaussian Pulse Shape with Measurement Protocol', 
-                fontsize=14, fontweight='bold', pad=15)
+                fontsize=14, pad=15)
     ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
     ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
     ax.set_ylim(0.0, 1.1)
@@ -939,5 +939,632 @@ Measurement Protocol:
         save_path_obj.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
         print(f"Pulse shape plot saved to: {save_path}")
+    
+    return fig
+
+
+def plot_time_evolution(
+    evolution_data: Dict[str, np.ndarray],
+    n_qubits: int = 1,
+    figsize: Tuple[int, int] = (10, 6),
+    save_path: Optional[str] = None,
+    dpi: int = 300
+) -> Figure:
+    """
+    Plot time evolution of qubit probabilities.
+    
+    Creates a plot showing how qubit state probabilities evolve over time,
+    with the pulse envelope shown as a filled area. Supports both single
+    and two-qubit experiments.
+    
+    Args:
+        evolution_data: Dictionary from ``time_evolution()`` method containing:
+            - For single qubit: 'times', 'prob_0', 'prob_1', 'pulse_shape'
+            - For two qubits: 'times', 'prob_00', 'prob_01', 'prob_10', 'prob_11', 'pulse_shape'
+        n_qubits: Number of qubits (1 or 2). Default: 1
+        figsize: Figure size as (width, height) in inches. Default: (10, 6)
+        save_path: Optional path to save the figure. Default: None
+        dpi: Resolution for saved figure. Default: 300
+        
+    Returns:
+        matplotlib Figure object containing the plot
+        
+    Example:
+        >>> # Single qubit
+        >>> evolution = single_experiment.time_evolution(t_start=-5, t_end=5)
+        >>> fig = plot_time_evolution(evolution, n_qubits=1)
+        >>> 
+        >>> # Two qubits
+        >>> evolution = two_experiment.time_evolution(t_start=-5, t_end=5)
+        >>> fig = plot_time_evolution(evolution, n_qubits=2, save_path='time_evolution.pdf')
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    times = evolution_data['times']
+    pulse_shape = evolution_data['pulse_shape']
+    
+    if n_qubits == 1:
+        # Single qubit plot
+        ax.plot(times, evolution_data['prob_0'], '-', label='P(|0⟩)', linewidth=2)
+        ax.plot(times, evolution_data['prob_1'], '--', label='P(|1⟩)', linewidth=2)
+    elif n_qubits == 2:
+        # Two qubit plot
+        labels = [r'$P_{00}$', r'$P_{01}$', r'$P_{10}$', r'$P_{11}$']
+        linestyles = ['-', '--', '-.', ':']
+        states = ['00', '01', '10', '11']
+        
+        for k, state in enumerate(states):
+            ax.plot(times, evolution_data[f'prob_{state}'], 
+                   linestyle=linestyles[k], label=labels[k], linewidth=2)
+    else:
+        raise ValueError(f"n_qubits must be 1 or 2, got {n_qubits}")
+    
+    # Add pulse envelope
+    ax.fill_between(times, 0, pulse_shape, alpha=0.2, color='gray', label='Pulse u(t)')
+    
+    # Formatting
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Population', fontsize=12)
+    ax.set_title('Time Evolution of Qubit Probabilities', fontsize=14)
+    ax.legend(loc='best', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(-0.05, 1.05)
+    
+    plt.tight_layout()
+    
+    # Save figure if path provided
+    if save_path:
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Time evolution plot saved to: {save_path}")
+    
+    return fig
+
+
+def plot_chi_gamma_sweep(
+    sweep_results: Dict[str, Union[np.ndarray, float]],
+    show_contrast: bool = True,
+    show_detection_with: bool = True,
+    show_detection_without: bool = True,
+    figsize: Optional[Tuple[int, int]] = None,
+    save_path: Optional[str] = None,
+    dpi: int = 300
+) -> Figure:
+    """
+    Visualize chi-gamma parameter sweep results.
+    
+    Creates figure showing selected plots:
+    - Sensing contrast across chi-gamma space
+    - Detection probability with photon
+    - Detection probability without photon
+    
+    Args:
+        sweep_results: Dictionary from ``sweep_chi_gamma()`` containing:
+            - 'chi_vals': Array of chi values
+            - 'gamma_vals': Array of gamma values (or 'lambda_vals' for backward compatibility)
+            - 'contrast_map': 2D contrast array
+            - 'detection_map': 2D detection probability with photon
+            - 'detection_without_map': 2D detection probability without photon
+        show_contrast: Display sensing contrast plot when True. Default: True
+        show_detection_with: Display detection probability with photon when True. Default: True
+        show_detection_without: Display detection probability without photon when True. Default: True
+        figsize: Figure size as (width, height) in inches. If None, automatically determined
+            based on number of plots (square subplots, vertical arrangement). Default: None
+        save_path: Optional path to save the figure. Default: None
+        dpi: Resolution for saved figure. Default: 300
+        
+    Returns:
+        matplotlib Figure object containing the plots
+        
+    Example:
+        >>> # Single qubit sweep
+        >>> results = experiment.sweep_chi_gamma(
+        ...     chi_interval=[0.1, 50.0],
+        ...     resolution_chi=20, resolution_gamma=20
+        ... )
+        >>> fig = plot_chi_gamma_sweep(results, save_path='chi_gamma_sweep.pdf')
+        >>> 
+        >>> # Show only contrast map
+        >>> fig = plot_chi_gamma_sweep(
+        ...     results,
+        ...     show_contrast=True,
+        ...     show_detection_with=False,
+        ...     show_detection_without=False
+        ... )
+        >>> 
+        >>> # Find optimal parameters
+        >>> max_idx = np.unravel_index(
+        ...     np.argmax(results['contrast_map']),
+        ...     results['contrast_map'].shape
+        ... )
+        >>> optimal_chi = results['chi_vals'][max_idx[1]]
+        >>> optimal_gamma = results['gamma_vals'][max_idx[0]]
+        >>> print(f"Optimal: χ={optimal_chi:.2f}, γ={optimal_gamma:.2f}")
+    """
+    # Count active plots
+    active_plots = [show_contrast, show_detection_with, show_detection_without]
+    n_plots = sum(active_plots)
+    
+    if n_plots == 0:
+        raise ValueError("At least one plot type must be enabled")
+    
+    chi_vals = sweep_results['chi_vals']
+    # Support both 'gamma_vals' and 'lambda_vals' for backward compatibility
+    gamma_vals = sweep_results.get('gamma_vals', sweep_results.get('lambda_vals'))
+    contrast_map = sweep_results['contrast_map']
+    detection_map = sweep_results['detection_map']
+    detection_without_map = sweep_results['detection_without_map']
+    chi_scale = sweep_results.get('chi_scale', 'linear')
+    gamma_scale = sweep_results.get('gamma_scale', sweep_results.get('lambda_scale', 'linear'))
+    
+    # Create meshgrid for plotting
+    Chi, Gamma = np.meshgrid(chi_vals, gamma_vals)
+    
+    # Find optimal point
+    max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+    optimal_chi = chi_vals[max_idx[1]]
+    optimal_gamma = gamma_vals[max_idx[0]]
+    max_contrast = contrast_map[max_idx]
+    
+    # Determine figure size (square plots arranged vertically)
+    if figsize is None:
+        plot_size = 8  # Size for square plots
+        figsize = (plot_size, plot_size * n_plots)
+    
+    # Create figure with vertical arrangement
+    fig, axes_array = plt.subplots(n_plots, 1, figsize=figsize, squeeze=False)
+    axes = axes_array.flatten()
+    
+    # Contour levels matching notebook style
+    contour_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1]
+    label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1]
+    
+    plot_idx = 0
+    
+    # Plot 1: Sensing Contrast
+    if show_contrast:
+        ax = axes[plot_idx]
+        plot_idx += 1
+        
+        # Filled contours with rainbow colormap (matching notebook style)
+        cf = ax.contourf(Chi, Gamma, contrast_map, levels=contour_levels, cmap='rainbow')
+        cbar1 = plt.colorbar(cf, ax=ax, fraction=0.04)
+        cbar1.set_label('Contrast', fontsize=10)
+        
+        # Line contours with labels
+        cs = ax.contour(Chi, Gamma, contrast_map, levels=label_levels, 
+                       colors='k', linewidths=0.2)
+        ax.clabel(cs, inline=True, fontsize=8)
+        
+        # Mark optimal point
+        ax.plot(optimal_chi, optimal_gamma, 'r*', markersize=15, 
+               label=f'Max: {max_contrast:.4f}')
+        
+        if chi_scale == 'log':
+            ax.set_xscale('log')
+        if gamma_scale == 'log':
+            ax.set_yscale('log')
+        ax.set_xlabel('χ (Dispersive coupling)', fontsize=11)
+        ax.set_ylabel('γ (Cavity decay rate)', fontsize=11)
+        ax.set_title('Sensing Contrast', fontsize=12)
+        ax.legend(loc='upper right', fontsize=9)
+        ax.set_aspect('equal', adjustable='box')
+    
+    # Plot 2: Detection Probability (with photon)
+    if show_detection_with:
+        ax = axes[plot_idx]
+        plot_idx += 1
+        
+        # Filled contours
+        cf = ax.contourf(Chi, Gamma, detection_map, levels=contour_levels, cmap='rainbow')
+        cbar2 = plt.colorbar(cf, ax=ax, fraction=0.04)
+        cbar2.set_label('Probability', fontsize=10)
+        
+        # Line contours with labels
+        cs = ax.contour(Chi, Gamma, detection_map, levels=label_levels, 
+                       colors='k', linewidths=0.2)
+        ax.clabel(cs, inline=True, fontsize=8)
+        
+        # Mark optimal point
+        ax.plot(optimal_chi, optimal_gamma, 'r*', markersize=15, 
+               label='At max contrast')
+        
+        if chi_scale == 'log':
+            ax.set_xscale('log')
+        if gamma_scale == 'log':
+            ax.set_yscale('log')
+        ax.set_xlabel('χ (Dispersive coupling)', fontsize=11)
+        ax.set_ylabel('γ (Cavity decay rate)', fontsize=11)
+        ax.set_title('P(detection | with photon)', fontsize=12)
+        ax.legend(loc='upper right', fontsize=9)
+        ax.set_aspect('equal', adjustable='box')
+    
+    # Plot 3: Detection Probability (without photon)
+    if show_detection_without:
+        ax = axes[plot_idx]
+        plot_idx += 1
+        
+        # Filled contours
+        cf = ax.contourf(Chi, Gamma, detection_without_map, levels=contour_levels, cmap='rainbow')
+        cbar3 = plt.colorbar(cf, ax=ax, fraction=0.04)
+        cbar3.set_label('Probability', fontsize=10)
+        
+        # Line contours with labels
+        cs = ax.contour(Chi, Gamma, detection_without_map, levels=label_levels, 
+                       colors='k', linewidths=0.2)
+        ax.clabel(cs, inline=True, fontsize=8)
+        
+        # Mark optimal point
+        ax.plot(optimal_chi, optimal_gamma, 'r*', markersize=15, 
+               label='At max contrast')
+        
+        if chi_scale == 'log':
+            ax.set_xscale('log')
+        if gamma_scale == 'log':
+            ax.set_yscale('log')
+        ax.set_xlabel('χ (Dispersive coupling)', fontsize=11)
+        ax.set_ylabel('γ (Cavity decay rate)', fontsize=11)
+        ax.set_title('P(detection | without photon)', fontsize=12)
+        ax.legend(loc='upper right', fontsize=9)
+        ax.set_aspect('equal', adjustable='box')
+    
+    # Add summary text
+    summary_text = f"""OPTIMAL PARAMETERS
+χ (chi):    {optimal_chi:.3f}
+γ (gamma):  {optimal_gamma:.3f}
+Contrast:   {max_contrast:.6f}"""
+    
+    fig.text(0.5, 0.02, summary_text, fontsize=10, family='monospace',
+             ha='center', va='bottom',
+             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7, pad=0.8))
+    
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    
+    # Save figure if path provided
+    if save_path:
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Chi-gamma sweep plot saved to: {save_path}")
+    
+    return fig
+
+
+# Backward compatibility alias
+plot_chi_lambda_sweep = plot_chi_gamma_sweep
+
+
+def plot_two_qubit_probabilities(
+    chi_vals: np.ndarray,
+    gamma_vals: np.ndarray,
+    prob_maps: Dict[str, np.ndarray],
+    chi_scale: str = 'linear',
+    gamma_scale: str = 'linear',
+    contour_levels: Optional[List[float]] = None,
+    label_levels: Optional[List[float]] = None,
+    figsize: Tuple[int, int] = (10, 10),
+    save_path: Optional[str] = None,
+    dpi: int = 300
+) -> Figure:
+    """
+    Plot all four two-qubit probability maps in a 2x2 grid.
+    
+    Creates contour plots for P(00), P(01), P(10), and P(11) as functions of
+    chi and gamma parameters using rainbow colormap with labeled contours.
+    
+    Args:
+        chi_vals: 1D array of chi values
+        gamma_vals: 1D array of gamma values
+        prob_maps: Dictionary with keys 'p00', 'p01', 'p10', 'p11' containing 2D probability arrays
+        chi_scale: Scale for chi axis ('linear' or 'log')
+        gamma_scale: Scale for gamma axis ('linear' or 'log')
+        contour_levels: Levels for filled contours. Default: [0, 0.1, 0.2, ..., 1.0]
+        label_levels: Levels for labeled line contours. Default: [0, 0.2, 0.4, 0.6, 0.8, 0.95, 0.99, 1]
+        figsize: Figure size (width, height) in inches
+        save_path: Optional path to save the figure
+        dpi: Resolution for saved figure
+        
+    Returns:
+        matplotlib Figure object
+        
+    Example:
+        >>> from qsopt.utils import plot_two_qubit_probabilities
+        >>> # After running a parameter sweep
+        >>> results = experiment.sweep_chi_gamma(...)
+        >>> plot_two_qubit_probabilities(
+        ...     results['chi_vals'],
+        ...     results['gamma_vals'],
+        ...     results['prob_maps']
+        ... )
+    """
+    # Default contour levels
+    if contour_levels is None:
+        contour_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    
+    if label_levels is None:
+        label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+    
+    # Create meshgrid
+    Chi, Gamma = np.meshgrid(chi_vals, gamma_vals)
+    
+    # Create figure with 2x2 subplots
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    fig.suptitle('Two-Qubit Final State Probabilities', fontsize=14, y=0.995)
+    
+    # Plot titles and data keys
+    plot_config = [
+        (0, 0, 'p00', r'$P_{00}$ (Both ground)', '1-P00'),
+        (0, 1, 'p11', r'$P_{11}$ (Both excited)', 'P11'),
+        (1, 0, 'p01', r'$P_{01}$ (Q1 ground, Q2 excited)', 'P01'),
+        (1, 1, 'p10', r'$P_{10}$ (Q1 excited, Q2 ground)', 'P10')
+    ]
+    
+    for row, col, key, title, short_title in plot_config:
+        ax = axes[row, col]
+        
+        # Get probability map
+        P = prob_maps[key]
+        
+        # For P00, plot 1-P00 (detection probability)
+        if key == 'p00':
+            P_plot = 1 - P
+        else:
+            P_plot = P
+        
+        # Filled contours
+        cf = ax.contourf(Chi, Gamma, P_plot, levels=contour_levels, cmap='rainbow')
+        cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
+        cbar.set_label('Probability', fontsize=10)
+        
+        # Line contours with labels
+        cs = ax.contour(Chi, Gamma, P_plot, levels=label_levels, 
+                       colors='k', linewidths=0.2)
+        ax.clabel(cs, inline=True, fontsize=8)
+        
+        # Set scales
+        if chi_scale == 'log':
+            ax.set_xscale('log')
+        if gamma_scale == 'log':
+            ax.set_yscale('log')
+        
+        # Labels and title
+        ax.set_xlabel(r'$\chi$ (Dispersive coupling)', fontsize=11)
+        ax.set_ylabel(r'$\gamma$ (Cavity decay rate)', fontsize=11)
+        ax.set_title(title, fontsize=12)
+        ax.set_aspect('equal', adjustable='box')
+    
+    plt.tight_layout()
+    
+    # Save if path provided
+    if save_path:
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Two-qubit probability plots saved to: {save_path}")
+    
+    return fig
+
+
+def plot_single_probability_map(
+    chi_vals: np.ndarray,
+    gamma_vals: np.ndarray,
+    prob_map: np.ndarray,
+    title: str = 'Probability',
+    xlabel: str = r'$\chi$ (Dispersive coupling)',
+    ylabel: str = r'$\gamma$ (Cavity decay rate)',
+    chi_scale: str = 'linear',
+    gamma_scale: str = 'linear',
+    contour_levels: Optional[List[float]] = None,
+    label_levels: Optional[List[float]] = None,
+    figsize: Tuple[int, int] = (8, 7),
+    save_path: Optional[str] = None,
+    dpi: int = 300
+) -> Figure:
+    """
+    Plot a single probability map with contours.
+    
+    Creates a contour plot with filled contours, labeled line contours, 
+    and rainbow colormap for visualizing probability distributions.
+    
+    Args:
+        chi_vals: 1D array of chi values
+        gamma_vals: 1D array of gamma values
+        prob_map: 2D probability array
+        title: Plot title
+        xlabel: X-axis label
+        ylabel: Y-axis label
+        chi_scale: Scale for chi axis ('linear' or 'log')
+        gamma_scale: Scale for gamma axis ('linear' or 'log')
+        contour_levels: Levels for filled contours
+        label_levels: Levels for labeled line contours
+        figsize: Figure size (width, height)
+        save_path: Optional path to save figure
+        dpi: Resolution for saved figure
+        
+    Returns:
+        matplotlib Figure object
+        
+    Example:
+        >>> from qsopt.utils import plot_single_probability_map
+        >>> plot_single_probability_map(
+        ...     chi_vals, gamma_vals, prob_map,
+        ...     title=r'$P_{11}$', chi_scale='log'
+        ... )
+    """
+    # Default contour levels
+    if contour_levels is None:
+        contour_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    
+    if label_levels is None:
+        label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+    
+    # Create meshgrid
+    Chi, Gamma = np.meshgrid(chi_vals, gamma_vals)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Filled contours
+    cf = ax.contourf(Chi, Gamma, prob_map, levels=contour_levels, cmap='rainbow')
+    cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
+    cbar.set_label('Probability', fontsize=10)
+    
+    # Line contours with labels
+    cs = ax.contour(Chi, Gamma, prob_map, levels=label_levels, 
+                   colors='k', linewidths=0.2)
+    ax.clabel(cs, inline=True, fontsize=8)
+    
+    # Set scales
+    if chi_scale == 'log':
+        ax.set_xscale('log')
+    if gamma_scale == 'log':
+        ax.set_yscale('log')
+    
+    # Labels and title
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11)
+    ax.set_title(title, fontsize=12)
+    ax.set_aspect('equal', adjustable='box')
+    
+    plt.tight_layout()
+    
+    # Save if path provided
+    if save_path:
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Probability plot saved to: {save_path}")
+    
+    return fig
+
+
+def plot_qubit_time_evolution(
+    times: np.ndarray,
+    probabilities: Dict[str, np.ndarray],
+    pulse_shape: Optional[np.ndarray] = None,
+    measurement_times: Optional[np.ndarray] = None,
+    title: str = 'Qubit Evolution',
+    figsize: Tuple[int, int] = (10, 6),
+    save_path: Optional[str] = None,
+    dpi: int = 300
+) -> Figure:
+    """
+    Plot time evolution of qubit state probabilities with measurement markers.
+    
+    Supports both single-qubit (P(0), P(1)) and two-qubit (P(00), P(01), P(10), P(11))
+    probability evolution. Optionally shows pulse shape and measurement times.
+    
+    Args:
+        times: Time points array
+        probabilities: Dictionary with probability arrays. Keys:
+            - Single qubit: 'prob_0', 'prob_1'
+            - Two qubits: 'prob_00', 'prob_01', 'prob_10', 'prob_11'
+        pulse_shape: Optional array of pulse shape values (same length as times)
+        measurement_times: Optional array of measurement time points for vertical markers
+        title: Plot title
+        figsize: Figure size (width, height) in inches
+        save_path: Optional path to save figure
+        dpi: Resolution for saved figure
+        
+    Returns:
+        matplotlib Figure object
+        
+    Example:
+        >>> # Single qubit
+        >>> from qsopt.utils import plot_qubit_time_evolution
+        >>> results = exp.time_evolution(t_start=-5, t_end=5)
+        >>> plot_qubit_time_evolution(
+        ...     results['times'],
+        ...     {'prob_0': results['prob_0'], 'prob_1': results['prob_1']},
+        ...     pulse_shape=results['pulse_shape'],
+        ...     measurement_times=exp.experimental_params.measurement.measurement_times,
+        ...     title='Single Qubit Evolution'
+        ... )
+        
+        >>> # Two qubits
+        >>> results = exp.time_evolution(t_start=-5, t_end=5)
+        >>> plot_qubit_time_evolution(
+        ...     results['times'],
+        ...     {
+        ...         'prob_00': results['prob_00'],
+        ...         'prob_01': results['prob_01'],
+        ...         'prob_10': results['prob_10'],
+        ...         'prob_11': results['prob_11']
+        ...     },
+        ...     pulse_shape=results['pulse_shape'],
+        ...     measurement_times=exp.experimental_params.measurement.measurement_times,
+        ...     title='Two Qubit Evolution'
+        ... )
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Detect if single or two-qubit based on keys
+    is_two_qubit = any(key in probabilities for key in ['prob_00', 'prob_01', 'prob_10', 'prob_11'])
+    
+    if is_two_qubit:
+        # Two-qubit plotting
+        linestyles = {
+            'prob_00': '-',
+            'prob_01': '--',
+            'prob_10': '-.',
+            'prob_11': ':'
+        }
+        labels = {
+            'prob_00': r'$P_{00}$',
+            'prob_01': r'$P_{01}$',
+            'prob_10': r'$P_{10}$',
+            'prob_11': r'$P_{11}$'
+        }
+        
+        for key in ['prob_00', 'prob_01', 'prob_10', 'prob_11']:
+            if key in probabilities:
+                ax.plot(times, probabilities[key], 
+                       label=labels[key], 
+                       linestyle=linestyles[key],
+                       linewidth=2)
+    else:
+        # Single-qubit plotting
+        if 'prob_0' in probabilities:
+            ax.plot(times, probabilities['prob_0'], 
+                   label='P(0)', linewidth=2)
+        if 'prob_1' in probabilities:
+            ax.plot(times, probabilities['prob_1'], 
+                   label='P(1)', linewidth=2)
+    
+    # Add pulse shape if provided
+    if pulse_shape is not None:
+        ax.fill_between(times, 0, pulse_shape, 
+                       alpha=0.2, label='Pulse shape', color='gray')
+    
+    # Add measurement time markers if provided
+    if measurement_times is not None:
+        measurement_times = np.asarray(measurement_times)
+        ymin, ymax = ax.get_ylim()
+        
+        for i, t_meas in enumerate(measurement_times):
+            # Skip if measurement time is outside plot range
+            if t_meas < times.min() or t_meas > times.max():
+                continue
+                
+            ax.axvline(t_meas, color='red', linestyle='--', 
+                      alpha=0.5, linewidth=1.5,
+                      label='Measurement times' if i == 0 else '')
+    
+    # Labels and formatting
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Population', fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save if path provided
+    if save_path:
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Time evolution plot saved to: {save_path}")
     
     return fig
