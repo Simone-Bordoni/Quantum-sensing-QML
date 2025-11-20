@@ -15,6 +15,7 @@ from pathlib import Path
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.experimental_parameters import ExperimentalParameters
+from qsopt.utils.results import TimeEvolutionResults, SweepResults
 
 def plot_optimization_dashboard(
     optimization_callback: OptimizationCallback,
@@ -944,564 +945,119 @@ Measurement Protocol:
 
 
 def plot_time_evolution(
-    evolution_data: Dict[str, np.ndarray],
-    n_qubits: int = 1,
+    evolution_data: Optional[Union['TimeEvolutionResults', Dict[str, np.ndarray]]] = None,
+    times: Optional[np.ndarray] = None,
+    probabilities: Optional[Dict[str, np.ndarray]] = None,
+    pulse_shape: Optional[np.ndarray] = None,
+    measurement_times: Optional[Union[List[float], np.ndarray]] = None,
+    title: Optional[str] = None,
+    selected_states: Optional[List[str]] = None,
+    show_pulse: bool = True,
+    show_measurements: bool = True,
     figsize: Tuple[int, int] = (10, 6),
     save_path: Optional[str] = None,
     dpi: int = 300
 ) -> Figure:
     """
-    Plot time evolution of qubit probabilities.
+    Unified time evolution plotting for single and two-qubit systems.
     
-    Creates a plot showing how qubit state probabilities evolve over time,
-    with the pulse envelope shown as a filled area. Supports both single
-    and two-qubit experiments.
+    This function can be called in three ways:
+    1. With TimeEvolutionResults object (recommended, output from time_evolution() method)
+    2. With evolution_data dict for backward compatibility
+    3. With individual times and probabilities arrays for custom plotting
     
-    Args:
-        evolution_data: Dictionary from ``time_evolution()`` method containing:
-            - For single qubit: 'times', 'prob_0', 'prob_1', 'pulse_shape'
-            - For two qubits: 'times', 'prob_00', 'prob_01', 'prob_10', 'prob_11', 'pulse_shape'
-        n_qubits: Number of qubits (1 or 2). Default: 1
-        figsize: Figure size as (width, height) in inches. Default: (10, 6)
-        save_path: Optional path to save the figure. Default: None
-        dpi: Resolution for saved figure. Default: 300
-        
-    Returns:
-        matplotlib Figure object containing the plot
-        
-    Example:
-        >>> # Single qubit
-        >>> evolution = single_experiment.time_evolution(t_start=-5, t_end=5)
-        >>> fig = plot_time_evolution(evolution, n_qubits=1)
-        >>> 
-        >>> # Two qubits
-        >>> evolution = two_experiment.time_evolution(t_start=-5, t_end=5)
-        >>> fig = plot_time_evolution(evolution, n_qubits=2, save_path='time_evolution.pdf')
-    """
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    times = evolution_data['times']
-    pulse_shape = evolution_data['pulse_shape']
-    
-    if n_qubits == 1:
-        # Single qubit plot
-        ax.plot(times, evolution_data['prob_0'], '-', label='P(|0⟩)', linewidth=2)
-        ax.plot(times, evolution_data['prob_1'], '--', label='P(|1⟩)', linewidth=2)
-    elif n_qubits == 2:
-        # Two qubit plot
-        labels = [r'$P_{00}$', r'$P_{01}$', r'$P_{10}$', r'$P_{11}$']
-        linestyles = ['-', '--', '-.', ':']
-        states = ['00', '01', '10', '11']
-        
-        for k, state in enumerate(states):
-            ax.plot(times, evolution_data[f'prob_{state}'], 
-                   linestyle=linestyles[k], label=labels[k], linewidth=2)
-    else:
-        raise ValueError(f"n_qubits must be 1 or 2, got {n_qubits}")
-    
-    # Add pulse envelope
-    ax.fill_between(times, 0, pulse_shape, alpha=0.2, color='gray', label='Pulse u(t)')
-    
-    # Formatting
-    ax.set_xlabel('Time', fontsize=12)
-    ax.set_ylabel('Population', fontsize=12)
-    ax.set_title('Time Evolution of Qubit Probabilities', fontsize=14)
-    ax.legend(loc='best', fontsize=10)
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(-0.05, 1.05)
-    
-    plt.tight_layout()
-    
-    # Save figure if path provided
-    if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-        print(f"Time evolution plot saved to: {save_path}")
-    
-    return fig
-
-
-def plot_chi_gamma_sweep(
-    sweep_results: Dict[str, Union[np.ndarray, float]],
-    show_contrast: bool = True,
-    show_detection_with: bool = True,
-    show_detection_without: bool = True,
-    figsize: Optional[Tuple[int, int]] = None,
-    save_path: Optional[str] = None,
-    dpi: int = 300
-) -> Figure:
-    """
-    Visualize chi-gamma parameter sweep results.
-    
-    Creates figure showing selected plots:
-    - Sensing contrast across chi-gamma space
-    - Detection probability with photon
-    - Detection probability without photon
+    Automatically detects single vs two-qubit based on probability keys.
+    Allows selective plotting of states and optional pulse shape and measurement markers.
     
     Args:
-        sweep_results: Dictionary from ``sweep_chi_gamma()`` containing:
-            - 'chi_vals': Array of chi values
-            - 'gamma_vals': Array of gamma values (or 'lambda_vals' for backward compatibility)
-            - 'contrast_map': 2D contrast array
-            - 'detection_map': 2D detection probability with photon
-            - 'detection_without_map': 2D detection probability without photon
-        show_contrast: Display sensing contrast plot when True. Default: True
-        show_detection_with: Display detection probability with photon when True. Default: True
-        show_detection_without: Display detection probability without photon when True. Default: True
-        figsize: Figure size as (width, height) in inches. If None, automatically determined
-            based on number of plots (square subplots, vertical arrangement). Default: None
-        save_path: Optional path to save the figure. Default: None
-        dpi: Resolution for saved figure. Default: 300
-        
-    Returns:
-        matplotlib Figure object containing the plots
-        
-    Example:
-        >>> # Single qubit sweep
-        >>> results = experiment.sweep_chi_gamma(
-        ...     chi_interval=[0.1, 50.0],
-        ...     resolution_chi=20, resolution_gamma=20
-        ... )
-        >>> fig = plot_chi_gamma_sweep(results, save_path='chi_gamma_sweep.pdf')
-        >>> 
-        >>> # Show only contrast map
-        >>> fig = plot_chi_gamma_sweep(
-        ...     results,
-        ...     show_contrast=True,
-        ...     show_detection_with=False,
-        ...     show_detection_without=False
-        ... )
-        >>> 
-        >>> # Find optimal parameters
-        >>> max_idx = np.unravel_index(
-        ...     np.argmax(results['contrast_map']),
-        ...     results['contrast_map'].shape
-        ... )
-        >>> optimal_chi = results['chi_vals'][max_idx[1]]
-        >>> optimal_gamma = results['gamma_vals'][max_idx[0]]
-        >>> print(f"Optimal: χ={optimal_chi:.2f}, γ={optimal_gamma:.2f}")
-    """
-    # Count active plots
-    active_plots = [show_contrast, show_detection_with, show_detection_without]
-    n_plots = sum(active_plots)
-    
-    if n_plots == 0:
-        raise ValueError("At least one plot type must be enabled")
-    
-    chi_vals = sweep_results['chi_vals']
-    # Support both 'gamma_vals' and 'lambda_vals' for backward compatibility
-    gamma_vals = sweep_results.get('gamma_vals', sweep_results.get('lambda_vals'))
-    contrast_map = sweep_results['contrast_map']
-    detection_map = sweep_results['detection_map']
-    detection_without_map = sweep_results['detection_without_map']
-    chi_scale = sweep_results.get('chi_scale', 'linear')
-    gamma_scale = sweep_results.get('gamma_scale', sweep_results.get('lambda_scale', 'linear'))
-    
-    # Create meshgrid for plotting
-    Chi, Gamma = np.meshgrid(chi_vals, gamma_vals)
-    
-    # Find optimal point
-    max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
-    optimal_chi = chi_vals[max_idx[1]]
-    optimal_gamma = gamma_vals[max_idx[0]]
-    max_contrast = contrast_map[max_idx]
-    
-    # Determine figure size (square plots arranged vertically)
-    if figsize is None:
-        plot_size = 8  # Size for square plots
-        figsize = (plot_size, plot_size * n_plots)
-    
-    # Create figure with vertical arrangement
-    fig, axes_array = plt.subplots(n_plots, 1, figsize=figsize, squeeze=False)
-    axes = axes_array.flatten()
-    
-    # Contour levels matching notebook style
-    contour_levels = [0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1]
-    label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1]
-    
-    plot_idx = 0
-    
-    # Plot 1: Sensing Contrast
-    if show_contrast:
-        ax = axes[plot_idx]
-        plot_idx += 1
-        
-        # Filled contours with rainbow colormap (matching notebook style)
-        cf = ax.contourf(Chi, Gamma, contrast_map, levels=contour_levels, cmap='rainbow')
-        cbar1 = plt.colorbar(cf, ax=ax, fraction=0.04)
-        cbar1.set_label('Contrast', fontsize=10)
-        
-        # Line contours with labels
-        cs = ax.contour(Chi, Gamma, contrast_map, levels=label_levels, 
-                       colors='k', linewidths=0.2)
-        ax.clabel(cs, inline=True, fontsize=8)
-        
-        # Mark optimal point
-        ax.plot(optimal_chi, optimal_gamma, 'r*', markersize=15, 
-               label=f'Max: {max_contrast:.4f}')
-        
-        if chi_scale == 'log':
-            ax.set_xscale('log')
-        if gamma_scale == 'log':
-            ax.set_yscale('log')
-        ax.set_xlabel('χ (Dispersive coupling)', fontsize=11)
-        ax.set_ylabel('γ (Cavity decay rate)', fontsize=11)
-        ax.set_title('Sensing Contrast', fontsize=12)
-        ax.legend(loc='upper right', fontsize=9)
-        ax.set_aspect('equal', adjustable='box')
-    
-    # Plot 2: Detection Probability (with photon)
-    if show_detection_with:
-        ax = axes[plot_idx]
-        plot_idx += 1
-        
-        # Filled contours
-        cf = ax.contourf(Chi, Gamma, detection_map, levels=contour_levels, cmap='rainbow')
-        cbar2 = plt.colorbar(cf, ax=ax, fraction=0.04)
-        cbar2.set_label('Probability', fontsize=10)
-        
-        # Line contours with labels
-        cs = ax.contour(Chi, Gamma, detection_map, levels=label_levels, 
-                       colors='k', linewidths=0.2)
-        ax.clabel(cs, inline=True, fontsize=8)
-        
-        # Mark optimal point
-        ax.plot(optimal_chi, optimal_gamma, 'r*', markersize=15, 
-               label='At max contrast')
-        
-        if chi_scale == 'log':
-            ax.set_xscale('log')
-        if gamma_scale == 'log':
-            ax.set_yscale('log')
-        ax.set_xlabel('χ (Dispersive coupling)', fontsize=11)
-        ax.set_ylabel('γ (Cavity decay rate)', fontsize=11)
-        ax.set_title('P(detection | with photon)', fontsize=12)
-        ax.legend(loc='upper right', fontsize=9)
-        ax.set_aspect('equal', adjustable='box')
-    
-    # Plot 3: Detection Probability (without photon)
-    if show_detection_without:
-        ax = axes[plot_idx]
-        plot_idx += 1
-        
-        # Filled contours
-        cf = ax.contourf(Chi, Gamma, detection_without_map, levels=contour_levels, cmap='rainbow')
-        cbar3 = plt.colorbar(cf, ax=ax, fraction=0.04)
-        cbar3.set_label('Probability', fontsize=10)
-        
-        # Line contours with labels
-        cs = ax.contour(Chi, Gamma, detection_without_map, levels=label_levels, 
-                       colors='k', linewidths=0.2)
-        ax.clabel(cs, inline=True, fontsize=8)
-        
-        # Mark optimal point
-        ax.plot(optimal_chi, optimal_gamma, 'r*', markersize=15, 
-               label='At max contrast')
-        
-        if chi_scale == 'log':
-            ax.set_xscale('log')
-        if gamma_scale == 'log':
-            ax.set_yscale('log')
-        ax.set_xlabel('χ (Dispersive coupling)', fontsize=11)
-        ax.set_ylabel('γ (Cavity decay rate)', fontsize=11)
-        ax.set_title('P(detection | without photon)', fontsize=12)
-        ax.legend(loc='upper right', fontsize=9)
-        ax.set_aspect('equal', adjustable='box')
-    
-    # Add summary text
-    summary_text = f"""OPTIMAL PARAMETERS
-χ (chi):    {optimal_chi:.3f}
-γ (gamma):  {optimal_gamma:.3f}
-Contrast:   {max_contrast:.6f}"""
-    
-    fig.text(0.5, 0.02, summary_text, fontsize=10, family='monospace',
-             ha='center', va='bottom',
-             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7, pad=0.8))
-    
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
-    
-    # Save figure if path provided
-    if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-        print(f"Chi-gamma sweep plot saved to: {save_path}")
-    
-    return fig
-
-
-# Backward compatibility alias
-plot_chi_lambda_sweep = plot_chi_gamma_sweep
-
-
-def plot_two_qubit_probabilities(
-    chi_vals: np.ndarray,
-    gamma_vals: np.ndarray,
-    prob_maps: Dict[str, np.ndarray],
-    chi_scale: str = 'linear',
-    gamma_scale: str = 'linear',
-    contour_levels: Optional[List[float]] = None,
-    label_levels: Optional[List[float]] = None,
-    figsize: Tuple[int, int] = (10, 10),
-    save_path: Optional[str] = None,
-    dpi: int = 300
-) -> Figure:
-    """
-    Plot all four two-qubit probability maps in a 2x2 grid.
-    
-    Creates contour plots for P(00), P(01), P(10), and P(11) as functions of
-    chi and gamma parameters using rainbow colormap with labeled contours.
-    
-    Args:
-        chi_vals: 1D array of chi values
-        gamma_vals: 1D array of gamma values
-        prob_maps: Dictionary with keys 'p00', 'p01', 'p10', 'p11' containing 2D probability arrays
-        chi_scale: Scale for chi axis ('linear' or 'log')
-        gamma_scale: Scale for gamma axis ('linear' or 'log')
-        contour_levels: Levels for filled contours. Default: [0, 0.1, 0.2, ..., 1.0]
-        label_levels: Levels for labeled line contours. Default: [0, 0.2, 0.4, 0.6, 0.8, 0.95, 0.99, 1]
+        evolution_data: TimeEvolutionResults object or dict from time_evolution() containing:
+            - times/['times']: Time points array
+            - probabilities/['prob_0', 'prob_1']: For single qubit
+            - probabilities/['prob_00', 'prob_01', 'prob_10', 'prob_11']: For two qubits
+            - pulse_shape/['pulse_shape']: Optional pulse envelope
+            - measurement_times/['measurement_times']: Optional measurement times
+        times: Time points array (alternative to evolution_data)
+        probabilities: Dict with probability arrays (alternative to evolution_data). Keys:
+            - Single qubit: 'prob_0', 'prob_1'  
+            - Two qubits: 'prob_00', 'prob_01', 'prob_10', 'prob_11'
+        pulse_shape: Optional pulse envelope array (same length as times)
+        measurement_times: Optional list/array of measurement time points for vertical markers
+        title: Plot title. Auto-generated if None.
+        selected_states: Optional list of state keys to plot (e.g., ['prob_00', 'prob_11']).
+            If None, all available states are plotted.
+        show_pulse: Whether to show pulse shape as filled area. Default: True
+        show_measurements: Whether to show measurement time markers. Default: True
         figsize: Figure size (width, height) in inches
-        save_path: Optional path to save the figure
-        dpi: Resolution for saved figure
-        
-    Returns:
-        matplotlib Figure object
-        
-    Example:
-        >>> from qsopt.utils import plot_two_qubit_probabilities
-        >>> # After running a parameter sweep
-        >>> results = experiment.sweep_chi_gamma(...)
-        >>> plot_two_qubit_probabilities(
-        ...     results['chi_vals'],
-        ...     results['gamma_vals'],
-        ...     results['prob_maps']
-        ... )
-    """
-    # Default contour levels
-    if contour_levels is None:
-        contour_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
-    
-    if label_levels is None:
-        label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
-    
-    # Create meshgrid
-    Chi, Gamma = np.meshgrid(chi_vals, gamma_vals)
-    
-    # Create figure with 2x2 subplots
-    fig, axes = plt.subplots(2, 2, figsize=figsize)
-    fig.suptitle('Two-Qubit Final State Probabilities', fontsize=14, y=0.995)
-    
-    # Plot titles and data keys
-    plot_config = [
-        (0, 0, 'p00', r'$P_{00}$ (Both ground)', '1-P00'),
-        (0, 1, 'p11', r'$P_{11}$ (Both excited)', 'P11'),
-        (1, 0, 'p01', r'$P_{01}$ (Q1 ground, Q2 excited)', 'P01'),
-        (1, 1, 'p10', r'$P_{10}$ (Q1 excited, Q2 ground)', 'P10')
-    ]
-    
-    for row, col, key, title, short_title in plot_config:
-        ax = axes[row, col]
-        
-        # Get probability map
-        P = prob_maps[key]
-        
-        # For P00, plot 1-P00 (detection probability)
-        if key == 'p00':
-            P_plot = 1 - P
-        else:
-            P_plot = P
-        
-        # Filled contours
-        cf = ax.contourf(Chi, Gamma, P_plot, levels=contour_levels, cmap='rainbow')
-        cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
-        cbar.set_label('Probability', fontsize=10)
-        
-        # Line contours with labels
-        cs = ax.contour(Chi, Gamma, P_plot, levels=label_levels, 
-                       colors='k', linewidths=0.2)
-        ax.clabel(cs, inline=True, fontsize=8)
-        
-        # Set scales
-        if chi_scale == 'log':
-            ax.set_xscale('log')
-        if gamma_scale == 'log':
-            ax.set_yscale('log')
-        
-        # Labels and title
-        ax.set_xlabel(r'$\chi$ (Dispersive coupling)', fontsize=11)
-        ax.set_ylabel(r'$\gamma$ (Cavity decay rate)', fontsize=11)
-        ax.set_title(title, fontsize=12)
-        ax.set_aspect('equal', adjustable='box')
-    
-    plt.tight_layout()
-    
-    # Save if path provided
-    if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-        print(f"Two-qubit probability plots saved to: {save_path}")
-    
-    return fig
-
-
-def plot_single_probability_map(
-    chi_vals: np.ndarray,
-    gamma_vals: np.ndarray,
-    prob_map: np.ndarray,
-    title: str = 'Probability',
-    xlabel: str = r'$\chi$ (Dispersive coupling)',
-    ylabel: str = r'$\gamma$ (Cavity decay rate)',
-    chi_scale: str = 'linear',
-    gamma_scale: str = 'linear',
-    contour_levels: Optional[List[float]] = None,
-    label_levels: Optional[List[float]] = None,
-    figsize: Tuple[int, int] = (8, 7),
-    save_path: Optional[str] = None,
-    dpi: int = 300
-) -> Figure:
-    """
-    Plot a single probability map with contours.
-    
-    Creates a contour plot with filled contours, labeled line contours, 
-    and rainbow colormap for visualizing probability distributions.
-    
-    Args:
-        chi_vals: 1D array of chi values
-        gamma_vals: 1D array of gamma values
-        prob_map: 2D probability array
-        title: Plot title
-        xlabel: X-axis label
-        ylabel: Y-axis label
-        chi_scale: Scale for chi axis ('linear' or 'log')
-        gamma_scale: Scale for gamma axis ('linear' or 'log')
-        contour_levels: Levels for filled contours
-        label_levels: Levels for labeled line contours
-        figsize: Figure size (width, height)
         save_path: Optional path to save figure
         dpi: Resolution for saved figure
         
     Returns:
         matplotlib Figure object
         
-    Example:
-        >>> from qsopt.utils import plot_single_probability_map
-        >>> plot_single_probability_map(
-        ...     chi_vals, gamma_vals, prob_map,
-        ...     title=r'$P_{11}$', chi_scale='log'
+    Examples:
+        >>> # Using TimeEvolutionResults (recommended)
+        >>> results = experiment.time_evolution(t_start=-5, t_end=5)
+        >>> print(results)  # Shows available plot options
+        >>> fig = plot_time_evolution(results)
+        
+        >>> # Using evolution_data dict (backward compatible)
+        >>> results_dict = {'times': times, 'prob_0': p0, 'prob_1': p1}
+        >>> fig = plot_time_evolution(evolution_data=results_dict)
+        
+        >>> # With measurement markers
+        >>> fig = plot_time_evolution(
+        ...     evolution_data=results,
+        ...     measurement_times=experiment.experimental_params.measurement.measurement_times,
+        ...     title='Single Qubit Evolution'
+        ... )
+        
+        >>> # Custom plotting with selected states only
+        >>> fig = plot_time_evolution(
+        ...     times=results['times'],
+        ...     probabilities={'prob_00': results['prob_00'], 'prob_11': results['prob_11']},
+        ...     pulse_shape=results['pulse_shape'],
+        ...     selected_states=['prob_00', 'prob_11'],
+        ...     show_pulse=True
+        ... )
+        
+        >>> # Two-qubit without pulse shape
+        >>> fig = plot_time_evolution(
+        ...     evolution_data=results_2q,
+        ...     show_pulse=False,
+        ...     show_measurements=False
         ... )
     """
-    # Default contour levels
-    if contour_levels is None:
-        contour_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    # Parse input: TimeEvolutionResults object or individual arguments
+    if evolution_data is not None:
+        if not isinstance(evolution_data, TimeEvolutionResults):
+            raise TypeError(
+                "evolution_data must be a TimeEvolutionResults object. "
+                "Dict-like access is no longer supported."
+            )
+        
+        times = evolution_data.times
+        probabilities = evolution_data.probabilities
+        if pulse_shape is None:
+            pulse_shape = evolution_data.pulse_shape
+        if measurement_times is None:
+            measurement_times = evolution_data.measurement_times
+    elif times is None or probabilities is None:
+        raise ValueError("Must provide either evolution_data or both times and probabilities")
     
-    if label_levels is None:
-        label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+    # Detect system type based on available probability keys
+    available_keys = list(probabilities.keys())
+    is_two_qubit = any(key in available_keys for key in ['prob_00', 'prob_01', 'prob_10', 'prob_11'])
     
-    # Create meshgrid
-    Chi, Gamma = np.meshgrid(chi_vals, gamma_vals)
+    # Filter to selected states if specified
+    if selected_states is not None:
+        probabilities = {k: v for k, v in probabilities.items() if k in selected_states}
+        if not probabilities:
+            raise ValueError(f"None of selected_states {selected_states} found in probabilities")
     
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Filled contours
-    cf = ax.contourf(Chi, Gamma, prob_map, levels=contour_levels, cmap='rainbow')
-    cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
-    cbar.set_label('Probability', fontsize=10)
-    
-    # Line contours with labels
-    cs = ax.contour(Chi, Gamma, prob_map, levels=label_levels, 
-                   colors='k', linewidths=0.2)
-    ax.clabel(cs, inline=True, fontsize=8)
-    
-    # Set scales
-    if chi_scale == 'log':
-        ax.set_xscale('log')
-    if gamma_scale == 'log':
-        ax.set_yscale('log')
-    
-    # Labels and title
-    ax.set_xlabel(xlabel, fontsize=11)
-    ax.set_ylabel(ylabel, fontsize=11)
-    ax.set_title(title, fontsize=12)
-    ax.set_aspect('equal', adjustable='box')
-    
-    plt.tight_layout()
-    
-    # Save if path provided
-    if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-        print(f"Probability plot saved to: {save_path}")
-    
-    return fig
-
-
-def plot_qubit_time_evolution(
-    times: np.ndarray,
-    probabilities: Dict[str, np.ndarray],
-    pulse_shape: Optional[np.ndarray] = None,
-    measurement_times: Optional[np.ndarray] = None,
-    title: str = 'Qubit Evolution',
-    figsize: Tuple[int, int] = (10, 6),
-    save_path: Optional[str] = None,
-    dpi: int = 300
-) -> Figure:
-    """
-    Plot time evolution of qubit state probabilities with measurement markers.
-    
-    Supports both single-qubit (P(0), P(1)) and two-qubit (P(00), P(01), P(10), P(11))
-    probability evolution. Optionally shows pulse shape and measurement times.
-    
-    Args:
-        times: Time points array
-        probabilities: Dictionary with probability arrays. Keys:
-            - Single qubit: 'prob_0', 'prob_1'
-            - Two qubits: 'prob_00', 'prob_01', 'prob_10', 'prob_11'
-        pulse_shape: Optional array of pulse shape values (same length as times)
-        measurement_times: Optional array of measurement time points for vertical markers
-        title: Plot title
-        figsize: Figure size (width, height) in inches
-        save_path: Optional path to save figure
-        dpi: Resolution for saved figure
-        
-    Returns:
-        matplotlib Figure object
-        
-    Example:
-        >>> # Single qubit
-        >>> from qsopt.utils import plot_qubit_time_evolution
-        >>> results = exp.time_evolution(t_start=-5, t_end=5)
-        >>> plot_qubit_time_evolution(
-        ...     results['times'],
-        ...     {'prob_0': results['prob_0'], 'prob_1': results['prob_1']},
-        ...     pulse_shape=results['pulse_shape'],
-        ...     measurement_times=exp.experimental_params.measurement.measurement_times,
-        ...     title='Single Qubit Evolution'
-        ... )
-        
-        >>> # Two qubits
-        >>> results = exp.time_evolution(t_start=-5, t_end=5)
-        >>> plot_qubit_time_evolution(
-        ...     results['times'],
-        ...     {
-        ...         'prob_00': results['prob_00'],
-        ...         'prob_01': results['prob_01'],
-        ...         'prob_10': results['prob_10'],
-        ...         'prob_11': results['prob_11']
-        ...     },
-        ...     pulse_shape=results['pulse_shape'],
-        ...     measurement_times=exp.experimental_params.measurement.measurement_times,
-        ...     title='Two Qubit Evolution'
-        ... )
-    """
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    # Detect if single or two-qubit based on keys
-    is_two_qubit = any(key in probabilities for key in ['prob_00', 'prob_01', 'prob_10', 'prob_11'])
-    
+    # Plot probabilities
     if is_two_qubit:
         # Two-qubit plotting
         linestyles = {
@@ -1527,20 +1083,19 @@ def plot_qubit_time_evolution(
         # Single-qubit plotting
         if 'prob_0' in probabilities:
             ax.plot(times, probabilities['prob_0'], 
-                   label='P(0)', linewidth=2)
+                   label='P(0)', linewidth=2, linestyle='-')
         if 'prob_1' in probabilities:
             ax.plot(times, probabilities['prob_1'], 
-                   label='P(1)', linewidth=2)
+                   label='P(1)', linewidth=2, linestyle='--')
     
-    # Add pulse shape if provided
-    if pulse_shape is not None:
+    # Add pulse shape if provided and requested
+    if show_pulse and pulse_shape is not None:
         ax.fill_between(times, 0, pulse_shape, 
                        alpha=0.2, label='Pulse shape', color='gray')
     
-    # Add measurement time markers if provided
-    if measurement_times is not None:
+    # Add measurement time markers if provided and requested
+    if show_measurements and measurement_times is not None:
         measurement_times = np.asarray(measurement_times)
-        ymin, ymax = ax.get_ylim()
         
         for i, t_meas in enumerate(measurement_times):
             # Skip if measurement time is outside plot range
@@ -1551,12 +1106,20 @@ def plot_qubit_time_evolution(
                       alpha=0.5, linewidth=1.5,
                       label='Measurement times' if i == 0 else '')
     
+    # Auto-generate title if not provided
+    if title is None:
+        if is_two_qubit:
+            title = 'Two-Qubit State Evolution'
+        else:
+            title = 'Single-Qubit State Evolution'
+    
     # Labels and formatting
     ax.set_xlabel('Time', fontsize=12)
     ax.set_ylabel('Population', fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.legend(fontsize=11)
     ax.grid(alpha=0.3)
+    ax.set_ylim(-0.05, 1.05)
     
     plt.tight_layout()
     
@@ -1568,3 +1131,265 @@ def plot_qubit_time_evolution(
         print(f"Time evolution plot saved to: {save_path}")
     
     return fig
+
+
+def plot_sweep_results(
+    sweep: 'SweepResults',
+    results_to_plot: Optional[List[str]] = None,
+    figsize: Optional[Tuple[int, int]] = None,
+    contour_levels: Optional[List[float]] = None,
+    label_levels: Optional[List[float]] = None,
+    mark_optimal: bool = True,
+    save_path: Optional[str] = None,
+    dpi: int = 300
+) -> Figure:
+    """
+    Unified function to plot parameter sweep results.
+    
+    This function creates contour plots for any parameter sweep, automatically
+    detecting whether it's a chi-gamma sweep, asymmetry sweep, or custom sweep.
+    It plots all results contained in the SweepResults object by default, or
+    a user-specified subset.
+    
+    Args:
+        sweep: SweepResults object from any compute_*_sweep function
+        results_to_plot: Optional list of result keys to plot. If None, plots all results.
+            Common keys: 'contrast_map', 'detection_map', 'detection_without_map',
+            'p00', 'p01', 'p10', 'p11'
+        figsize: Figure size (width, height) in inches. If None, automatically sized
+        contour_levels: Levels for filled contours. Default: [0, 0.1, 0.2, ..., 1.0]
+        label_levels: Levels for labeled line contours. Default: [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+        mark_optimal: If True and contrast_map exists, mark the optimal point
+        save_path: Optional path to save the figure
+        dpi: Resolution for saved figure
+        
+    Returns:
+        matplotlib Figure object
+        
+    Example:
+        >>> # Chi-gamma sweep
+        >>> sweep = compute_chi_gamma_sweep(exp, chi_interval=[0.1, 50], gamma_interval=[0.1, 30])
+        >>> plot_sweep_results(sweep)  # Plots all results (contrast, detection maps)
+        >>> 
+        >>> # Two-qubit sweep - plot only probabilities
+        >>> sweep = compute_chi_gamma_sweep(exp_2q, ...)
+        >>> plot_sweep_results(sweep, results_to_plot=['p00', 'p01', 'p10', 'p11'])
+        >>> 
+        >>> # Asymmetry sweep
+        >>> sweep = compute_asymmetry_coupling_sweep(exp_2q, ...)
+        >>> plot_sweep_results(sweep, mark_optimal=True)
+    """
+    # Default contour levels
+    if contour_levels is None:
+        contour_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    
+    if label_levels is None:
+        label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+    
+    # Determine which results to plot
+    if results_to_plot is None:
+        results_to_plot = list(sweep.results.keys())
+    
+    # Filter to only existing keys
+    results_to_plot = [k for k in results_to_plot if k in sweep.results]
+    
+    if not results_to_plot:
+        raise ValueError("No valid results to plot")
+    
+    n_plots = len(results_to_plot)
+    
+    # Create meshgrid for plotting
+    Param1, Param2 = np.meshgrid(sweep.param1_vals, sweep.param2_vals)
+    
+    # Determine optimal point if available
+    optimal_param1, optimal_param2 = None, None
+    if mark_optimal and 'contrast_map' in sweep.results:
+        contrast_map = sweep.results['contrast_map']
+        max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+        # max_idx[0] is row index (param1), max_idx[1] is column index (param2)
+        optimal_param1 = sweep.param1_vals[max_idx[0]]
+        optimal_param2 = sweep.param2_vals[max_idx[1]]
+    elif mark_optimal and 'optimal_idx' in sweep.metadata:
+        max_idx = sweep.metadata['optimal_idx']
+        # max_idx[0] is row index (param1), max_idx[1] is column index (param2)
+        optimal_param1 = sweep.param1_vals[max_idx[0]]
+        optimal_param2 = sweep.param2_vals[max_idx[1]]
+    
+    # Determine subplot layout
+    if n_plots == 1:
+        nrows, ncols = 1, 1
+        subplot_size = 8
+    elif n_plots == 2:
+        nrows, ncols = 1, 2
+        subplot_size = 8
+    elif n_plots == 3:
+        nrows, ncols = 3, 1
+        subplot_size = 8
+    elif n_plots == 4:
+        nrows, ncols = 2, 2
+        subplot_size = 6
+    else:
+        # General case: try to make square-ish
+        ncols = int(np.ceil(np.sqrt(n_plots)))
+        nrows = int(np.ceil(n_plots / ncols))
+        subplot_size = 6
+    
+    # Determine figure size
+    if figsize is None:
+        figsize = (subplot_size * ncols, subplot_size * nrows)
+    
+    # Create figure
+    fig, axes_array = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
+    axes = axes_array.flatten()
+    
+    # Title mapping for common result types
+    title_map = {
+        'contrast_map': 'Sensing Contrast',
+        'detection_map': 'P(detection | with photon)',
+        'detection_without_map': 'P(detection | without photon)',
+        'p00': r'$P_{00}$ (Both ground)',
+        'p01': r'$P_{01}$ (Q1 ground, Q2 excited)',
+        'p10': r'$P_{10}$ (Q1 excited, Q2 ground)',
+        'p11': r'$P_{11}$ (Both excited)'
+    }
+    
+    # Format parameter names for axis labels
+    param1_label = sweep.param1_name.replace('_', ' ').replace('gamma', 'γ').replace('chi', 'χ').replace('Delta', 'Δ')
+    param2_label = sweep.param2_name.replace('_', ' ').replace('gamma', 'γ').replace('chi', 'χ').replace('Delta', 'Δ')
+    
+    # Plot each result
+    for idx, result_key in enumerate(results_to_plot):
+        ax = axes[idx]
+        result_data = sweep.results[result_key]
+        
+        # Transpose data to match param1-param2 orientation
+        result_T = result_data.T
+        
+        # Filled contours
+        cf = ax.contourf(Param1, Param2, result_T, levels=contour_levels, cmap='rainbow')
+        cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
+        cbar.set_label('Probability' if 'p' in result_key else 'Value', fontsize=10)
+        
+        # Line contours with labels
+        cs = ax.contour(Param1, Param2, result_T, levels=label_levels, 
+                       colors='k', linewidths=0.2)
+        ax.clabel(cs, inline=True, fontsize=8)
+        
+        # Mark optimal point
+        if optimal_param1 is not None and optimal_param2 is not None:
+            if result_key == 'contrast_map':
+                max_val = sweep.results[result_key][np.unravel_index(
+                    np.argmax(sweep.results[result_key]), 
+                    sweep.results[result_key].shape
+                )]
+                ax.plot(optimal_param1, optimal_param2, 'r*', markersize=15,
+                       label=f'Max: {max_val:.4f}')
+            else:
+                ax.plot(optimal_param1, optimal_param2, 'r*', markersize=15,
+                       label='At max contrast')
+            ax.legend(loc='upper right', fontsize=9)
+        
+        # Set scales
+        if sweep.param1_scale == 'log':
+            ax.set_xscale('log')
+        if sweep.param2_scale == 'log':
+            ax.set_yscale('log')
+        
+        # Labels and title
+        ax.set_xlabel(param1_label, fontsize=11)
+        ax.set_ylabel(param2_label, fontsize=11)
+        ax.set_title(title_map.get(result_key, result_key), fontsize=12)
+        ax.set_aspect('equal', adjustable='box')
+    
+    # Hide unused subplots
+    for idx in range(n_plots, len(axes)):
+        axes[idx].axis('off')
+    
+    # Build system characteristics text from metadata
+    system_info_lines = []
+    if sweep.metadata:
+        # Extract common system parameters
+        if 'n_qubits' in sweep.metadata:
+            system_info_lines.append(f"Qubits: {sweep.metadata['n_qubits']}")
+        if 'cavity_levels' in sweep.metadata:
+            system_info_lines.append(f"Cavity levels: {sweep.metadata['cavity_levels']}")
+        if 'qubit_levels' in sweep.metadata:
+            levels = sweep.metadata['qubit_levels']
+            if isinstance(levels, list):
+                system_info_lines.append(f"Qubit levels: {levels}")
+            else:
+                system_info_lines.append(f"Qubit levels: {levels}")
+        if 'field_levels' in sweep.metadata:
+            system_info_lines.append(f"Field levels: {sweep.metadata['field_levels']}")
+        
+        # Measurement info
+        if 'n_measurements' in sweep.metadata:
+            system_info_lines.append(f"Measurements: {sweep.metadata['n_measurements']}")
+        if 'measurement_times' in sweep.metadata:
+            times = sweep.metadata['measurement_times']
+            if isinstance(times, (list, np.ndarray)) and len(times) == 2:
+                system_info_lines.append(f"Meas. times: [{times[0]:.1f}, {times[1]:.1f}]")
+        if 'initial_time_uncertainty' in sweep.metadata:
+            system_info_lines.append(f"Time uncertainty: {sweep.metadata['initial_time_uncertainty']}")
+        
+        # Noise parameters
+        noise_lines = []
+        if 'depolarizing_rate' in sweep.metadata and sweep.metadata['depolarizing_rate'] > 0:
+            noise_lines.append(f"Depolarizing: {sweep.metadata['depolarizing_rate']}")
+        if 'dephasing_rate' in sweep.metadata and sweep.metadata['dephasing_rate'] > 0:
+            noise_lines.append(f"Dephasing: {sweep.metadata['dephasing_rate']}")
+        if 'relaxation_rate' in sweep.metadata and sweep.metadata['relaxation_rate'] > 0:
+            noise_lines.append(f"Relaxation: {sweep.metadata['relaxation_rate']}")
+        if noise_lines:
+            system_info_lines.append("Noise: " + ", ".join(noise_lines))
+        elif 'depolarizing_rate' in sweep.metadata or 'dephasing_rate' in sweep.metadata or 'relaxation_rate' in sweep.metadata:
+            system_info_lines.append("Noise: None")
+        
+        # Initial state
+        if 'initial_state' in sweep.metadata:
+            system_info_lines.append(f"Initial: {sweep.metadata['initial_state']}")
+        
+        # Pulse parameters
+        if 'inverse_pulse_width' in sweep.metadata:
+            system_info_lines.append(f"σ⁻¹: {sweep.metadata['inverse_pulse_width']}")
+    
+    # Add summary text if optimal point exists
+    if optimal_param1 is not None and optimal_param2 is not None and 'max_contrast' in sweep.metadata:
+        summary_text = f"""OPTIMAL PARAMETERS
+{param2_label}: {optimal_param2:.3f}
+{param1_label}: {optimal_param1:.3f}
+Contrast: {sweep.metadata['max_contrast']:.6f}"""
+        
+        fig.text(0.5, 0.02, summary_text, fontsize=10, family='monospace',
+                ha='center', va='bottom',
+                bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7, pad=0.8))
+        
+        # Add system info on the right side if available
+        if system_info_lines:
+            system_text = "SYSTEM INFO\n" + "\n".join(system_info_lines)
+            fig.text(0.98, 0.02, system_text, fontsize=9, family='monospace',
+                    ha='right', va='bottom',
+                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7, pad=0.8))
+        
+        plt.tight_layout(rect=[0, 0.08, 1, 1])
+    else:
+        # No optimal point, but still show system info if available
+        if system_info_lines:
+            system_text = "SYSTEM INFO\n" + "\n".join(system_info_lines)
+            fig.text(0.98, 0.02, system_text, fontsize=9, family='monospace',
+                    ha='right', va='bottom',
+                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7, pad=0.8))
+            plt.tight_layout(rect=[0, 0.08, 1, 1])
+        else:
+            plt.tight_layout()
+    
+    # Save figure if path provided
+    if save_path:
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
+        print(f"Sweep results plot saved to: {save_path}")
+    
+    return fig
+
+

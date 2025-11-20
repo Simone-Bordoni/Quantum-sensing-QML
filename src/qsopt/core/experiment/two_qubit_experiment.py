@@ -7,7 +7,7 @@ This class handles quantum sensing protocols with two qubits coupled to a shared
 """
 
 import warnings
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
@@ -20,6 +20,10 @@ from qsopt.core.experimental_parameters import (
 from qsopt.core.trainable_parameters import TrainableParameters
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.loss_functions import DetectionFromProbabilities
+
+if TYPE_CHECKING:
+    from qsopt.utils.results import TimeEvolutionResults
+
 from .base import Experiment
 from .quantum_utils import (
     gu,
@@ -890,7 +894,7 @@ class TwoQubitExperiment(Experiment):
         t_end: float = 5.0,
         n_points: int = 200,
         with_interaction: bool = True
-    ) -> Dict[str, np.ndarray]:
+    ) -> 'TimeEvolutionResults':
         """
         Compute time evolution of two-qubit probabilities.
         
@@ -907,13 +911,11 @@ class TwoQubitExperiment(Experiment):
                              If False, use Hamiltonian without chi (default: True)
         
         Returns:
-            Dictionary containing:
-                - 'times': Array of time points, shape (n_points,)
-                - 'prob_00': Probability of |00⟩ state, shape (n_points,)
-                - 'prob_01': Probability of |01⟩ state, shape (n_points,)
-                - 'prob_10': Probability of |10⟩ state, shape (n_points,)
-                - 'prob_11': Probability of |11⟩ state, shape (n_points,)
-                - 'pulse_shape': Pulse envelope u(t), shape (n_points,)
+            TimeEvolutionResults object containing:
+                - times: Array of time points, shape (n_points,)
+                - probabilities: Dict with 'prob_00', 'prob_01', 'prob_10', 'prob_11'
+                - pulse_shape: Pulse envelope u(t), shape (n_points,)
+                - measurement_times: Measurement time points
         
         Example:
             >>> # Get time evolution data
@@ -986,14 +988,29 @@ class TwoQubitExperiment(Experiment):
         # Compute pulse shape u(t) = exp(-t^2)
         pulse_shape = np.exp(-times**2)
         
-        return {
-            'times': times,
-            'prob_00': np.array(prob_00_list),
-            'prob_01': np.array(prob_01_list),
-            'prob_10': np.array(prob_10_list),
-            'prob_11': np.array(prob_11_list),
-            'pulse_shape': pulse_shape
-        }
+        # Get measurement times from experimental parameters
+        measurement_times = self.experimental_params.measurement.measurement_times
+        
+        # Import at runtime to avoid circular dependency
+        from qsopt.utils.results import TimeEvolutionResults
+        
+        return TimeEvolutionResults(
+            times=times,
+            probabilities={
+                'prob_00': np.array(prob_00_list),
+                'prob_01': np.array(prob_01_list),
+                'prob_10': np.array(prob_10_list),
+                'prob_11': np.array(prob_11_list)
+            },
+            pulse_shape=pulse_shape,
+            measurement_times=measurement_times,
+            metadata={
+                'chi': self.experimental_params.chi,
+                'gamma': self.experimental_params.photon_cavity_coupling,
+                'with_interaction': with_interaction,
+                'n_qubits': 2
+            }
+        )
     
     def sweep_chi_gamma(
         self,
@@ -1043,15 +1060,12 @@ class TwoQubitExperiment(Experiment):
         Note:
             Chi is assumed equal for both qubits (χ₁ = χ₂).
         """
-        from qsopt.utils.chi_lambda_sweep import compute_chi_gamma_sweep
+        from qsopt.utils.parameters_sweep import compute_chi_gamma_sweep
         return compute_chi_gamma_sweep(
             self, chi_interval, gamma_interval,
             resolution_chi, resolution_gamma,
             chi_scale, gamma_scale, batch_size, verbose
         )
-    
-    # Backward compatibility alias
-    sweep_chi_lambda = sweep_chi_gamma
     
     def optimize_rotations(
         self,

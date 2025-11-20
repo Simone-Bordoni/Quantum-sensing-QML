@@ -13,7 +13,7 @@ and are disabled in .pylintrc. The code executes correctly at runtime.
 """Quantum sensing experiment module."""
 # type: ignore  # Suppress Pylance type warnings for JAX arrays
 import warnings
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,10 @@ import qutip as qt
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.core.trainable_parameters import TrainableParameters, ParameterType, Parameter
 from qsopt.core.callback import OptimizationCallback
+
+if TYPE_CHECKING:
+    from qsopt.utils.results import TimeEvolutionResults
+
 from .base import Experiment
 from .quantum_utils import (
     gu,
@@ -519,7 +523,7 @@ class SingleQubitExperiment(Experiment):
         t_end: float = 5.0,
         n_points: int = 200,
         with_interaction: bool = True
-    ) -> Dict[str, np.ndarray]:
+    ) -> 'TimeEvolutionResults':
         """
         Compute time evolution of qubit probabilities.
         
@@ -539,11 +543,11 @@ class SingleQubitExperiment(Experiment):
                              If False, use Hamiltonian without chi (default: True)
         
         Returns:
-            Dictionary containing:
-                - 'times': Array of time points, shape (n_points,)
-                - 'prob_0': Probability of qubit in |0⟩ state, shape (n_points,)
-                - 'prob_1': Probability of qubit in |1⟩ state, shape (n_points,)
-                - 'pulse_shape': Pulse envelope u(t), shape (n_points,)
+            TimeEvolutionResults object containing:
+                - times: Array of time points, shape (n_points,)
+                - probabilities: Dict with 'prob_0' and 'prob_1' arrays
+                - pulse_shape: Pulse envelope u(t), shape (n_points,)
+                - measurement_times: Measurement time points
         
         Example:
             >>> # Get time evolution data
@@ -609,12 +613,26 @@ class SingleQubitExperiment(Experiment):
         # Compute pulse shape u(t) = exp(-t^2)
         pulse_shape = np.exp(-times**2)
         
-        return {
-            'times': times,
-            'prob_0': np.array(prob_0_list),
-            'prob_1': np.array(prob_1_list),
-            'pulse_shape': pulse_shape
-        }
+        # Get measurement times from experimental parameters
+        measurement_times = self.experimental_params.measurement.measurement_times
+        
+        # Import at runtime to avoid circular dependency
+        from qsopt.utils.results import TimeEvolutionResults
+        
+        return TimeEvolutionResults(
+            times=times,
+            probabilities={
+                'prob_0': np.array(prob_0_list),
+                'prob_1': np.array(prob_1_list)
+            },
+            pulse_shape=pulse_shape,
+            measurement_times=measurement_times,
+            metadata={
+                'chi': self.experimental_params.chi[0],
+                'gamma': self.experimental_params.photon_cavity_coupling,
+                'with_interaction': with_interaction
+            }
+        )
     
     def sweep_chi_gamma(
         self,
@@ -661,15 +679,12 @@ class SingleQubitExperiment(Experiment):
             ... )
             >>> print(f"Optimal chi: {results['chi_vals'][max_idx[1]]:.3f}")
         """
-        from qsopt.utils.chi_lambda_sweep import compute_chi_gamma_sweep
+        from qsopt.utils.parameters_sweep import compute_chi_gamma_sweep
         return compute_chi_gamma_sweep(
             self, chi_interval, gamma_interval,
             resolution_chi, resolution_gamma,
             chi_scale, gamma_scale, batch_size, verbose
         )
-    
-    # Backward compatibility alias
-    sweep_chi_lambda = sweep_chi_gamma
     
     def _get_cached_measurement_times(self) -> List[float]:
         """Return cached measurement times, ensuring they are up to date."""
