@@ -1,0 +1,79 @@
+[tool.poetry]
+name = "qsopt"
+version = "0.1.0"
+description = "Quantum Sensing Optimization Library using JAX and QuTiP"
+authors = [
+    "Simone Bordoni <simone.bordoni@uniroma1.it>",
+    "Nathan Gargioni"
+]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/Simone-Bordoni/Quantum-sensing-QML"
+repository = "https://github.com/Simone-Bordoni/Quantum-sensing-QML"
+documentation = "https://github.com/Simone-Bordoni/Quantum-sensing-QML/docs"
+keywords = ["quantum", "sensing", "optimization", "quantum-optics", "jax", "qutip"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Operating System :: OS Independent",
+]
+
+packages = [{include = "qsopt", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+numpy = "2.3.4"
+jax = "0.4.35"
+jaxlib = "0.4.35"
+qutip = "5.2.2"
+qutip-jax = "0.1.1.dev6"
+optax = "0.2.4"
+matplotlib = "3.10.0"
+scipy = "1.16.3"
+ml-dtypes = "0.5.3"
+opt-einsum = "3.4.0"
+chex = "0.1.89"
+pandas = "2.2.3"
+seaborn = "0.13.2"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "8.4.2"
+pytest-cov = "6.0.0"
+coverage = "7.6.9"
+jaxtyping = "0.3.2"
+black = "25.1.0"
+isort = "6.0.1"
+pylint = "3.3.8"
+mypy-extensions = "1.0.0"
+autopep8 = "2.0.4"
+pycodestyle = "2.14.0"
+ipykernel = "6.29.5"
+ipython = "9.4.0"
+jupyter-client = "8.6.3"
+jupyter-core = "5.8.1"
+
+[tool.poetry.group.test.dependencies]
+pytest = "8.4.2"
+pytest-cov = "6.0.0"
+coverage = "7.6.9"
+jaxtyping = "0.3.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py313']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests", "src/qsopt/tests"]
+python_files = ["test_*.py"]

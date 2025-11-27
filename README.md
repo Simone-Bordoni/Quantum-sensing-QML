@@ -56,19 +56,33 @@ Gate → Matrix(θ) → JAX Array → Circuit Unitary → Initial State |ψ₀�
 
 ## Quick Start
 
-### Installation
+## Installation
 
+**Quick Start:**
 ```bash
-# Clone the repository
-git clone https://github.com/Simone-Bordoni/Quantum-sensing-QML.git
-cd Quantum-sensing-QML
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install the library in development mode
 pip install -e .
 ```
+
+**With development tools:**
+```bash
+pip install -e ".[dev]"
+```
+
+**Using Poetry:**
+```bash
+poetry install
+```
+
+For detailed installation instructions, troubleshooting, and requirements verification, see **[INSTALLATION.md](./INSTALLATION.md)**.
+
+### Verification
+
+Test your installation:
+```bash
+pytest src/qsopt/tests/test_installation.py -v
+```
+
+## Usage Examples
 
 ### Example 1: Quantum Sensing Optimization (Primary Use Case)
 

@@ -1,0 +1,18 @@
+# Core dependencies for Quantum Sensing Optimization Library
+numpy==2.3.4
+jax==0.4.35
+jaxlib==0.4.35
+qutip==5.2.2
+qutip-jax==0.1.1.dev6
+optax==0.2.4
+matplotlib==3.10.0
+scipy==1.16.3
+ml-dtypes==0.5.3
+opt-einsum==3.4.0
+chex==0.1.89
+
+# Additional scientific computing
+pandas==2.2.3
+seaborn==0.13.2
+
+# Development dependencies (optional, install with: pip install -r requirements-dev.txt)

@@ -1,0 +1,22 @@
+# Development and testing dependencies
+-r requirements.txt
+
+# Testing
+pytest==8.4.2
+pytest-cov==6.0.0
+coverage==7.6.9
+jaxtyping==0.3.2
+
+# Code quality
+black==25.1.0
+isort==6.0.1
+pylint==3.3.8
+mypy-extensions==1.0.0
+autopep8==2.0.4
+pycodestyle==2.14.0
+
+# Jupyter support
+ipykernel==6.29.5
+ipython==9.4.0
+jupyter-client==8.6.3
+jupyter-core==5.8.1
