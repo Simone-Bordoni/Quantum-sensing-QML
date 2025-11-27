@@ -116,6 +116,51 @@ class PhysicalConstants:
             for idx in interaction.qubit_indices:
                 if idx >= self.n_qubits:
                     raise ValueError(f"Interaction involves qubit {idx}, but only {self.n_qubits} qubits in system")
+    
+    def copy(self, **updates) -> 'PhysicalConstants':
+        """
+        Create a copy of PhysicalConstants with optional parameter updates.
+        
+        This method creates a new PhysicalConstants instance with all attributes
+        copied from the current instance. You can override specific attributes
+        by passing them as keyword arguments.
+        
+        Args:
+            **updates: Keyword arguments for attributes to update in the copy.
+                      Valid keys: n_qubits, chi, photon_cavity_coupling,
+                      inverse_pulse_width, qubit_interactions
+        
+        Returns:
+            New PhysicalConstants instance with updated values
+            
+        Example:
+            >>> original = PhysicalConstants(chi=5.0, photon_cavity_coupling=10.0)
+            >>> modified = original.copy(chi=8.0)  # Keep all other params, change chi
+            >>> modified.chi
+            8.0
+            >>> modified.photon_cavity_coupling
+            10.0
+        """
+        # Start with current values
+        params = {
+            'n_qubits': self.n_qubits,
+            'chi': self.chi.copy() if isinstance(self.chi, list) else self.chi,
+            'photon_cavity_coupling': self.photon_cavity_coupling,
+            'inverse_pulse_width': self.inverse_pulse_width,
+            'qubit_interactions': [
+                QubitInteraction(
+                    qubit_indices=interaction.qubit_indices,
+                    chi=interaction.chi,
+                    interaction_type=interaction.interaction_type
+                )
+                for interaction in self.qubit_interactions
+            ] if self.qubit_interactions else []
+        }
+        
+        # Apply updates
+        params.update(updates)
+        
+        return PhysicalConstants(**params)
 
 
 @dataclass
@@ -701,6 +746,120 @@ class ExperimentalParameters:
         self.random_seed = value
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
+    
+    def copy(self, **updates) -> 'ExperimentalParameters':
+        """
+        Create a copy of ExperimentalParameters with optional updates.
+        
+        This method creates a new ExperimentalParameters instance with all
+        configuration copied. The nested objects (physical_constants, system_dims,
+        measurement, initial_state, noise_config) are deep copied to avoid
+        unintended sharing of mutable state.
+        
+        Args:
+            **updates: Keyword arguments for attributes to update. Can be:
+                - physical_constants: PhysicalConstants instance or dict of updates
+                - system_dims: SystemDimensions instance
+                - measurement: MeasurementProtocol instance
+                - initial_state: InitialStateConfig instance
+                - noise_config: NoiseConfiguration instance
+                - random_seed: int or None
+                
+        Returns:
+            New ExperimentalParameters instance with updated values
+            
+        Example:
+            >>> # Copy and update physical constants
+            >>> new_params = exp_params.copy(
+            ...     physical_constants=exp_params.physical_constants.copy(chi=10.0)
+            ... )
+            >>> 
+            >>> # Or pass updates as dict (for convenience)
+            >>> new_params = exp_params.copy(
+            ...     physical_constants={'chi': 10.0, 'photon_cavity_coupling': 20.0}
+            ... )
+        """
+        # Deep copy nested configurations
+        new_phys_const = self.physical_constants
+        new_system_dims = self.system_dims
+        new_measurement = self.measurement
+        new_initial_state = self.initial_state
+        new_noise_config = self.noise_config
+        new_random_seed = self.random_seed
+        
+        # Handle updates
+        if 'physical_constants' in updates:
+            pc_update = updates['physical_constants']
+            if isinstance(pc_update, dict):
+                # If dict, use copy method with updates
+                new_phys_const = self.physical_constants.copy(**pc_update)
+            else:
+                # If PhysicalConstants instance, use directly
+                new_phys_const = pc_update
+        else:
+            # Deep copy existing physical constants
+            new_phys_const = self.physical_constants.copy()
+            
+        if 'system_dims' in updates:
+            new_system_dims = updates['system_dims']
+        else:
+            # Create new instance with same values
+            new_system_dims = SystemDimensions(
+                cavity_levels=self.system_dims.cavity_levels,
+                qubit_levels=self.system_dims.qubit_levels.copy() if isinstance(self.system_dims.qubit_levels, list) else self.system_dims.qubit_levels,
+                field_levels=self.system_dims.field_levels
+            )
+            
+        if 'measurement' in updates:
+            new_measurement = updates['measurement']
+        else:
+            # Create new instance with same values
+            new_measurement = MeasurementProtocol(
+                measurement_times=self.measurement.measurement_times.copy() if self.measurement.measurement_times else None,
+                initial_time=self.measurement.initial_time,
+                final_time=self.measurement.final_time,
+                time_interval=self.measurement.time_interval,
+                initial_time_uncertainty=self.measurement.initial_time_uncertainty,
+                single_measurement_uncertainty=self.measurement.single_measurement_uncertainty
+            )
+            
+        if 'initial_state' in updates:
+            new_initial_state = updates['initial_state']
+        else:
+            # Create new instance with same values
+            new_initial_state = InitialStateConfig(
+                state_type=self.initial_state.state_type,
+                coherent_alpha=self.initial_state.coherent_alpha,
+                thermal_n_bar=self.initial_state.thermal_n_bar,
+                custom_amplitudes=self.initial_state.custom_amplitudes.copy() if self.initial_state.custom_amplitudes else None
+            )
+            
+        if 'noise_config' in updates:
+            new_noise_config = updates['noise_config']
+        else:
+            # Create new instance with same values
+            depol = self.noise_config.depolarizing
+            deph = self.noise_config.dephasing
+            relax = self.noise_config.relaxation
+            
+            new_noise_config = NoiseConfiguration(
+                depolarizing=depol.copy() if isinstance(depol, list) else depol,
+                dephasing=deph.copy() if isinstance(deph, list) else deph,
+                relaxation=relax.copy() if isinstance(relax, list) else relax,
+                custom_operators=self.noise_config.custom_operators.copy() if self.noise_config.custom_operators else None
+            )
+        
+        if 'random_seed' in updates:
+            new_random_seed = updates['random_seed']
+        
+        return ExperimentalParameters(
+            physical_constants=new_phys_const,
+            system_dims=new_system_dims,
+            measurement=new_measurement,
+            initial_state=new_initial_state,
+            noise_config=new_noise_config,
+            random_seed=new_random_seed
+        )
 
     def __repr__(self) -> str:
         """

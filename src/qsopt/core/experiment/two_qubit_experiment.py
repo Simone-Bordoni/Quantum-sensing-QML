@@ -453,7 +453,7 @@ class TwoQubitExperiment(Experiment):
             self._cached_solvers['with_interaction'] = qt.MESolver(
                 self.hamiltonians['total'],
                 self.lindblad_operators['interaction'],
-                options={'method': 'diffrax', 'progress_bar': False}
+                options={'method': 'diffrax', 'progress_bar': False, 'normalize_output': False}
             )
         return self._cached_solvers['with_interaction']
     
@@ -463,7 +463,7 @@ class TwoQubitExperiment(Experiment):
             self._cached_solvers['no_interaction'] = qt.MESolver(
                 self.hamiltonians['dispersive'],
                 self.lindblad_operators['no_interaction'],
-                options={'method': 'diffrax', 'progress_bar': False}
+                options={'method': 'diffrax', 'progress_bar': False, 'normalize_output': False}
             )
         return self._cached_solvers['no_interaction']
     
@@ -525,6 +525,83 @@ class TwoQubitExperiment(Experiment):
         
         return measure_qubits_probability(rho, qubits, self.operators, state=state)
     
+    def _build_rotation_gate(self, qubit: int, axis: str, theta: float) -> qt.Qobj:
+        """
+        Build rotation gate for specified qubit and axis.
+        
+        This creates a rotation operator in the full composite Hilbert space
+        that only acts on the specified qubit. The rotation is JAX-compatible
+        through qutip-jax's expm implementation.
+        
+        Args:
+            qubit: Qubit index (0 for q1, 1 for q2)
+            axis: Rotation axis ('x', 'y', or 'z')
+            theta: Rotation angle in radians
+            
+        Returns:
+            Rotation operator exp(-i σ_axis θ/2)
+        """
+        if self.operators is None:
+            raise RuntimeError("Operators not initialized")
+        
+        # Map qubit index to operator key
+        qubit_label = qubit + 1  # Convert 0,1 to 1,2 for operator naming
+        axis_key = f"sigma_{axis.lower()}{qubit_label}"
+        
+        if axis_key not in self.operators:
+            raise ValueError(f"Operator '{axis_key}' not found")
+        
+        generator = self.operators[axis_key]
+        return (-1j * generator * theta / 2).expm()
+    
+    def _prepare_rotation_gates(
+        self,
+        theta1_q1: float,
+        theta2_q1: float,
+        theta1_q2: float,
+        theta2_q2: float
+    ) -> tuple:
+        """
+        Build all four rotation gates for two-qubit optimization.
+        
+        Args:
+            theta1_q1: First Y-rotation for qubit 1
+            theta2_q1: Second Y-rotation for qubit 1
+            theta1_q2: First Y-rotation for qubit 2
+            theta2_q2: Second Y-rotation for qubit 2
+            
+        Returns:
+            Tuple of (R1_q1, R2_q1, R1_q2, R2_q2) rotation operators
+        """
+        R1_q1 = self._build_rotation_gate(0, 'y', theta1_q1)
+        R2_q1 = self._build_rotation_gate(0, 'y', theta2_q1)
+        R1_q2 = self._build_rotation_gate(1, 'y', theta1_q2)
+        R2_q2 = self._build_rotation_gate(1, 'y', theta2_q2)
+        return R1_q1, R2_q1, R1_q2, R2_q2
+    
+    def _measure_joint_probabilities(self, rho: qt.Qobj) -> Dict[str, jnp.ndarray]:
+        """
+        Measure all joint two-qubit probabilities (JAX-compatible).
+        
+        Args:
+            rho: Density matrix
+            
+        Returns:
+            Dictionary with p00, p01, p10, p11 as JAX arrays
+        """
+        P00 = self._cached_joint_projectors['00']
+        P01 = self._cached_joint_projectors['01']
+        P10 = self._cached_joint_projectors['10']
+        P11 = self._cached_joint_projectors['11']
+        
+        # Use real part and ensure JAX array
+        p00 = jnp.real((P00 * rho * P00).tr())  # type: ignore
+        p01 = jnp.real((P01 * rho * P01).tr())  # type: ignore
+        p10 = jnp.real((P10 * rho * P10).tr())  # type: ignore
+        p11 = jnp.real((P11 * rho * P11).tr())  # type: ignore
+        
+        return {'p00': p00, 'p01': p01, 'p10': p10, 'p11': p11}
+    
     def compute_final_probabilities(
         self,
         solver: qt.MESolver,
@@ -536,7 +613,7 @@ class TwoQubitExperiment(Experiment):
         t_start: float = -5.0,
         t_end: float = 5.0,
         args: Optional[Dict] = None
-    ) -> Dict[str, float]:
+    ) -> Dict[str, jnp.ndarray]:
         """
         Compute final state probabilities after evolution without repeated measurements.
         
@@ -576,28 +653,25 @@ class TwoQubitExperiment(Experiment):
         if args is None:
             args = {'sigma': self.experimental_params.inverse_pulse_width}
         
+        # Build rotation gates (JAX-compatible)
+        R1_q1, R2_q1, R1_q2, R2_q2 = self._prepare_rotation_gates(
+            theta1_q1, theta2_q1, theta1_q2, theta2_q2
+        )
+        
         # Initial rotations on both qubits
-        rho_rotated = self.apply_rotation(rho, theta1_q1, qubit=0)
-        rho_rotated = self.apply_rotation(rho_rotated, theta1_q2, qubit=1)
+        rho_rotated = R1_q1 * rho * R1_q1.dag()  # type: ignore
+        rho_rotated = R1_q2 * rho_rotated * R1_q2.dag()  # type: ignore
         
         # Evolve system
         result = solver.run(rho_rotated, tlist=[t_start, t_end], args=args)
         rho_final = result.states[-1]
         
         # Apply final rotations
-        rho_final = self.apply_rotation(rho_final, theta2_q1, qubit=0)
-        rho_final = self.apply_rotation(rho_final, theta2_q2, qubit=1)
+        rho_final = R2_q1 * rho_final * R2_q1.dag()  # type: ignore
+        rho_final = R2_q2 * rho_final * R2_q2.dag()  # type: ignore
         
-        # Measure all joint probabilities
-        probs = self.measure_all_states(rho_final)
-        
-        # Return with consistent naming for detector
-        return {
-            'p00': float(probs['00']),
-            'p01': float(probs['01']),
-            'p10': float(probs['10']),
-            'p11': float(probs['11'])
-        }
+        # Measure all joint probabilities (JAX-compatible)
+        return self._measure_joint_probabilities(rho_final)
     
     def simulation(
         self,
@@ -609,101 +683,125 @@ class TwoQubitExperiment(Experiment):
         theta2_q2: float,
         measurements: Union[List[float], np.ndarray],
         args: Optional[Dict] = None,
-        measure_qubit: Optional[int] = None
+        precomputed_rotations: Optional[tuple] = None,
+        loss_function: Optional[DetectionFromProbabilities] = None
     ) -> jnp.ndarray:
         """
-        Complete two-qubit quantum photon detection simulation workflow.
+        JAX-compatible simulation for two-qubit system with customizable detection.
         
-        Protocol steps:
-        1. Apply first rotations Ry(θ₁) to each qubit for initial preparation
-        2. Time evolution under cavity-qubit Hamiltonian H(t)
-        3. Apply second rotations Ry(θ₂) to each qubit for measurement optimization  
-        4. Sequential projective measurements with conditional state updates
-        5. Calculate cumulative detection probability
+        This method implements sequential measurements, projecting onto joint
+        measurement states at each time point and computing cumulative detection
+        probability using a user-defined or default detection criterion.
+        
+        Protocol:
+        1. Apply first rotations to both qubits
+        2. Sequential time evolution with measurements
+        3. At each measurement: apply second rotations, measure final probabilities
+        4. Apply detection criterion to get detection probability
+        5. Project to non-detected state and continue
         
         Args:
             solver: Configured quantum evolution solver
-            rho: Initial density matrix in composite space
-            theta1_q1: First Y-rotation angle for qubit 1
-            theta2_q1: Second Y-rotation angle for qubit 1
-            theta1_q2: First Y-rotation angle for qubit 2
-            theta2_q2: Second Y-rotation angle for qubit 2
-            measurements: List or array of measurement times (sorted)
-            args: System parameters (optional, uses experimental_params if None)
-            measure_qubit: Which qubit to measure (None=both, 1=qubit1, 2=qubit2)
-                
+            rho: Initial density matrix
+            theta1_q1: First Y-rotation for qubit 1
+            theta2_q1: Second Y-rotation for qubit 1
+            theta1_q2: First Y-rotation for qubit 2
+            theta2_q2: Second Y-rotation for qubit 2
+            measurements: Array of measurement times (sorted)
+            args: System parameters (optional)
+            precomputed_rotations: Optional tuple (R1_q1, R2_q1, R1_q2, R2_q2) to avoid recomputation
+            loss_function: Optional DetectionFromProbabilities instance. If None, uses 1-P(00).
+            
         Returns:
-            Probability of detecting at least one excited state P(detection) ∈ [0,1]
+            Detection probability as JAX array
+            
+        Example:
+            >>> # Default: 1 - P(00)
+            >>> prob = experiment.simulation(solver, rho0, 0.5, -0.5, 0.3, -0.3, times)
+            >>> 
+            >>> # Custom: P(11) only
+            >>> detector = DetectionFromProbabilities(lambda p: p['p11'], name="P(11)")
+            >>> prob = experiment.simulation(solver, rho0, 0.5, -0.5, 0.3, -0.3, times,
+            ...                               loss_function=detector)
         """
         if args is None:
             args = {'sigma': self.experimental_params.inverse_pulse_width}
+        
+        # Default to 1-P(00) detection
+        if loss_function is None:
+            loss_function = DetectionFromProbabilities()
         
         measurement_array = np.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
         
-        # Initial rotations on both qubits (qubit indices: 0=q1, 1=q2)
-        rho_current = self.apply_rotation(rho, theta1_q1, qubit=0)
-        rho_current = self.apply_rotation(rho_current, theta1_q2, qubit=1)
+        # Get rotation gates (precomputed or build new)
+        if precomputed_rotations is None:
+            R1_q1, R2_q1, R1_q2, R2_q2 = self._prepare_rotation_gates(
+                theta1_q1, theta2_q1, theta1_q2, theta2_q2
+            )
+        else:
+            R1_q1, R2_q1, R1_q2, R2_q2 = precomputed_rotations
         
-        # Track probability of remaining in ground state across all measurements
-        prob_all_ground = jnp.array(1.0)
+        # Precompute dagger operators
+        R1_q1_dag = R1_q1.dag()
+        R2_q1_dag = R2_q1.dag()
+        R1_q2_dag = R1_q2.dag()
+        R2_q2_dag = R2_q2.dag()
+        
+        # Get projectors
+        P00 = self._cached_joint_projectors['00']
+        
+        # Initial state
+        rho_current = rho
+        
+        # Track cumulative probability of non-detection
+        prob_all_no_detect = jnp.array(1.0)
         
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
-            # Evolve system from t0 to t1
-            result = solver.run(rho_current, tlist=[t0, t1], args=args)
-            rho_evolved = result.states[-1]
+            # Convert to concrete float values (times should not be differentiated)
+            t0_float = float(t0)
+            t1_float = float(t1)
             
-            # Apply final rotations (inverse preparation)
-            rho_rotated = self.apply_rotation(rho_evolved, theta2_q1, qubit=0)
-            rho_rotated = self.apply_rotation(rho_rotated, theta2_q2, qubit=1)
+            # Apply first rotations
+            rho_after_r1 = R1_q1 * rho_current * R1_q1_dag  # type: ignore
+            rho_after_r1 = R1_q2 * rho_after_r1 * R1_q2_dag  # type: ignore
             
-            # Measure qubits using unified prob() method
-            if measure_qubit is None:
-                # Measure both qubits - probability of ground state |00⟩
-                prob_ground = self.prob(rho_rotated, qubits=[0, 1], state='00')
-            elif measure_qubit == 1:
-                # Measure only qubit 1 (index 0)
-                prob_ground = self.prob(rho_rotated, qubits=[0], state='0')
-            elif measure_qubit == 2:
-                # Measure only qubit 2 (index 1)
-                prob_ground = self.prob(rho_rotated, qubits=[1], state='0')
-            else:
-                raise ValueError(f"measure_qubit must be None, 1, or 2, got {measure_qubit}")
+            # Evolve
+            evolution_result = solver.run(rho_after_r1, [t0_float, t1_float], args=args)
+            rho_evolved = evolution_result.states[-1]
             
-            # Project onto ground state and renormalize
-            if measure_qubit is None:
-                P_ground = self.get_joint_projector('00')
-            elif measure_qubit == 1:
-                P_ground = self.get_qubit_projector(1, '0')
-            else:
-                P_ground = self.get_qubit_projector(2, '0')
+            # Apply second rotations
+            rho_final = R2_q1 * rho_evolved * R2_q1_dag  # type: ignore
+            rho_final = R2_q2 * rho_final * R2_q2_dag  # type: ignore
             
-            rho_projected = P_ground * rho_rotated * P_ground.dag()  # type: ignore
+            # Measure all joint probabilities
+            probs = self._measure_joint_probabilities(rho_final)
             
-            # Renormalize (avoid division by zero)
-            if prob_ground > 1e-15:
-                rho_current = rho_projected / prob_ground
-            else:
-                # If prob_ground is too small, detection has occurred
-                rho_current = rho_projected
+            # Apply detection criterion
+            prob_detect_this_step = loss_function(probs)
+            prob_no_detect_this_step = 1.0 - prob_detect_this_step
             
-            # Update cumulative ground state probability
-            prob_all_ground = prob_all_ground * prob_ground
+            # Update cumulative non-detection probability
+            prob_all_no_detect = prob_all_no_detect * prob_no_detect_this_step
             
-            # Undo rotations for next evolution interval
-            rho_current = self.apply_rotation(rho_current, -theta2_q2, qubit=1)
-            rho_current = self.apply_rotation(rho_current, -theta2_q1, qubit=0)
+            # Project onto |00⟩ (non-detected state) and renormalize
+            rho_projected = P00 * rho_final * P00  # type: ignore
+            trace_val = rho_projected.tr()
+            rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
+            
+            # Undo second rotations for next iteration
+            rho_current = R2_q2_dag * rho_current * R2_q2  # type: ignore
+            rho_current = R2_q1_dag * rho_current * R2_q1  # type: ignore
         
-        # Detection probability = 1 - P(all measurements in ground state)
-        prob_detection = 1 - prob_all_ground
+        # Total detection probability = 1 - P(no detection at any step)
+        prob_detection = 1 - prob_all_no_detect
         return prob_detection
     
     def run_simulation(
         self,
-        batch_size: int = 1,
-        measure_qubit: Optional[int] = None
+        batch_size: int = 1
     ) -> OptimizationCallback:
         """
         Run two-qubit sensing protocol with current parameters.
@@ -772,8 +870,7 @@ class TwoQubitExperiment(Experiment):
                 theta2_q1=theta2_q1,
                 theta1_q2=theta1_q2,
                 theta2_q2=theta2_q2,
-                measurements=measurement_times,
-                measure_qubit=measure_qubit
+                measurements=measurement_times
             )
             prob_with_list.append(prob_with)
             
@@ -785,8 +882,7 @@ class TwoQubitExperiment(Experiment):
                 theta2_q1=theta2_q1,
                 theta1_q2=theta1_q2,
                 theta2_q2=theta2_q2,
-                measurements=measurement_times,
-                measure_qubit=measure_qubit
+                measurements=measurement_times
             )
             prob_without_list.append(prob_without)
         
@@ -1012,6 +1108,310 @@ class TwoQubitExperiment(Experiment):
             }
         )
     
+    def optimize_rotations(
+        self,
+        num_steps: int = 100,
+        batch_size: int = 1,
+        tolerance: float = 1e-6,
+        verbose: bool = True,
+        verbose_step: int = 10,
+        callback: Optional[OptimizationCallback] = None,
+        theta_init: Optional[List[float]] = None,
+        loss_function: Optional['DetectionFromProbabilities'] = None
+    ) -> OptimizationCallback:
+        """
+        Optimize rotation angles to maximize sensing contrast.
+        
+        This method performs JAX-based gradient descent over four rotation angles
+        (two per qubit) using the sequential measurement protocol. The detection
+        criterion can be customized using the loss_function parameter.
+        
+        Args:
+            num_steps: Maximum number of optimization steps (default: 100)
+            batch_size: Number of random realizations for measurement uncertainty per step (default: 1)
+            tolerance: Convergence threshold for gradient norm (default: 1e-6)
+            verbose: Print progress information (default: True)
+            verbose_step: Step interval for printing progress (default: 10)
+            callback: Optional callback to track optimization progress.
+                     If None, uses the experiment's default callback.
+            theta_init: Optional initial rotation angles [θ1_q1, θ2_q1, θ1_q2, θ2_q2] in radians.
+                       If None, uses values from trainable_params.
+            loss_function: Optional custom detection criterion (DetectionFromProbabilities).
+                         If None, uses default 1-P(00) detection.
+                          
+        Returns:
+            OptimizationCallback with full optimization history
+            
+        Example:
+            >>> # Optimize with default 1-P(00) detection
+            >>> callback = experiment.optimize_rotations(num_steps=200, batch_size=10)
+            >>> 
+            >>> # With custom detection criterion
+            >>> from qsopt.utils.loss_functions import DetectionFromProbabilities
+            >>> loss = DetectionFromProbabilities(lambda p: p['p11'])  # Detect |11⟩
+            >>> callback = experiment.optimize_rotations(
+            ...     num_steps=100,
+            ...     loss_function=loss
+            ... )
+        """
+        import jax
+        import optax
+        
+        # Use provided callback or default
+        if callback is None:
+            callback = self.callback
+        
+        # Reset callback at start of new optimization
+        callback.reset()
+        
+        # Get rotation angles (must have at least 4 for two qubits)
+        rotation_angles = self.trainable_params.get_rotation_angles()
+        if len(rotation_angles) < 4:
+            raise ValueError(
+                f"Two-qubit experiment requires at least 4 rotation parameters, "
+                f"got {len(rotation_angles)}"
+            )
+        
+        # Get parameter names for the four rotation angles
+        rotation_names = list(rotation_angles.keys())
+        theta1_q1_name = rotation_names[0]
+        theta2_q1_name = rotation_names[1]
+        theta1_q2_name = rotation_names[2]
+        theta2_q2_name = rotation_names[3]
+        
+        # Find indices for rotation parameters
+        param_indices = []
+        param_names = []
+        for name in [theta1_q1_name, theta2_q1_name, theta1_q2_name, theta2_q2_name]:
+            idx = -1
+            for param in self.trainable_params.parameters:
+                if param.name == name:
+                    idx = param.index
+                    break
+            if idx == -1:
+                raise ValueError(f"Could not find rotation parameter {name}")
+            param_indices.append(idx)
+            param_names.append(name)
+        
+        # Initialize parameter vector
+        if theta_init is not None:
+            if len(theta_init) != 4:
+                raise ValueError("theta_init must contain exactly 4 angles [θ1_q1, θ2_q1, θ1_q2, θ2_q2]")
+            initial_values = theta_init
+        else:
+            initial_values = [
+                rotation_angles[theta1_q1_name][0],
+                rotation_angles[theta2_q1_name][0],
+                rotation_angles[theta1_q2_name][0],
+                rotation_angles[theta2_q2_name][0]
+            ]
+        
+        params = jnp.array(initial_values, dtype=float)
+        
+        # Update trainable_params with initial values
+        for idx, val in zip(param_indices, initial_values):
+            self.trainable_params.parameters[idx].value = float(val)
+        
+        trainable_mask = jnp.array([
+            self.trainable_params.parameters[idx].trainable 
+            for idx in param_indices
+        ])
+        
+        # Use optimizer from first trainable rotation parameter
+        optimizer = self.trainable_params.rotation_optimizer
+        opt_state = optimizer.init(params)
+        
+        # Get initial state and solvers
+        rho0 = self._cached_initial_state
+        if rho0 is None:
+            raise RuntimeError("Initial state cache is not initialized.")
+        
+        solver_with = self.get_solver_with_interaction()
+        solver_without = self.get_solver_no_interaction()
+        
+        # Define objective function
+        def objective_function(opt_params):
+            """Negative sensing contrast for minimization with batch averaging."""
+            # Extract parameters and apply trainability mask
+            theta1_q1_raw, theta2_q1_raw, theta1_q2_raw, theta2_q2_raw = opt_params
+            theta1_q1 = theta1_q1_raw if trainable_mask[0] else jax.lax.stop_gradient(theta1_q1_raw)
+            theta2_q1 = theta2_q1_raw if trainable_mask[1] else jax.lax.stop_gradient(theta2_q1_raw)
+            theta1_q2 = theta1_q2_raw if trainable_mask[2] else jax.lax.stop_gradient(theta1_q2_raw)
+            theta2_q2 = theta2_q2_raw if trainable_mask[3] else jax.lax.stop_gradient(theta2_q2_raw)
+            
+            # Precompute rotation gates once
+            rotation_gates = self._prepare_rotation_gates(
+                theta1_q1, theta2_q1, theta1_q2, theta2_q2
+            )
+            
+            if batch_size == 1:
+                # Single realization
+                measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty()
+                
+                # Simulate with photon
+                prob_with = self.simulation(
+                    solver_with,
+                    rho0,
+                    theta1_q1, theta2_q1,
+                    theta1_q2, theta2_q2,
+                    measurement_times_batch,
+                    precomputed_rotations=rotation_gates,
+                    loss_function=loss_function
+                )
+                
+                # Simulate without photon
+                prob_without = self.simulation(
+                    solver_without,
+                    rho0,
+                    theta1_q1, theta2_q1,
+                    theta1_q2, theta2_q2,
+                    measurement_times_batch,
+                    precomputed_rotations=rotation_gates,
+                    loss_function=loss_function
+                )
+                
+                contrast = prob_with - prob_without
+                
+            else:
+                # Multiple realizations
+                measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
+                prob_with_batch = jnp.zeros(batch_size)
+                prob_without_batch = jnp.zeros(batch_size)
+                
+                for i in range(batch_size):
+                    measurement_times = measurement_times_batch[i]
+                    
+                    prob_with_batch = prob_with_batch.at[i].set(
+                        self.simulation(
+                            solver_with,
+                            rho0,
+                            theta1_q1, theta2_q1,
+                            theta1_q2, theta2_q2,
+                            measurement_times,
+                            precomputed_rotations=rotation_gates,
+                            loss_function=loss_function
+                        )
+                    )
+                    
+                    prob_without_batch = prob_without_batch.at[i].set(
+                        self.simulation(
+                            solver_without,
+                            rho0,
+                            theta1_q1, theta2_q1,
+                            theta1_q2, theta2_q2,
+                            measurement_times,
+                            precomputed_rotations=rotation_gates,
+                            loss_function=loss_function
+                        )
+                    )
+                
+                # Average over batch
+                prob_with = jnp.mean(prob_with_batch)
+                prob_without = jnp.mean(prob_without_batch)
+                contrast = prob_with - prob_without
+            
+            # Return negative for minimization
+            return -contrast, (prob_with, prob_without, contrast)
+        
+        # Get detection description for verbose output
+        detection_desc = "1 - P(00)" if loss_function is None else "custom"
+        
+        if verbose:
+            theta_initial_vals = np.asarray(params, dtype=float)
+            print(f"Configuration:")
+            print(f"    Max iterations: {num_steps}")
+            print(f"    Batch size: {batch_size}")
+            print(f"    Convergence tolerance: {tolerance:.2e}")
+            print(f"    Detection criterion: {detection_desc}")
+            print(f"    Initial rotation parameters:")
+            for i, name in enumerate(param_names):
+                status = " [FIXED]" if not trainable_mask[i] else ""
+                print(f"        {name}={theta_initial_vals[i]:.3f} rad{status}")
+            
+            uncertainty = self.experimental_params.initial_time_uncertainty
+            if uncertainty > 0:
+                spec = self.experimental_params.initial_time_uncertainty_spec
+                extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
+                print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
+            
+            print("="*70)
+            print(f"{'Step':<6}{param_names[0]:<12}{param_names[1]:<12}"
+                  f"{param_names[2]:<12}{param_names[3]:<12}{'Contrast':<12}{'Grad Norm'}")
+            print("-"*70)
+        
+        best_contrast = -np.inf
+        best_params = jnp.array(params)
+        
+        # Initialize variables
+        step = 0
+        grad_norm = float('inf')
+        
+        for step in range(num_steps):
+            # Compute gradients using JAX autodiff
+            grads, (prob_with, prob_without, sensing_contrast) = \
+                jax.grad(objective_function, has_aux=True)(params)
+            
+            # Track best parameters
+            if sensing_contrast > best_contrast:
+                best_contrast = sensing_contrast
+                best_params = jnp.array(params)
+            
+            # Call callback to track progress
+            callback(
+                trainable_params=self.trainable_params,
+                prob_with=float(prob_with),
+                prob_without=float(prob_without),
+                contrast=float(sensing_contrast)
+            )
+            
+            grad_norm = float(jnp.linalg.norm(grads))
+            theta_values = np.asarray(params, dtype=float)
+            
+            # Progress output
+            if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
+                print(f"{step:<6}{theta_values[0]:<12.6f}{theta_values[1]:<12.6f}"
+                      f"{theta_values[2]:<12.6f}{theta_values[3]:<12.6f}"
+                      f"{float(sensing_contrast):<12.6f}{grad_norm:<12.2e}")
+            
+            # Convergence check
+            if grad_norm < tolerance:
+                break
+            
+            # Update parameters
+            updates, opt_state = optimizer.update(grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+            
+            # Update trainable parameters continuously
+            for idx, val in zip(param_indices, theta_values):
+                self.trainable_params.parameters[idx].value = float(val)
+        
+        # Ensure best parameters are set at the end
+        best_values = np.asarray(best_params, dtype=float)
+        for idx, val in zip(param_indices, best_values):
+            self.trainable_params.parameters[idx].value = float(val)
+        
+        # Apply constraints at the end
+        final_values = np.array([p.value for p in self.trainable_params.parameters])
+        constrained_values = self.trainable_params.apply_constraints(final_values)
+        for i, val in enumerate(constrained_values):
+            self.trainable_params.parameters[i].value = float(val)
+        
+        if verbose:
+            print("="*70)
+            print(f"Final gradient norm: {grad_norm:.2e}")
+            print(f"Best sensing contrast: {best_contrast:.6f}")
+            print(f"Best parameters:")
+            for i, name in enumerate(param_names):
+                print(f"    {name}={best_values[i]:.3f} rad ({np.rad2deg(best_values[i]):.1f}°)")
+        
+        # Set convergence information in callback
+        callback.set_convergence_info(
+            converged=float(grad_norm) < tolerance,
+            final_grad_norm=float(grad_norm)
+        )
+        
+        return callback
+    
     def sweep_chi_gamma(
         self,
         chi_interval: list = [0.1, 100.0],
@@ -1065,44 +1465,6 @@ class TwoQubitExperiment(Experiment):
             self, chi_interval, gamma_interval,
             resolution_chi, resolution_gamma,
             chi_scale, gamma_scale, batch_size, verbose
-        )
-    
-    def optimize_rotations(
-        self,
-        num_steps: int = 100,
-        batch_size: int = 1,
-        tolerance: float = 1e-6,
-        verbose: bool = True,
-        verbose_step: int = 10,
-        callback: Optional[OptimizationCallback] = None,
-        **kwargs
-    ) -> OptimizationCallback:
-        """
-        Optimize rotation parameters for two-qubit system.
-        
-        Will optimize:
-        - Individual qubit rotations
-        - Two-qubit gate parameters
-        - Measurement basis choices
-        
-        Args:
-            num_steps: Maximum optimization iterations
-            batch_size: Number of realizations for averaging
-            tolerance: Convergence threshold
-            verbose: Print progress
-            verbose_step: Progress printing frequency
-            callback: Optional callback for tracking
-            **kwargs: Additional parameters
-            
-        Returns:
-            OptimizationCallback with optimization history
-            
-        Raises:
-            NotImplementedError: This method is not yet implemented
-        """
-        raise NotImplementedError(
-            "TwoQubitExperiment.optimize_rotations is not yet implemented. "
-            "This will optimize two-qubit rotation and gate parameters."
         )
     
     def measure_all_states(self, rho: qt.Qobj) -> Dict[str, float]:

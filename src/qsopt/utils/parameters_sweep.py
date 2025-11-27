@@ -164,21 +164,12 @@ def compute_chi_gamma_sweep(
             # For two-qubit: chi is same for both qubits
             chi_list = [chi] * n_qubits
             
-            new_phys_const = PhysicalConstants(
-                n_qubits=n_qubits,
-                chi=chi_list,
-                photon_cavity_coupling=gamma_val,
-                inverse_pulse_width=base_exp_params.physical_constants.inverse_pulse_width
-            )
-            
-            # Create new experimental parameters with updated constants
-            new_exp_params = ExperimentalParameters(
-                physical_constants=new_phys_const,
-                system_dims=base_exp_params.system_dims,
-                measurement=base_exp_params.measurement,
-                initial_state=base_exp_params.initial_state,
-                noise_config=base_exp_params.noise_config,
-                random_seed=base_exp_params.random_seed
+            # Use copy method to preserve all properties including interactions
+            new_exp_params = base_exp_params.copy(
+                physical_constants={
+                    'chi': chi_list,
+                    'photon_cavity_coupling': gamma_val
+                }
             )
             
             # Create new experiment with updated parameters
@@ -286,6 +277,7 @@ def compute_asymmetry_coupling_sweep(
     resolution_coupling: int = 30,
     chi_mean_factor: float = 10.0,
     gamma: float = 10.0,
+    interaction_type: InteractionType = InteractionType.XX,
     batch_size: int = 1,
     verbose: bool = True
 ) -> Dict[str, Union[np.ndarray, float, str]]:
@@ -309,6 +301,7 @@ def compute_asymmetry_coupling_sweep(
         resolution_coupling: Number of coupling points
         chi_mean_factor: Ratio of mean chi to gamma, (χ₁+χ₂)/(2γ). Default: 10.0
         gamma: Fixed gamma value. Default: 10.0
+        interaction_type: Type of qubit-qubit interaction (XX, YY, ZZ, XXYY). Default: XX
         batch_size: Number of averaging realizations
         verbose: Print progress information
         
@@ -388,28 +381,19 @@ def compute_asymmetry_coupling_sweep(
                 interaction = QubitInteraction(
                     qubit_indices=(0, 1),
                     chi=chi12,
-                    interaction_type=InteractionType.XX
+                    interaction_type=interaction_type
                 )
                 interactions = [interaction]
             else:
                 interactions = []
             
-            # Create new physical constants
-            new_phys_const = PhysicalConstants(
-                n_qubits=2,
-                chi=[chi1, chi2],
-                photon_cavity_coupling=gamma,
-                inverse_pulse_width=base_exp_params.physical_constants.inverse_pulse_width,
-                qubit_interactions=interactions
-            )
-            
-            # Create new experiment
-            new_exp_params = ExperimentalParameters(
-                physical_constants=new_phys_const,
-                system_dims=base_exp_params.system_dims,
-                measurement=base_exp_params.measurement,
-                initial_state=base_exp_params.initial_state,
-                noise_config=base_exp_params.noise_config
+            # Use copy method to preserve all properties and update specific ones
+            new_exp_params = base_exp_params.copy(
+                physical_constants={
+                    'chi': [chi1, chi2],
+                    'photon_cavity_coupling': gamma,
+                    'qubit_interactions': interactions
+                }
             )
             
             temp_exp = TwoQubitExperiment(new_exp_params, trainable_params)
@@ -501,6 +485,7 @@ def compute_asymmetry_gamma_sweep(
     resolution_gamma: int = 30,
     chi_mean_factor: float = 10.0,
     chi12_factor: float = 0.0,
+    interaction_type: InteractionType = InteractionType.XX,
     batch_size: int = 1,
     verbose: bool = True
 ) -> Dict[str, Union[np.ndarray, float, str]]:
@@ -522,6 +507,7 @@ def compute_asymmetry_gamma_sweep(
         resolution_gamma: Number of gamma points
         chi_mean_factor: Ratio (χ₁+χ₂)/(2γ). Default: 10.0
         chi12_factor: Ratio χ₁₂/γ. Default: 0.0 (no coupling)
+        interaction_type: Type of qubit-qubit interaction (XX, YY, ZZ, XXYY). Default: XX
         batch_size: Number of averaging realizations
         verbose: Print progress information
         
@@ -583,26 +569,19 @@ def compute_asymmetry_gamma_sweep(
                 interaction = QubitInteraction(
                     qubit_indices=(0, 1),
                     chi=chi12,
-                    interaction_type=InteractionType.XX
+                    interaction_type=interaction_type
                 )
                 interactions = [interaction]
             else:
                 interactions = []
             
-            new_phys_const = PhysicalConstants(
-                n_qubits=2,
-                chi=[chi1, chi2],
-                photon_cavity_coupling=gamma,
-                inverse_pulse_width=base_exp_params.physical_constants.inverse_pulse_width,
-                qubit_interactions=interactions
-            )
-            
-            new_exp_params = ExperimentalParameters(
-                physical_constants=new_phys_const,
-                system_dims=base_exp_params.system_dims,
-                measurement=base_exp_params.measurement,
-                initial_state=base_exp_params.initial_state,
-                noise_config=base_exp_params.noise_config
+            # Use copy method to preserve all properties and update specific ones
+            new_exp_params = base_exp_params.copy(
+                physical_constants={
+                    'chi': [chi1, chi2],
+                    'photon_cavity_coupling': gamma,
+                    'qubit_interactions': interactions
+                }
             )
             
             temp_exp = TwoQubitExperiment(new_exp_params, trainable_params)
