@@ -6,10 +6,10 @@ System configuration parameters for quantum sensing experiments including
 physical constants, system dimensions, measurement protocols, and initial states.
 """
 
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Callable, Union
-import warnings
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -17,16 +17,16 @@ import numpy as np
 class InitialStateType(Enum):
     """Enumeration of supported initial state configurations (for input field)."""
 
-    VACUUM = "vacuum"  
-    SINGLE_PHOTON = "single_photon" 
-    COHERENT = "coherent"  
-    THERMAL = "thermal"  
-    CUSTOM = "custom"  
+    VACUUM = "vacuum"
+    SINGLE_PHOTON = "single_photon"
+    COHERENT = "coherent"
+    THERMAL = "thermal"
+    CUSTOM = "custom"
 
 
 class InteractionType(Enum):
     """Enumeration of supported qubit-qubit interaction types."""
-    
+
     ZZ = "sz-sz"  # σz ⊗ σz interaction
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
@@ -36,17 +36,17 @@ class InteractionType(Enum):
 class QubitInteraction:
     """
     Configuration for qubit-qubit interaction.
-    
+
     Attributes:
         qubit_indices: Tuple of qubit indices involved in the interaction (e.g., (0, 1))
         chi: Interaction strength (coupling constant)
         interaction_type: Type of interaction (ZZ, XX, or YY)
     """
-    
+
     qubit_indices: Tuple[int, int] = (0, 1)
     chi: float = 0.0
     interaction_type: InteractionType = InteractionType.ZZ
-    
+
     def __post_init__(self):
         """Validate interaction parameters."""
         if len(self.qubit_indices) != 2:
@@ -58,7 +58,7 @@ class QubitInteraction:
         # Ensure canonical ordering (smaller index first)
         if self.qubit_indices[0] > self.qubit_indices[1]:
             self.qubit_indices = (self.qubit_indices[1], self.qubit_indices[0])
-        
+
         # Validate interaction strength
         if self.chi < 0:
             raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.chi}")
@@ -66,7 +66,7 @@ class QubitInteraction:
             warnings.warn(
                 f"Qubit-qubit interaction strength (chi) is zero for qubits {self.qubit_indices}. "
                 "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
-                UserWarning
+                UserWarning,
             )
 
 
@@ -92,22 +92,24 @@ class PhysicalConstants:
     photon_cavity_coupling: float = 1.0  # Photon-cavity coupling
     inverse_pulse_width: float = 0.1  # Inverse pulse width parameter
     qubit_interactions: Optional[List[QubitInteraction]] = None  # Qubit-qubit interactions
-    
+
     def __post_init__(self):
         """Convert chi to list format if necessary and set default interactions."""
         if isinstance(self.chi, (int, float)):
             self.chi = [float(self.chi)] * self.n_qubits
         elif isinstance(self.chi, list):
             if len(self.chi) != self.n_qubits:
-                raise ValueError(f"chi list length ({len(self.chi)}) must match n_qubits ({self.n_qubits})")
+                raise ValueError(
+                    f"chi list length ({len(self.chi)}) must match n_qubits ({self.n_qubits})"
+                )
             self.chi = [float(c) for c in self.chi]
         else:
             raise TypeError("chi must be a float or a list of floats")
-        
+
         # Set empty list if None
         if self.qubit_interactions is None:
             self.qubit_interactions = []
-        
+
         # Validate interactions
         for interaction in self.qubit_interactions:
             if not isinstance(interaction, QubitInteraction):
@@ -115,24 +117,26 @@ class PhysicalConstants:
             # Check that qubit indices are valid
             for idx in interaction.qubit_indices:
                 if idx >= self.n_qubits:
-                    raise ValueError(f"Interaction involves qubit {idx}, but only {self.n_qubits} qubits in system")
-    
-    def copy(self, **updates) -> 'PhysicalConstants':
+                    raise ValueError(
+                        f"Interaction involves qubit {idx}, but only {self.n_qubits} qubits in system"
+                    )
+
+    def copy(self, **updates) -> "PhysicalConstants":
         """
         Create a copy of PhysicalConstants with optional parameter updates.
-        
+
         This method creates a new PhysicalConstants instance with all attributes
         copied from the current instance. You can override specific attributes
         by passing them as keyword arguments.
-        
+
         Args:
             **updates: Keyword arguments for attributes to update in the copy.
                       Valid keys: n_qubits, chi, photon_cavity_coupling,
                       inverse_pulse_width, qubit_interactions
-        
+
         Returns:
             New PhysicalConstants instance with updated values
-            
+
         Example:
             >>> original = PhysicalConstants(chi=5.0, photon_cavity_coupling=10.0)
             >>> modified = original.copy(chi=8.0)  # Keep all other params, change chi
@@ -143,23 +147,27 @@ class PhysicalConstants:
         """
         # Start with current values
         params = {
-            'n_qubits': self.n_qubits,
-            'chi': self.chi.copy() if isinstance(self.chi, list) else self.chi,
-            'photon_cavity_coupling': self.photon_cavity_coupling,
-            'inverse_pulse_width': self.inverse_pulse_width,
-            'qubit_interactions': [
-                QubitInteraction(
-                    qubit_indices=interaction.qubit_indices,
-                    chi=interaction.chi,
-                    interaction_type=interaction.interaction_type
-                )
-                for interaction in self.qubit_interactions
-            ] if self.qubit_interactions else []
+            "n_qubits": self.n_qubits,
+            "chi": self.chi.copy() if isinstance(self.chi, list) else self.chi,
+            "photon_cavity_coupling": self.photon_cavity_coupling,
+            "inverse_pulse_width": self.inverse_pulse_width,
+            "qubit_interactions": (
+                [
+                    QubitInteraction(
+                        qubit_indices=interaction.qubit_indices,
+                        chi=interaction.chi,
+                        interaction_type=interaction.interaction_type,
+                    )
+                    for interaction in self.qubit_interactions
+                ]
+                if self.qubit_interactions
+                else []
+            ),
         }
-        
+
         # Apply updates
         params.update(updates)
-        
+
         return PhysicalConstants(**params)
 
 
@@ -186,17 +194,17 @@ class SystemDimensions:
     cavity_levels: int = 2  # Cavity truncation level
     qubit_levels: Union[int, List[int]] = 2  # Qubit levels
     field_levels: int = 2  # Field mode levels
-    
+
     def __post_init__(self):
         """Store original input and convert qubit_levels to list format if necessary."""
         # We need n_qubits from PhysicalConstants, but we can't access it here
         # So we'll handle this in the ExperimentalParameters.__init__
         pass
-    
+
     def _normalize_qubit_levels(self, n_qubits: int):
         """
         Normalize qubit_levels to list format.
-        
+
         Args:
             n_qubits: Number of qubits from PhysicalConstants
         """
@@ -204,10 +212,13 @@ class SystemDimensions:
             self.qubit_levels = [self.qubit_levels] * n_qubits
         elif isinstance(self.qubit_levels, list):
             if len(self.qubit_levels) != n_qubits:
-                raise ValueError(f"qubit_levels list length ({len(self.qubit_levels)}) must match n_qubits ({n_qubits})")
+                raise ValueError(
+                    f"qubit_levels list length ({len(self.qubit_levels)}) must match n_qubits ({n_qubits})"
+                )
             self.qubit_levels = [int(q) for q in self.qubit_levels]
         else:
             raise TypeError("qubit_levels must be an int or a list of ints")
+
 
 @dataclass
 class MeasurementProtocol:
@@ -265,7 +276,7 @@ class NoiseConfiguration:
     Noise model configuration.
 
     Attributes:
-        depolarizing: Depolarization rate. Can be a float (same for all qubits) 
+        depolarizing: Depolarization rate. Can be a float (same for all qubits)
                      or a list of floats (individual rate per qubit).
         dephasing: Dephasing rate. Can be a float (same for all qubits)
                   or a list of floats (individual rate per qubit).
@@ -278,21 +289,23 @@ class NoiseConfiguration:
     dephasing: Union[float, List[float]] = 0.0  # Dephasing rate
     relaxation: Union[float, List[float]] = 0.0  # Relaxation rate
     custom_operators: Optional[List[Any]] = None  # Custom Lindblad operators
-    
+
     def _normalize_noise_rates(self, n_qubits: int):
         """
         Normalize noise rates to list format.
-        
+
         Args:
             n_qubits: Number of qubits from PhysicalConstants
         """
-        for attr in ['depolarizing', 'dephasing', 'relaxation']:
+        for attr in ["depolarizing", "dephasing", "relaxation"]:
             value = getattr(self, attr)
             if isinstance(value, (int, float)):
                 setattr(self, attr, [float(value)] * n_qubits)
             elif isinstance(value, list):
                 if len(value) != n_qubits:
-                    raise ValueError(f"{attr} list length ({len(value)}) must match n_qubits ({n_qubits})")
+                    raise ValueError(
+                        f"{attr} list length ({len(value)}) must match n_qubits ({n_qubits})"
+                    )
                 setattr(self, attr, [float(v) for v in value])
             else:
                 raise TypeError(f"{attr} must be a float or a list of floats")
@@ -335,12 +348,12 @@ class ExperimentalParameters:
         self.measurement = measurement or MeasurementProtocol()
         self.noise_config = noise_config or NoiseConfiguration()
         self.initial_state = initial_state or InitialStateConfig()
-        
+
         # Normalize multi-qubit parameters based on n_qubits
         n_qubits = self.physical_constants.n_qubits
         self.system_dims._normalize_qubit_levels(n_qubits)
         self.noise_config._normalize_noise_rates(n_qubits)
-        
+
         # Random seed for uncertainty calculations
         self.random_seed = random_seed
         if self.random_seed is not None:
@@ -356,29 +369,29 @@ class ExperimentalParameters:
     def _compute_measurement_times_from_interval(self) -> List[float]:
         """
         Compute measurement times from initial_time, final_time, and time_interval.
-        
+
         Returns:
             List of measurement times (absolute time values)
         """
         initial = self.measurement.initial_time
         final = self.measurement.final_time
         interval = self.measurement.time_interval
-        
+
         if interval <= 0:
             raise ValueError("Time interval must be positive")
         if final <= initial:
             raise ValueError("Final time must be greater than initial time")
-            
+
         # Generate times using arange and ensure final time is included
-        grid = np.arange(initial, final + interval/2, interval, dtype=float)
+        grid = np.arange(initial, final + interval / 2, interval, dtype=float)
         times = [float(t) for t in grid]
-        
+
         return times
 
     def _update_measurement_times(self) -> None:
         """
         Update measurement times based on the measurement protocol.
-        
+
         If measurement_times is provided as a list, use it directly.
         Otherwise, compute from initial_time, final_time, and time_interval.
         """
@@ -435,17 +448,17 @@ class ExperimentalParameters:
     def get_measurement_times_with_uncertainty(self, batch_size: int = 1) -> np.ndarray:
         """
         Get measurement times with random shift due to initial time uncertainty.
-        
+
         The entire measurement sequence is shifted by a random value uniformly
         distributed in [-initial_time_uncertainty, initial_time_uncertainty].
-        
+
         Uses the random_seed set during initialization for reproducibility.
-        
+
         Args:
             batch_size: Number of independent realizations to generate (default: 1).
                        If batch_size=1, returns 1D array of shape (n_times,).
                        If batch_size>1, returns 2D array of shape (batch_size, n_times).
-            
+
         Returns:
             Array of measurement times with uncertainty shift applied:
             - batch_size=1: 1D array of shape (n_times,)
@@ -479,7 +492,7 @@ class ExperimentalParameters:
             raise ValueError("Cavity levels (cavity_levels) must be >= 2")
         if self.system_dims.field_levels < 2:
             raise ValueError("External field levels (field_levels) must be >= 2")
-        
+
         # Validate qubit levels (now a list)
         if not isinstance(self.system_dims.qubit_levels, list):
             raise TypeError("qubit_levels must be normalized to a list")
@@ -492,24 +505,26 @@ class ExperimentalParameters:
             raise TypeError("chi must be normalized to a list")
         for i, chi_val in enumerate(self.physical_constants.chi):
             if chi_val < 0:
-                raise ValueError(f"Dispersive coupling (chi) for qubit {i} must be >= 0, got {chi_val}")
+                raise ValueError(
+                    f"Dispersive coupling (chi) for qubit {i} must be >= 0, got {chi_val}"
+                )
             elif chi_val == 0:
                 warnings.warn(
                     f"Dispersive coupling (chi) for qubit {i} is zero. "
                     "This means no qubit-cavity interaction for this qubit, "
                     "which may not produce meaningful sensing results.",
-                    UserWarning
+                    UserWarning,
                 )
-        
+
         if self.physical_constants.photon_cavity_coupling < 0:
             raise ValueError("Photon-cavity coupling (photon_cavity_coupling) must be >= 0")
         elif self.physical_constants.photon_cavity_coupling == 0:
             warnings.warn(
                 "Photon-cavity coupling (gamma/photon_cavity_coupling) is zero. This means no "
                 "coupling between the input field and the cavity, which will result in no sensing dynamics.",
-                UserWarning
+                UserWarning,
             )
-        
+
         if self.physical_constants.inverse_pulse_width <= 0:
             raise ValueError("Pulse width parameter (inverse_pulse_width) must be > 0")
 
@@ -520,7 +535,7 @@ class ExperimentalParameters:
             raise TypeError("dephasing must be normalized to a list")
         if not isinstance(self.noise_config.relaxation, list):
             raise TypeError("relaxation must be normalized to a list")
-        
+
         for i, rate in enumerate(self.noise_config.depolarizing):
             if rate < 0:
                 raise ValueError(f"Depolarization rate for qubit {i} must be >= 0, got {rate}")
@@ -579,7 +594,7 @@ class ExperimentalParameters:
         """Set qubit levels."""
         self.system_dims.qubit_levels = value
         # Re-normalize if necessary
-        if hasattr(self, 'physical_constants'):
+        if hasattr(self, "physical_constants"):
             self.system_dims._normalize_qubit_levels(self.physical_constants.n_qubits)
 
     @property
@@ -635,9 +650,9 @@ class ExperimentalParameters:
     def measurement_times(self) -> np.ndarray:
         """
         Direct access to measurement times.
-        
+
         Returns absolute time values with no normalization applied.
-        
+
         Returns:
             Array of measurement times (absolute time values)
         """
@@ -649,7 +664,7 @@ class ExperimentalParameters:
     def measurement_times(self, value: Union[List[float], np.ndarray]) -> None:
         """
         Set measurement times explicitly (overrides interval mode).
-        
+
         Args:
             value: List or array of measurement times (absolute time values)
         """
@@ -665,7 +680,7 @@ class ExperimentalParameters:
     def time_interval(self, value: float) -> None:
         """
         Set time interval and recompute measurement times.
-        
+
         Args:
             value: New time interval (absolute time)
         """
@@ -683,7 +698,7 @@ class ExperimentalParameters:
     def initial_time(self, value: float) -> None:
         """
         Set initial time and recompute measurement times.
-        
+
         Args:
             value: New initial time (absolute time)
         """
@@ -701,7 +716,7 @@ class ExperimentalParameters:
     def final_time(self, value: float) -> None:
         """
         Set final time and recompute measurement times.
-        
+
         Args:
             value: New final time (absolute time)
         """
@@ -719,7 +734,7 @@ class ExperimentalParameters:
     def initial_time_uncertainty(self, value: Union[float, str]) -> None:
         """
         Set initial time uncertainty specification.
-        
+
         Args:
             value: Initial time uncertainty specification (absolute time or keyword)
         """
@@ -739,23 +754,23 @@ class ExperimentalParameters:
     def seed(self, value: Optional[int]) -> None:
         """
         Set random seed and reinitialize random number generator.
-        
+
         Args:
             value: New random seed (None for non-deterministic behavior)
         """
         self.random_seed = value
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
-    
-    def copy(self, **updates) -> 'ExperimentalParameters':
+
+    def copy(self, **updates) -> "ExperimentalParameters":
         """
         Create a copy of ExperimentalParameters with optional updates.
-        
+
         This method creates a new ExperimentalParameters instance with all
         configuration copied. The nested objects (physical_constants, system_dims,
         measurement, initial_state, noise_config) are deep copied to avoid
         unintended sharing of mutable state.
-        
+
         Args:
             **updates: Keyword arguments for attributes to update. Can be:
                 - physical_constants: PhysicalConstants instance or dict of updates
@@ -764,16 +779,16 @@ class ExperimentalParameters:
                 - initial_state: InitialStateConfig instance
                 - noise_config: NoiseConfiguration instance
                 - random_seed: int or None
-                
+
         Returns:
             New ExperimentalParameters instance with updated values
-            
+
         Example:
             >>> # Copy and update physical constants
             >>> new_params = exp_params.copy(
             ...     physical_constants=exp_params.physical_constants.copy(chi=10.0)
             ... )
-            >>> 
+            >>>
             >>> # Or pass updates as dict (for convenience)
             >>> new_params = exp_params.copy(
             ...     physical_constants={'chi': 10.0, 'photon_cavity_coupling': 20.0}
@@ -786,10 +801,10 @@ class ExperimentalParameters:
         new_initial_state = self.initial_state
         new_noise_config = self.noise_config
         new_random_seed = self.random_seed
-        
+
         # Handle updates
-        if 'physical_constants' in updates:
-            pc_update = updates['physical_constants']
+        if "physical_constants" in updates:
+            pc_update = updates["physical_constants"]
             if isinstance(pc_update, dict):
                 # If dict, use copy method with updates
                 new_phys_const = self.physical_constants.copy(**pc_update)
@@ -799,66 +814,82 @@ class ExperimentalParameters:
         else:
             # Deep copy existing physical constants
             new_phys_const = self.physical_constants.copy()
-            
-        if 'system_dims' in updates:
-            new_system_dims = updates['system_dims']
+
+        if "system_dims" in updates:
+            new_system_dims = updates["system_dims"]
         else:
             # Create new instance with same values
             new_system_dims = SystemDimensions(
                 cavity_levels=self.system_dims.cavity_levels,
-                qubit_levels=self.system_dims.qubit_levels.copy() if isinstance(self.system_dims.qubit_levels, list) else self.system_dims.qubit_levels,
-                field_levels=self.system_dims.field_levels
+                qubit_levels=(
+                    self.system_dims.qubit_levels.copy()
+                    if isinstance(self.system_dims.qubit_levels, list)
+                    else self.system_dims.qubit_levels
+                ),
+                field_levels=self.system_dims.field_levels,
             )
-            
-        if 'measurement' in updates:
-            new_measurement = updates['measurement']
+
+        if "measurement" in updates:
+            new_measurement = updates["measurement"]
         else:
             # Create new instance with same values
             new_measurement = MeasurementProtocol(
-                measurement_times=self.measurement.measurement_times.copy() if self.measurement.measurement_times else None,
+                measurement_times=(
+                    self.measurement.measurement_times.copy()
+                    if self.measurement.measurement_times
+                    else None
+                ),
                 initial_time=self.measurement.initial_time,
                 final_time=self.measurement.final_time,
                 time_interval=self.measurement.time_interval,
                 initial_time_uncertainty=self.measurement.initial_time_uncertainty,
-                single_measurement_uncertainty=self.measurement.single_measurement_uncertainty
+                single_measurement_uncertainty=self.measurement.single_measurement_uncertainty,
             )
-            
-        if 'initial_state' in updates:
-            new_initial_state = updates['initial_state']
+
+        if "initial_state" in updates:
+            new_initial_state = updates["initial_state"]
         else:
             # Create new instance with same values
             new_initial_state = InitialStateConfig(
                 state_type=self.initial_state.state_type,
                 coherent_alpha=self.initial_state.coherent_alpha,
                 thermal_n_bar=self.initial_state.thermal_n_bar,
-                custom_amplitudes=self.initial_state.custom_amplitudes.copy() if self.initial_state.custom_amplitudes else None
+                custom_amplitudes=(
+                    self.initial_state.custom_amplitudes.copy()
+                    if self.initial_state.custom_amplitudes
+                    else None
+                ),
             )
-            
-        if 'noise_config' in updates:
-            new_noise_config = updates['noise_config']
+
+        if "noise_config" in updates:
+            new_noise_config = updates["noise_config"]
         else:
             # Create new instance with same values
             depol = self.noise_config.depolarizing
             deph = self.noise_config.dephasing
             relax = self.noise_config.relaxation
-            
+
             new_noise_config = NoiseConfiguration(
                 depolarizing=depol.copy() if isinstance(depol, list) else depol,
                 dephasing=deph.copy() if isinstance(deph, list) else deph,
                 relaxation=relax.copy() if isinstance(relax, list) else relax,
-                custom_operators=self.noise_config.custom_operators.copy() if self.noise_config.custom_operators else None
+                custom_operators=(
+                    self.noise_config.custom_operators.copy()
+                    if self.noise_config.custom_operators
+                    else None
+                ),
             )
-        
-        if 'random_seed' in updates:
-            new_random_seed = updates['random_seed']
-        
+
+        if "random_seed" in updates:
+            new_random_seed = updates["random_seed"]
+
         return ExperimentalParameters(
             physical_constants=new_phys_const,
             system_dims=new_system_dims,
             measurement=new_measurement,
             initial_state=new_initial_state,
             noise_config=new_noise_config,
-            random_seed=new_random_seed
+            random_seed=new_random_seed,
         )
 
     def __repr__(self) -> str:
@@ -871,7 +902,7 @@ class ExperimentalParameters:
         lines = []
         # System Dimensions Group
         lines.append("SYSTEM DIMENSIONS")
-        
+
         # Calculate total dimension
         n_qubits = self.physical_constants.n_qubits
         qubit_levels_list = self.system_dims.qubit_levels
@@ -879,12 +910,8 @@ class ExperimentalParameters:
             qubit_dim = np.prod(qubit_levels_list)
         else:
             qubit_dim = qubit_levels_list
-        
-        total_dim = (
-            self.system_dims.cavity_levels
-            * qubit_dim
-            * self.system_dims.field_levels
-        )
+
+        total_dim = self.system_dims.cavity_levels * qubit_dim * self.system_dims.field_levels
         lines.append(f"  Number of qubits:     {n_qubits:>6}")
         lines.append(f"  Cavity levels:        {self.system_dims.cavity_levels:>6}")
         lines.append(f"  Qubit levels:         {self.system_dims.qubit_levels}")
@@ -896,7 +923,7 @@ class ExperimentalParameters:
             qubit_valid = all(q >= 2 for q in qubit_levels_list)
         else:
             qubit_valid = qubit_levels_list >= 2
-        
+
         dim_valid = (
             self.system_dims.cavity_levels >= 2
             and qubit_valid
@@ -910,13 +937,17 @@ class ExperimentalParameters:
             f"  Photon cavity coupling: {self.physical_constants.photon_cavity_coupling:>6.4f}"
         )
         lines.append(f"  Inverse pulse width:  {self.physical_constants.inverse_pulse_width:>8.4f}")
-        
+
         # Qubit Interactions
         if self.physical_constants.qubit_interactions:
-            lines.append(f"  Qubit interactions:   {len(self.physical_constants.qubit_interactions)} interaction(s)")
+            lines.append(
+                f"  Qubit interactions:   {len(self.physical_constants.qubit_interactions)} interaction(s)"
+            )
             for i, interaction in enumerate(self.physical_constants.qubit_interactions):
-                lines.append(f"    [{i}] Qubits {interaction.qubit_indices}: "
-                           f"{interaction.interaction_type.value}, χ={interaction.chi:.4f}")
+                lines.append(
+                    f"    [{i}] Qubits {interaction.qubit_indices}: "
+                    f"{interaction.interaction_type.value}, χ={interaction.chi:.4f}"
+                )
         else:
             lines.append("  Qubit interactions:   None")
 
@@ -926,7 +957,7 @@ class ExperimentalParameters:
             chi_valid = all(c >= 0 for c in chi_list)
         else:
             chi_valid = chi_list >= 0
-        
+
         const_valid = (
             chi_valid
             and self.physical_constants.photon_cavity_coupling >= 0
@@ -935,9 +966,11 @@ class ExperimentalParameters:
 
         # Measurement Protocol Group
         lines.append("MEASUREMENT PROTOCOL")
-        
+
         # Determine mode (list or interval)
-        times_list = self._measurement_times_list if self._measurement_times_list is not None else []
+        times_list = (
+            self._measurement_times_list if self._measurement_times_list is not None else []
+        )
         if self.measurement.measurement_times is not None:
             lines.append("  Mode:                 Explicit list")
             n_measurements = len(times_list)
@@ -951,14 +984,12 @@ class ExperimentalParameters:
             n_measurements = len(times_list)
             lines.append(f"  Number of measurements: {n_measurements:>6}")
             lines.append(f"  Computed times:       {times_list}")
-            
+
         uncertainty_value = self.initial_time_uncertainty
         if uncertainty_value > 0:
             lines.append(f"  Initial time uncertainty: {uncertainty_value:>8.4f}")
             if isinstance(self.measurement.initial_time_uncertainty, str):
-                lines.append(
-                    f"    (specified as '{self.measurement.initial_time_uncertainty}')"
-                )
+                lines.append(f"    (specified as '{self.measurement.initial_time_uncertainty}')")
         # Initial State Configuration Group
         lines.append("INITIAL STATE")
         lines.append(f"  Type:                 {self.initial_state.state_type.value}")
@@ -984,8 +1015,8 @@ class ExperimentalParameters:
             lines.append("  Configuration:        INVALID")
             lines.append(f"  Error:                {str(e)}")
 
-        return '\n'.join(lines)
-    
+        return "\n".join(lines)
+
     def __str__(self) -> str:
         """String representation (calls __repr__)."""
         return self.__repr__()

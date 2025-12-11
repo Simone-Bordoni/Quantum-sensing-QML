@@ -13,13 +13,15 @@ This module tests all aspects of the ExperimentalParameters class including:
 import numpy as np
 import pytest
 
-from qsopt.core.experimental_parameters import (ExperimentalParameters,
-                                                InitialStateConfig,
-                                                InitialStateType,
-                                                MeasurementProtocol,
-                                                NoiseConfiguration,
-                                                PhysicalConstants,
-                                                SystemDimensions)
+from qsopt.core.experimental_parameters import (
+    ExperimentalParameters,
+    InitialStateConfig,
+    InitialStateType,
+    MeasurementProtocol,
+    NoiseConfiguration,
+    PhysicalConstants,
+    SystemDimensions,
+)
 
 
 class TestPhysicalConstants:
@@ -90,9 +92,7 @@ class TestInitialStateConfig:
 
     def test_coherent_state_config(self):
         """Test configuration for coherent states."""
-        config = InitialStateConfig(
-            state_type=InitialStateType.COHERENT, coherent_alpha=1.0 + 0.5j
-        )
+        config = InitialStateConfig(state_type=InitialStateType.COHERENT, coherent_alpha=1.0 + 0.5j)
         assert config.state_type == InitialStateType.COHERENT
         assert config.coherent_alpha == 1.0 + 0.5j
 
@@ -186,7 +186,7 @@ class TestExperimentalParameters:
 
         # Change the time interval to get different measurement times
         params.time_interval = 2.0
-        
+
         # Times should be different now (fewer measurements with larger interval)
         assert params._measurement_times_list is not None
         assert not np.array_equal(params.measurement_times, original_times)
@@ -216,19 +216,35 @@ class TestExperimentalParameters:
         with pytest.raises(ValueError, match="Qubit 0 levels must be >= 2"):
             ExperimentalParameters(system_dims=dims)
 
-    def test_validation_chi_non_positive(self):
-        """Test validation error when chi <= 0."""
+    def test_validation_chi_zero(self):
+        """Test warning when chi = 0."""
         constants = PhysicalConstants(chi=0.0)
 
-        with pytest.raises(ValueError, match="Dispersive coupling \\(chi\\) for qubit 0 must be > 0"):
+        with pytest.warns(UserWarning, match="Dispersive coupling \\(chi\\) for qubit 0 is zero"):
             ExperimentalParameters(physical_constants=constants)
 
-    def test_validation_photon_cavity_coupling_non_positive(self):
-        """Test validation error when photon_cavity_coupling <= 0."""
+    def test_validation_chi_negative(self):
+        """Test validation error when chi < 0."""
+        constants = PhysicalConstants(chi=-1.0)
+
+        with pytest.raises(
+            ValueError, match="Dispersive coupling \\(chi\\) for qubit 0 must be >= 0"
+        ):
+            ExperimentalParameters(physical_constants=constants)
+
+    def test_validation_photon_cavity_coupling_zero(self):
+        """Test warning when photon_cavity_coupling = 0."""
+        constants = PhysicalConstants(photon_cavity_coupling=0.0)
+
+        with pytest.warns(UserWarning, match="Photon-cavity coupling.*is zero"):
+            ExperimentalParameters(physical_constants=constants)
+
+    def test_validation_photon_cavity_coupling_negative(self):
+        """Test validation error when photon_cavity_coupling < 0."""
         constants = PhysicalConstants(photon_cavity_coupling=-1.0)
 
         with pytest.raises(
-            ValueError, match="Photon-cavity coupling \\(photon_cavity_coupling\\) must be > 0"
+            ValueError, match="Photon-cavity coupling \\(photon_cavity_coupling\\) must be >= 0"
         ):
             ExperimentalParameters(physical_constants=constants)
 
@@ -273,9 +289,7 @@ class TestExperimentalParameters:
         """Test validation error when measurement times are not sorted."""
         measurement = MeasurementProtocol(measurement_times=[5.0, -5.0, 0.0])
 
-        with pytest.raises(
-            ValueError, match="Measurement times must be in ascending order"
-        ):
+        with pytest.raises(ValueError, match="Measurement times must be in ascending order"):
             ExperimentalParameters(measurement=measurement)
 
     def test_primary_properties_cavity_levels(self):

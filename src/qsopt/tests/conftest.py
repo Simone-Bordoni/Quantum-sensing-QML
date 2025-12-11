@@ -21,13 +21,15 @@ def default_experimental_parameters():
 @pytest.fixture
 def custom_experimental_parameters():
     """Fixture providing custom experimental parameters for testing."""
-    from qsopt.core.experimental_parameters import (ExperimentalParameters,
-                                                    InitialStateConfig,
-                                                    InitialStateType,
-                                                    MeasurementProtocol,
-                                                    NoiseConfiguration,
-                                                    PhysicalConstants,
-                                                    SystemDimensions)
+    from qsopt.core.experimental_parameters import (
+        ExperimentalParameters,
+        InitialStateConfig,
+        InitialStateType,
+        MeasurementProtocol,
+        NoiseConfiguration,
+        PhysicalConstants,
+        SystemDimensions,
+    )
 
     constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=0.5, inverse_pulse_width=0.1)
 
