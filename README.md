@@ -2,9 +2,11 @@
 
 A specialized Python library for **gradient-based optimization of quantum sensing protocols** using JAX-compatible quantum circuits and automatic differentiation. Designed for optimizing dispersive qubit-cavity interactions in quantum sensing experiments, with applications to dark matter detection and quantum state preparation.
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![QuTiP](https://img.shields.io/badge/QuTiP-JAX%20compatible-green.svg)](https://qutip.org/)
 [![JAX](https://img.shields.io/badge/JAX-autodiff-orange.svg)](https://jax.readthedocs.io/)
+[![Test Windows](https://github.com/Simone-Bordoni/Quantum-sensing-QML/workflows/Test%20Installation%20and%20Run%20Tests/badge.svg)](https://github.com/Simone-Bordoni/Quantum-sensing-QML/actions/workflows/test-windows.yml)
+[![CI Tests](https://github.com/Simone-Bordoni/Quantum-sensing-QML/workflows/Comprehensive%20CI%20Tests/badge.svg)](https://github.com/Simone-Bordoni/Quantum-sensing-QML/actions/workflows/ci.yml)
 
 ## Overview
 
