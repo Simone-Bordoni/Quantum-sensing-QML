@@ -75,7 +75,7 @@ jobs:
     
     - name: Run installation tests
       run: |
-        pytest src/qsopt/tests/test_installation.py -v -k "not TestFreshEnvironmentInstallation" --tb=short
+        pytest src/qsopt/tests/test_installation.py -v --tb=short
     
     - name: Run gate and circuit tests
       run: |
@@ -107,7 +107,7 @@ jobs:
     
     - name: Run tests with coverage
       run: |
-        pytest src/qsopt/tests/test_installation.py src/qsopt/tests/test_gates.py src/qsopt/tests/test_circuit.py --cov=src/qsopt --cov-report=term --cov-report=xml --cov-report=html -k "not TestFreshEnvironmentInstallation"
+        pytest src/qsopt/tests/test_installation.py src/qsopt/tests/test_gates.py src/qsopt/tests/test_circuit.py --cov=src/qsopt --cov-report=term --cov-report=xml --cov-report=html
       continue-on-error: true
     
     - name: Display coverage report
@@ -125,24 +125,4 @@ jobs:
           htmlcov/
           coverage.xml
         retention-days: 14
-      continue-on-error: true
-
-  test-fresh-installation:
-    needs: test-multi-platform
-    runs-on: windows-latest
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Set up Python 3.13
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
-    
-    - name: Test fresh environment installation
-      run: |
-        pip install --upgrade pip
-        pip install -e ".[test]"
-        pytest src/qsopt/tests/test_installation.py::TestFreshEnvironmentInstallation -v --tb=short
       continue-on-error: true
