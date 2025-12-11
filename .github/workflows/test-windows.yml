@@ -1,4 +1,4 @@
-name: Test Installation and Run Tests
+name: Quick Windows Tests
 
 on:
   push:

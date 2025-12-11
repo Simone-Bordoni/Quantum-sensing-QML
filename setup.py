@@ -17,6 +17,7 @@ setup(
         "jaxlib>=0.4.35",
         "qutip>=5.2.2",
         "qutip-jax>=0.1.1",
+        "qutip-qip>=0.3.1",
         "optax>=0.2.4",
         "matplotlib>=3.10.6",
         "scipy>=1.16.1",

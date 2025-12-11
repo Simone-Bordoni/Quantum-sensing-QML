@@ -1,4 +1,4 @@
-name: Comprehensive CI Tests
+name: Tests and Linting
 
 on:
   push:
