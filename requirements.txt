@@ -3,6 +3,7 @@ numpy==2.3.4
 jax==0.4.35
 jaxlib==0.4.35
 qutip==5.2.2
+qutip-jax==0.1.1
 optax==0.2.4
 matplotlib==3.10.0
 scipy==1.16.3
