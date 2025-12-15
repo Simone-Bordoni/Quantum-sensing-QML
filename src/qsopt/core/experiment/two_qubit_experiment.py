@@ -1002,6 +1002,8 @@ class TwoQubitExperiment(Experiment):
                 - probabilities: Dict with 'prob_00', 'prob_01', 'prob_10', 'prob_11'
                 - pulse_shape: Pulse envelope u(t), shape (n_points,)
                 - measurement_times: Measurement time points
+                - cavity_population: Cavity population <a†a>, shape (n_points,)
+                - field_population: External field population <a_in†a_in>, shape (n_points,)
 
         Example:
             >>> # Get time evolution data
@@ -1020,7 +1022,10 @@ class TwoQubitExperiment(Experiment):
             >>>
             >>> # Or use the visualization utility
             >>> from qsopt.utils import plot_time_evolution
-            >>> fig = plot_time_evolution(evolution, n_qubits=2)
+            >>> # With cavity population displayed on secondary y-axis
+            >>> fig = plot_time_evolution(evolution, show_cavity_population=True)
+            >>> # Without cavity population (default)
+            >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
         # Get current rotation angles (need 4 angles for 2 qubits)
         rotation_angles = self.trainable_params.get_rotation_angles()
@@ -1058,6 +1063,17 @@ class TwoQubitExperiment(Experiment):
         prob_01_list = []
         prob_10_list = []
         prob_11_list = []
+        cavity_population_list = []
+        field_population_list = []
+
+        # Get number operators for population calculation
+        a_dag = self.operators["a_dag"]
+        a = self.operators["a"]
+        n_cavity = a_dag * a  # Cavity number operator a†a
+        
+        a_in_dag = self.operators["a_in_dag"]
+        a_in = self.operators["a_in"]
+        n_field = a_in_dag * a_in  # Field number operator a_in†a_in
 
         for rho_t in result.states:
             # Apply second rotations
@@ -1074,6 +1090,14 @@ class TwoQubitExperiment(Experiment):
             prob_01_list.append(p01)
             prob_10_list.append(p10)
             prob_11_list.append(p11)
+
+            # Calculate cavity population <a†a>
+            cavity_pop = float(qt.expect(n_cavity, rho_t))
+            cavity_population_list.append(cavity_pop)
+            
+            # Calculate field population <a_in†a_in>
+            field_pop = float(qt.expect(n_field, rho_t))
+            field_population_list.append(field_pop)
 
         # Compute pulse shape u(t) = exp(-t^2)
         pulse_shape = np.exp(-(times**2))
@@ -1094,6 +1118,8 @@ class TwoQubitExperiment(Experiment):
             },
             pulse_shape=pulse_shape,
             measurement_times=measurement_times,
+            cavity_population=np.array(cavity_population_list),
+            field_population=np.array(field_population_list),
             metadata={
                 "chi": self.experimental_params.chi,
                 "gamma": self.experimental_params.photon_cavity_coupling,

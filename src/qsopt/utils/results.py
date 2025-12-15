@@ -38,6 +38,8 @@ class TimeEvolutionResults:
             - For two qubits: 'prob_00', 'prob_01', 'prob_10', 'prob_11'
         pulse_shape: Optional 1D array of pulse envelope values
         measurement_times: Optional list/array of measurement time points
+        cavity_population: Optional 1D array of cavity population <a†a> values
+        field_population: Optional 1D array of external field population <a_in†a_in> values
         metadata: Optional dictionary for additional information (system params, etc.)
 
     Example:
@@ -45,10 +47,11 @@ class TimeEvolutionResults:
         ...     times=times,
         ...     probabilities={'prob_0': p0_array, 'prob_1': p1_array},
         ...     pulse_shape=pulse,
-        ...     measurement_times=[-5.0, 5.0]
+        ...     measurement_times=[-5.0, 5.0],
+        ...     cavity_population=cavity_pop_array
         ... )
         >>> print(evolution)
-        >>> plot_time_evolution(evolution)
+        >>> plot_time_evolution(evolution, show_cavity_population=True)
         >>> save_results(evolution, 'evolution_data.npz')
     """
 
@@ -56,6 +59,8 @@ class TimeEvolutionResults:
     probabilities: Dict[str, np.ndarray]
     pulse_shape: Optional[np.ndarray] = None
     measurement_times: Optional[Union[List[float], np.ndarray]] = None
+    cavity_population: Optional[np.ndarray] = None
+    field_population: Optional[np.ndarray] = None
     metadata: Dict[str, Union[float, str, np.ndarray, List]] = field(default_factory=dict)
 
     def __str__(self) -> str:
@@ -80,6 +85,13 @@ class TimeEvolutionResults:
             lines.append(f"  Measurement times: {list(meas_times)}")
         else:
             lines.append(f"  Measurement times: Not specified")
+        
+        lines.append(
+            f"  Cavity population: {'Available' if self.cavity_population is not None else 'Not available'}"
+        )
+        lines.append(
+            f"  Field population: {'Available' if self.field_population is not None else 'Not available'}"
+        )
 
         return "\n".join(lines)
 

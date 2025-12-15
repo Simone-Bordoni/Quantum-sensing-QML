@@ -344,7 +344,7 @@ def generate_initial_state(
     - VACUUM: All subsystems in ground state
     - SINGLE_PHOTON: One photon in field, vacuum cavity, qubits in ground or superposition
     - COHERENT: Coherent state in field
-    - THERMAL: Thermal state in cavity
+    - THERMAL: Thermal state in field
     - CUSTOM: User-defined superposition
 
     For multi-qubit systems, qubits are initialized in equal superposition (|0⟩+|1⟩)/√2
@@ -394,29 +394,6 @@ def generate_initial_state(
             if alpha is None:
                 raise ValueError("coherent_alpha must be specified for COHERENT state type")
             field_dm = _create_field_coherent(field_levels, alpha)
-
-        elif state_type == InitialStateType.THERMAL:
-            n_bar = initial_config.thermal_n_bar
-            if n_bar is None:
-                raise ValueError("thermal_n_bar must be specified for THERMAL state type")
-            # Special case: thermal state is in cavity, not field
-            # Field is vacuum, cavity is thermal
-            field_dm = _create_field_vacuum(field_levels)
-            cavity_thermal = _create_field_thermal(cavity_levels, n_bar)
-
-            # Extract qubit levels
-            if isinstance(qubit_levels, int):
-                q_levels = [qubit_levels] * num_qubits
-            else:
-                q_levels = qubit_levels[:num_qubits]
-
-            # Build ground state for qubits only
-            qubit_grounds = [qt.basis(q_levels[i], 0) for i in range(num_qubits)]
-            qubit_ground_state = qt.tensor(*qubit_grounds)
-            qubit_dm = qubit_ground_state * qubit_ground_state.dag()  # type: ignore
-
-            # Tensor: field ⊗ cavity ⊗ qubits
-            return qt.tensor(field_dm, cavity_thermal, qubit_dm)
 
         elif state_type == InitialStateType.CUSTOM:
             custom_amps = initial_config.custom_amplitudes

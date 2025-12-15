@@ -355,5 +355,108 @@ def test_plot_optimization_dashboard_no_plots_raises():
         )
 
 
+def test_plot_time_evolution_with_cavity_population():
+    """Test plot_time_evolution with cavity population enabled."""
+    from qsopt.utils import plot_time_evolution
+    from qsopt.utils.results import TimeEvolutionResults
+
+    # Create sample time evolution data
+    times = np.linspace(-5, 5, 100)
+    prob_0 = np.exp(-(times**2))
+    prob_1 = 1 - prob_0
+    pulse_shape = np.exp(-(times**2))
+    cavity_population = 0.1 * np.exp(-(times**2))  # Peak at t=0
+    measurement_times = [-5.0, 5.0]
+
+    results = TimeEvolutionResults(
+        times=times,
+        probabilities={"prob_0": prob_0, "prob_1": prob_1},
+        pulse_shape=pulse_shape,
+        measurement_times=measurement_times,
+        cavity_population=cavity_population,
+    )
+
+    # Test with cavity population
+    fig = plot_time_evolution(results, show_cavity_population=True)
+    assert fig is not None
+    assert isinstance(fig, Figure)
+    plt.close(fig)
+
+    # Test without cavity population (default)
+    fig2 = plot_time_evolution(results, show_cavity_population=False)
+    assert fig2 is not None
+    plt.close(fig2)
+
+
+def test_plot_time_evolution_two_qubit_with_cavity():
+    """Test plot_time_evolution for two-qubit system with cavity population."""
+    from qsopt.utils import plot_time_evolution
+    from qsopt.utils.results import TimeEvolutionResults
+
+    # Create sample two-qubit time evolution data
+    times = np.linspace(-5, 5, 100)
+    prob_00 = 0.5 * np.exp(-(times**2))
+    prob_01 = 0.2 * np.ones_like(times)
+    prob_10 = 0.2 * np.ones_like(times)
+    prob_11 = 1 - prob_00 - prob_01 - prob_10
+    cavity_population = 0.15 * np.exp(-(times**2))
+
+    results = TimeEvolutionResults(
+        times=times,
+        probabilities={
+            "prob_00": prob_00,
+            "prob_01": prob_01,
+            "prob_10": prob_10,
+            "prob_11": prob_11,
+        },
+        pulse_shape=np.exp(-(times**2)),
+        measurement_times=[-5.0, 5.0],
+        cavity_population=cavity_population,
+    )
+
+    # Test with cavity population
+    fig = plot_time_evolution(results, show_cavity_population=True)
+    assert fig is not None
+    assert isinstance(fig, Figure)
+    plt.close(fig)
+
+
+def test_plot_time_evolution_with_field_population():
+    """Test plot_time_evolution with external field population enabled."""
+    from qsopt.utils import plot_time_evolution
+    from qsopt.utils.results import TimeEvolutionResults
+
+    # Create sample time evolution data with both populations
+    times = np.linspace(-5, 5, 100)
+    prob_0 = np.exp(-(times**2))
+    prob_1 = 1 - prob_0
+    pulse_shape = np.exp(-(times**2))
+    cavity_population = 0.1 * np.exp(-(times**2))
+    field_population = 0.8 * np.exp(-(times**2))  # Field population higher than cavity
+    measurement_times = [-5.0, 5.0]
+
+    results = TimeEvolutionResults(
+        times=times,
+        probabilities={"prob_0": prob_0, "prob_1": prob_1},
+        pulse_shape=pulse_shape,
+        measurement_times=measurement_times,
+        cavity_population=cavity_population,
+        field_population=field_population,
+    )
+
+    # Test with field population only
+    fig = plot_time_evolution(results, show_field_population=True)
+    assert fig is not None
+    assert isinstance(fig, Figure)
+    plt.close(fig)
+
+    # Test with both cavity and field populations
+    fig2 = plot_time_evolution(
+        results, show_cavity_population=True, show_field_population=True
+    )
+    assert fig2 is not None
+    plt.close(fig2)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

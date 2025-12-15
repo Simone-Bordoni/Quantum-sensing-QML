@@ -1150,10 +1150,14 @@ def plot_time_evolution(
     probabilities: Optional[Dict[str, np.ndarray]] = None,
     pulse_shape: Optional[np.ndarray] = None,
     measurement_times: Optional[Union[List[float], np.ndarray]] = None,
+    cavity_population: Optional[np.ndarray] = None,
+    field_population: Optional[np.ndarray] = None,
     title: Optional[str] = None,
     selected_states: Optional[List[str]] = None,
     show_pulse: bool = True,
     show_measurements: bool = True,
+    show_cavity_population: bool = False,
+    show_field_population: bool = False,
     figsize: Tuple[int, int] = (10, 6),
     save_path: Optional[str] = None,
     dpi: int = 300,
@@ -1176,17 +1180,22 @@ def plot_time_evolution(
             - probabilities/['prob_00', 'prob_01', 'prob_10', 'prob_11']: For two qubits
             - pulse_shape/['pulse_shape']: Optional pulse envelope
             - measurement_times/['measurement_times']: Optional measurement times
+            - cavity_population: Optional cavity population array
         times: Time points array (alternative to evolution_data)
         probabilities: Dict with probability arrays (alternative to evolution_data). Keys:
             - Single qubit: 'prob_0', 'prob_1'
             - Two qubits: 'prob_00', 'prob_01', 'prob_10', 'prob_11'
         pulse_shape: Optional pulse envelope array (same length as times)
         measurement_times: Optional list/array of measurement time points for vertical markers
+        cavity_population: Optional array of cavity population values <a†a>
+        field_population: Optional array of external field population values <a_in†a_in>
         title: Plot title. Auto-generated if None.
         selected_states: Optional list of state keys to plot (e.g., ['prob_00', 'prob_11']).
             If None, all available states are plotted.
         show_pulse: Whether to show pulse shape as filled area. Default: True
         show_measurements: Whether to show measurement time markers. Default: True
+        show_cavity_population: Whether to show cavity population <a†a> on the same y-axis. Default: False
+        show_field_population: Whether to show field population <a_in†a_in> on the same y-axis. Default: False
         figsize: Figure size (width, height) in inches
         save_path: Optional path to save figure
         dpi: Resolution for saved figure
@@ -1200,14 +1209,18 @@ def plot_time_evolution(
         >>> print(results)  # Shows available plot options
         >>> fig = plot_time_evolution(results)
 
+        >>> # With cavity population on secondary y-axis
+        >>> fig = plot_time_evolution(results, show_cavity_population=True)
+
         >>> # Using evolution_data dict (backward compatible)
         >>> results_dict = {'times': times, 'prob_0': p0, 'prob_1': p1}
         >>> fig = plot_time_evolution(evolution_data=results_dict)
 
-        >>> # With measurement markers
+        >>> # With measurement markers and cavity population
         >>> fig = plot_time_evolution(
         ...     evolution_data=results,
         ...     measurement_times=experiment.experimental_params.measurement.measurement_times,
+        ...     show_cavity_population=True,
         ...     title='Single Qubit Evolution'
         ... )
 
@@ -1220,11 +1233,12 @@ def plot_time_evolution(
         ...     show_pulse=True
         ... )
 
-        >>> # Two-qubit without pulse shape
+        >>> # Two-qubit with cavity population, without pulse shape
         >>> fig = plot_time_evolution(
         ...     evolution_data=results_2q,
         ...     show_pulse=False,
-        ...     show_measurements=False
+        ...     show_measurements=False,
+        ...     show_cavity_population=True
         ... )
     """
     # Parse input: TimeEvolutionResults object or individual arguments
@@ -1241,6 +1255,10 @@ def plot_time_evolution(
             pulse_shape = evolution_data.pulse_shape
         if measurement_times is None:
             measurement_times = evolution_data.measurement_times
+        if cavity_population is None:
+            cavity_population = evolution_data.cavity_population
+        if field_population is None:
+            field_population = evolution_data.field_population
     elif times is None or probabilities is None:
         raise ValueError("Must provide either evolution_data or both times and probabilities")
 
@@ -1285,6 +1303,30 @@ def plot_time_evolution(
             ax.plot(times, probabilities["prob_0"], label="P(0)", linewidth=2, linestyle="-")
         if "prob_1" in probabilities:
             ax.plot(times, probabilities["prob_1"], label="P(1)", linewidth=2, linestyle="--")
+
+    # Add cavity population on same y-axis if requested
+    if show_cavity_population and cavity_population is not None:
+        ax.plot(
+            times,
+            cavity_population,
+            color="purple",
+            linewidth=2,
+            linestyle="-",
+            alpha=0.7,
+            label=r"Cavity $\langle a^\dagger a \rangle$",
+        )
+    
+    # Add field population on same y-axis if requested
+    if show_field_population and field_population is not None:
+        ax.plot(
+            times,
+            field_population,
+            color="brown",
+            linewidth=2,
+            linestyle="-.",
+            alpha=0.7,
+            label=r"Field $\langle a_{\mathrm{in}}^\dagger a_{\mathrm{in}} \rangle$",
+        )
 
     # Add pulse shape if provided and requested
     if show_pulse and pulse_shape is not None:

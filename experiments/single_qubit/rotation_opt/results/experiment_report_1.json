@@ -16,9 +16,7 @@
       "mode": "explicit",
       "measurement_times": [
         -265.25823848649225,
-        -53.05164769729845,
         0.0,
-        53.05164769729845,
         265.25823848649225
       ],
       "initial_time": null,
@@ -27,12 +25,10 @@
       "initial_time_uncertainty": 0.0,
       "computed_times": [
         -265.25823848649225,
-        -53.05164769729845,
         0.0,
-        53.05164769729845,
         265.25823848649225
       ],
-      "num_measurements": 5
+      "num_measurements": 3
     },
     "initial_state": {
       "state_type": "single_photon",
@@ -42,9 +38,9 @@
       "has_custom_amplitudes": false
     },
     "noise_configuration": {
-      "depolarizing": 0.0001,
-      "dephasing": 0.0001,
-      "relaxation": 0.0001
+      "depolarizing": 0.0005,
+      "dephasing": 0.0005,
+      "relaxation": 0.0005
     }
   },
   "trainable_parameters": {
@@ -52,13 +48,13 @@
       {
         "name": "ry1",
         "type": "rotation_angle",
-        "value": 1.561475144662278,
+        "value": 1.5509997314985096,
         "trainable": true
       },
       {
         "name": "ry2",
         "type": "rotation_angle",
-        "value": 4.7275779456908715,
+        "value": 4.7713796421789585,
         "trainable": true
       }
     ],
@@ -67,31 +63,31 @@
   },
   "callback_info": {
     "mode": "optimization",
-    "total_epochs": 37,
+    "total_epochs": 99,
     "converged": true,
-    "final_gradient_norm": 7.236678826980742e-08,
+    "final_gradient_norm": 8.771044535261752e-08,
     "best_metrics": {
-      "epoch": 37,
-      "contrast": 0.868271865968031,
-      "prob_with": 0.9630226861755566,
-      "prob_without": 0.09475082020752568
+      "epoch": 99,
+      "contrast": 0.47665182193697164,
+      "prob_with": 0.8303419861039857,
+      "prob_without": 0.35369016416701404
     },
     "best_parameters": {
       "ry1": {
-        "value_rad": 1.561475180296259,
-        "value_deg": 89.46593764540492
+        "value_rad": 1.5509997099728796,
+        "value_deg": 88.86573740746074
       },
       "ry2": {
-        "value_rad": -1.5556073253628653,
-        "value_deg": -89.12973432292644
+        "value_rad": -1.5118056437179872,
+        "value_deg": -86.62008282909929
       }
     },
-    "callback_data_path": "experiments\\single_qubit\\rotation_opt\\results\\experiment_report_callback.npz",
+    "callback_data_path": "experiments\\single_qubit\\rotation_opt\\results\\experiment_report_1_callback.npz",
     "optimization_summary": {
-      "initial_contrast": 0.8654396224262012,
-      "final_contrast": 0.868271865968031,
-      "best_contrast": 0.868271865968031,
-      "improvement": 0.00283224354182976
+      "initial_contrast": 0.4687952932302264,
+      "final_contrast": 0.47665182193697164,
+      "best_contrast": 0.47665182193697164,
+      "improvement": 0.007856528706745247
     }
   }
 }

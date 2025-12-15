@@ -21,7 +21,7 @@ custom_dims = SystemDimensions(
 
 # Define measurement protocol
 custom_measurement = MeasurementProtocol(
-    measurement_times = list(np.array([-5.0, -1., 0.0, 1., 5.0])/(0.1 * gm)) # Specific measurement times
+    measurement_times = list(np.array([-5.0, 0.0, 5.0])/(0.1 * gm)) # Specific measurement times
 )
 
 # Define initial state configuration (SINGLE_PHOTON)
@@ -31,9 +31,9 @@ initial_state = InitialStateConfig(
 
 # Define noise configuration
 noise_config = NoiseConfiguration(
-    depolarizing = 0.0001,  
-    dephasing = 0.0001,      
-    relaxation = 0.0001
+    depolarizing = 0.0005,  
+    dephasing = 0.0005,      
+    relaxation = 0.0005
 )
 
 # Create parameters with custom configuration
@@ -46,24 +46,24 @@ exp_parameters = ExperimentalParameters(
 )
 
 parameters = TrainableParameters()
-parameters.add_rotation_angles(['ry1', 'ry2'], [np.pi/2, -np.pi/2], optimizer=optax.sgd(0.5))
+parameters.add_rotation_angles(['ry1', 'ry2'], [np.pi/2, -np.pi/2], optimizer=optax.sgd(0.3))
 
 experiment = SingleQubitExperiment(exp_parameters, parameters)
 
 benchmark_results = experiment.run_simulation()
 
 history = experiment.optimize_rotations(
-    theta_init=[1.5, -1.5],
-    num_steps=70,
+    theta_init=[1.4, -1.4],
+    num_steps=200,
     verbose=True,
     verbose_step=20,
-    tolerance=1e-7
+    tolerance=1e-9
 )
 
 fig = plot_optimization_dashboard(
     optimization_callback=history,
     reference_callback=benchmark_results,
-    save_path='experiments/single_qubit/rotation_opt/results/opt_dashboard.pdf'
+    save_path='experiments/single_qubit/rotation_opt/results/opt_dashboard_1.pdf'
 )
 
-experiment.save_experiment_report(save_path='experiments/single_qubit/rotation_opt/results/experiment_report.json')
+experiment.save_experiment_report(save_path='experiments/single_qubit/rotation_opt/results/experiment_report_1.json')
