@@ -1,4 +1,5 @@
 README.md
+pyproject.toml
 setup.py
 src/qsopt/__init__.py
 src/qsopt.egg-info/PKG-INFO
@@ -28,11 +29,14 @@ src/qsopt/tests/test_experiment_loader.py
 src/qsopt/tests/test_experiment_reports.py
 src/qsopt/tests/test_experimental_parameters.py
 src/qsopt/tests/test_gates.py
+src/qsopt/tests/test_installation.py
 src/qsopt/tests/test_landscape_analysis.py
+src/qsopt/tests/test_loss_functions.py
 src/qsopt/tests/test_parameters_sweep.py
 src/qsopt/tests/test_pulse_shape_visualization.py
 src/qsopt/tests/test_quantum_utils.py
 src/qsopt/tests/test_qubit_interactions.py
+src/qsopt/tests/test_results.py
 src/qsopt/tests/test_trainable_parameters.py
 src/qsopt/tests/test_two_qubit_experiment.py
 src/qsopt/tests/test_visualization.py
@@ -42,5 +46,3 @@ src/qsopt/utils/landscape_analysis.py
 src/qsopt/utils/parameters_sweep.py
 src/qsopt/utils/results.py
 src/qsopt/utils/visualization.py
-tests/test_fresh_install.py
-tests/test_installation.py

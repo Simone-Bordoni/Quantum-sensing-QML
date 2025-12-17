@@ -535,28 +535,27 @@ class SingleQubitExperiment(Experiment):
 
     def time_evolution(
         self,
-        t_start: float = -5.0,
-        t_end: float = 5.0,
         n_points: int = 200,
         with_interaction: bool = True,
+        measurement_protocol: Optional["MeasurementProtocol"] = None,
     ) -> "TimeEvolutionResults":
         """
-        Compute time evolution of qubit probabilities.
+        Compute time evolution of qubit probabilities with optional projective measurements.
 
-        Simulates the quantum system evolution over time and returns probability
-        distributions for visualization. The system starts in superposition (after
-        first rotation), evolves under the Hamiltonian, and the probabilities are
-        measured after the second rotation.
+        Simulates the quantum system evolution over time using the measurement protocol times.
+        If intermediate measurement times exist in the protocol, performs projective measurements
+        at those times using the same protocol as run_simulation(): invert rotation Ry(-theta2),
+        project onto basis states, then reapply Ry(theta2).
 
         This method is useful for understanding the temporal dynamics and creating
         time evolution plots for quantum sensing protocols.
 
         Args:
-            t_start: Start time for evolution (default: -5.0)
-            t_end: End time for evolution (default: 5.0)
             n_points: Number of time points to sample (default: 200)
             with_interaction: If True, use Hamiltonian with chi coupling.
                              If False, use Hamiltonian without chi (default: True)
+            measurement_protocol: Optional custom measurement protocol to use instead of
+                                 the experiment's default protocol (default: None)
 
         Returns:
             TimeEvolutionResults object containing:
@@ -566,10 +565,13 @@ class SingleQubitExperiment(Experiment):
                 - measurement_times: Measurement time points
                 - cavity_population: Cavity population <a†a>, shape (n_points,)
                 - field_population: External field population <a_in†a_in>, shape (n_points,)
+                - cumulative_detection: Cumulative detection probability (only when intermediate
+                  measurements are present). Monotonically increasing probability of having
+                  detected |1⟩ at least once up to each time point.
 
         Example:
-            >>> # Get time evolution data
-            >>> evolution = experiment.time_evolution(t_start=-5, t_end=5, n_points=200)
+            >>> # Get time evolution data using default measurement protocol
+            >>> evolution = experiment.time_evolution(n_points=200)
             >>>
             >>> # Plot with matplotlib
             >>> import matplotlib.pyplot as plt
@@ -586,6 +588,17 @@ class SingleQubitExperiment(Experiment):
             >>> # Without cavity population (default)
             >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
+        # Use provided measurement protocol or default from experimental parameters
+        if measurement_protocol is None:
+            measurement_protocol = self.experimental_params.measurement
+        
+        # Get measurement times from protocol
+        measurement_times = np.array(measurement_protocol.measurement_times)
+        
+        # Use measurement times for start and end
+        t_start = float(measurement_times[0])
+        t_end = float(measurement_times[-1])
+            
         # Get current rotation angles
         rotation_angles = self.trainable_params.get_rotation_angles()
         if len(rotation_angles) < 2:
@@ -607,24 +620,12 @@ class SingleQubitExperiment(Experiment):
         )
 
         # Prepare rotation gates
-        rotation_theta1, _ = self._prepare_rotation_gates(theta1, theta2)
+        rotation_theta1, rotation_theta2 = self._prepare_rotation_gates(theta1, theta2)
         rotation_theta1_dag = rotation_theta1.dag()
-        rotation_theta2, rotation_theta2_dag = self._prepare_rotation_gates(theta2, theta2)
         rotation_theta2_dag = rotation_theta2.dag()
 
-        # Apply first rotation
-        rho_rotated = rotation_theta1 * rho0 * rotation_theta1_dag  # type: ignore
-
-        # Time evolution
-        times = np.linspace(t_start, t_end, n_points)
-        args = {"sigma": self.experimental_params.inverse_pulse_width}
-        result = solver.run(rho_rotated, tlist=times, args=args)
-
-        # Extract probabilities at each time point
-        prob_0_list = []
-        prob_1_list = []
-        cavity_population_list = []
-        field_population_list = []
+        # Start with initial state (apply rotation_theta1 at start of each segment)
+        rho_current = rho0
 
         # Get number operators for population calculation
         a_dag = self.operators["a_dag"]
@@ -634,31 +635,107 @@ class SingleQubitExperiment(Experiment):
         a_in_dag = self.operators["a_in_dag"]
         a_in = self.operators["a_in"]
         n_field = a_in_dag * a_in  # Field number operator a_in†a_in
-
-        for rho_t in result.states:
-            # Apply second rotation
-            rho_final = rotation_theta2 * rho_t * rotation_theta2_dag  # type: ignore
-
-            # Measure qubit probabilities
-            p0 = float(self.prob0(rho_final))
-            p1 = float(self.prob1(rho_final))
-
-            prob_0_list.append(p0)
-            prob_1_list.append(p1)
-
-            # Calculate cavity population <a†a>
-            cavity_pop = float(qt.expect(n_cavity, rho_t))
-            cavity_population_list.append(cavity_pop)
+        
+        args = {"sigma": self.experimental_params.inverse_pulse_width}
+        
+        # Check if we need to perform intermediate measurements
+        intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
+        perform_measurements = len(intermediate_meas_times) > 0
+        
+        # Storage for results
+        all_times = []
+        prob_0_list = []
+        prob_1_list = []
+        cavity_population_list = []
+        field_population_list = []
+        cumulative_prob = 0.0  # Running sum of detection probabilities
+        
+        if perform_measurements:
+            # Evolution with intermediate projective measurements
+            segment_starts = [t_start] + list(intermediate_meas_times)
+            segment_ends = list(intermediate_meas_times) + [t_end]
             
-            # Calculate field population <a_in†a_in>
-            field_pop = float(qt.expect(n_field, rho_t))
-            field_population_list.append(field_pop)
+            for seg_start, seg_end in zip(segment_starts, segment_ends):
+                # Number of points for this segment
+                seg_fraction = (seg_end - seg_start) / (t_end - t_start)
+                seg_n_points = max(2, int(n_points * seg_fraction))
+                
+                # Apply first rotation before evolution (as in simulation method)
+                rho_after_ry = rotation_theta1 * rho_current * rotation_theta1_dag  # type: ignore
+                
+                # Evolve segment
+                seg_times = np.linspace(seg_start, seg_end, seg_n_points)
+                result = solver.run(rho_after_ry, tlist=seg_times, args=args)
+                
+                # Extract data for this segment
+                for i, rho_t in enumerate(result.states):
+                    # Apply second rotation for measurement
+                    rho_meas = rotation_theta2 * rho_t * rotation_theta2_dag  # type: ignore
+                    
+                    # Measure qubit probabilities
+                    p0 = float(self.prob0(rho_meas))
+                    p1 = float(self.prob1(rho_meas))
+                    
+                    all_times.append(seg_times[i])
+                    prob_0_list.append(p0*(1-cumulative_prob))  # Cumulative prob
+                    prob_1_list.append(cumulative_prob + p1*(1-cumulative_prob))  # Cumulative prob
+                    
+                    # Calculate populations (take real part since expectation values should be real)
+                    cavity_pop = float(np.real(qt.expect(n_cavity, rho_t))*(1-cumulative_prob))
+                    field_pop = float(np.real(qt.expect(n_field, rho_t))*(1-cumulative_prob))
+                    cavity_population_list.append(cavity_pop)
+                    field_population_list.append(field_pop)
+                
+                # Perform projective measurement at end of segment (if not the final segment)
+                if seg_end != t_end:
+                    rho_evolved = result.states[-1]
+                    
+                    # Apply second rotation for measurement (as in simulation method)
+                    rho_final = rotation_theta2 * rho_evolved * rotation_theta2_dag  # type: ignore
+                    
+                    # Get probability of detecting |1⟩ at this measurement
+                    p1_measurement = float(self.prob1(rho_final))
+                    
+                    # Update cumulative detection probability
+                    # P(detect at least once) = P(already detected) + P(not yet detected) * P(detect now)
+                    cumulative_prob = cumulative_prob + (1.0 - cumulative_prob) * p1_measurement
+                    
+                    # Project onto |0⟩ state (matches simulation protocol)
+                    proj_0 = self._cached_projector_0
+                    rho_projected = proj_0 * rho_final * proj_0  # type: ignore
+                    
+                    # Normalize
+                    trace_val = rho_projected.tr()
+                    rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
+        else:
+            # Continuous evolution without intermediate measurements
+            # Apply first rotation before evolution
+            rho_after_ry = rotation_theta1 * rho_current * rotation_theta1_dag  # type: ignore
+            
+            times = np.linspace(t_start, t_end, n_points)
+            result = solver.run(rho_after_ry, tlist=times, args=args)
+            
+            for i, rho_t in enumerate(result.states):
+                # Apply second rotation
+                rho_final = rotation_theta2 * rho_t * rotation_theta2_dag  # type: ignore
 
+                # Measure qubit probabilities
+                p0 = float(self.prob0(rho_final))
+                p1 = float(self.prob1(rho_final))
+
+                all_times.append(times[i])
+                prob_0_list.append(p0)
+                prob_1_list.append(p1)
+
+                # Calculate populations (take real part since expectation values should be real)
+                cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
+                field_pop = float(np.real(qt.expect(n_field, rho_t)))
+                cavity_population_list.append(cavity_pop)
+                field_population_list.append(field_pop)
+        
+        times = np.array(all_times)
         # Compute pulse shape u(t) = exp(-t^2)
         pulse_shape = np.exp(-(times**2))
-
-        # Get measurement times from experimental parameters
-        measurement_times = self.experimental_params.measurement.measurement_times
 
         # Import at runtime to avoid circular dependency
         from qsopt.utils.results import TimeEvolutionResults
@@ -669,8 +746,7 @@ class SingleQubitExperiment(Experiment):
             pulse_shape=pulse_shape,
             measurement_times=measurement_times,
             cavity_population=np.array(cavity_population_list),
-            field_population=np.array(field_population_list),
-            metadata={
+            field_population=np.array(field_population_list),            metadata={
                 "chi": self.experimental_params.chi[0],
                 "gamma": self.experimental_params.photon_cavity_coupling,
                 "with_interaction": with_interaction,
