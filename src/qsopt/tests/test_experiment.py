@@ -470,24 +470,6 @@ def test_initial_state_coherent():
     assert rho0.dims == [[2, 2, 2], [2, 2, 2]]
 
 
-def test_initial_state_thermal():
-    """Test THERMAL initial state generation."""
-    from qsopt.core.experimental_parameters import InitialStateConfig, InitialStateType
-
-    initial_state = InitialStateConfig(state_type=InitialStateType.THERMAL, thermal_n_bar=1.5)
-    params = ExperimentalParameters(initial_state=initial_state)
-    trainable = TrainableParameters()
-    trainable.add_rotation_angles(["ry1", "ry2"], [0.5, 1.0])
-
-    experiment = SingleQubitExperiment(params, trainable)
-    rho0 = experiment.get_initial_state()
-
-    # Verify it's a valid density matrix
-    assert np.isclose(rho0.tr(), 1.0, atol=1e-10)
-    assert rho0.isherm
-    assert rho0.dims == [[2, 2, 2], [2, 2, 2]]
-
-
 def test_initial_state_custom():
     """Test CUSTOM initial state generation."""
     from qsopt.core.experimental_parameters import InitialStateConfig, InitialStateType

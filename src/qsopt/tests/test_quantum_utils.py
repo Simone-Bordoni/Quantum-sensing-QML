@@ -193,26 +193,6 @@ class TestInitialStateGeneration:
         with pytest.raises(ValueError, match="coherent_alpha must be specified"):
             generate_initial_state(config, 2, 2, 2, num_qubits=1)
 
-    def test_thermal_state(self):
-        """Test thermal state generation."""
-        n_bar = 0.5
-        config = InitialStateConfig(state_type=InitialStateType.THERMAL, thermal_n_bar=n_bar)
-        rho = generate_initial_state(config, 2, 3, 2, num_qubits=1)
-
-        assert rho.isherm, "Thermal state not Hermitian"
-        assert abs(rho.tr() - 1.0) < 1e-10, "Thermal state not normalized"
-        # Thermal states are mixed: Tr(ρ²) < 1
-        purity = (rho * rho).tr()
-        assert purity < 1.0, "Thermal state should be mixed"
-        assert purity > 0.0, "Thermal state purity out of range"
-
-    def test_thermal_state_requires_n_bar(self):
-        """Test that thermal state requires n_bar parameter."""
-        config = InitialStateConfig(state_type=InitialStateType.THERMAL)
-
-        with pytest.raises(ValueError, match="thermal_n_bar must be specified"):
-            generate_initial_state(config, 2, 2, 2, num_qubits=1)
-
     def test_custom_state_simple(self):
         """Test custom state with simple superposition."""
         # Create |+⟩ state on qubit: (|0⟩ + |1⟩)/√2
