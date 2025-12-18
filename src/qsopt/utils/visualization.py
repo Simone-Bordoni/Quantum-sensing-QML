@@ -218,53 +218,85 @@ def plot_optimization_dashboard(
         axes.append(ax)
         plot_idx += 1
 
-        # Use first two parameters for trajectory plot
-        theta1_deg = param_arrays[:, 0] * 180 / np.pi
-        theta2_deg = param_arrays[:, 1] * 180 / np.pi
+        # Check if this is a two-qubit system (4 parameters: theta1_q1, theta2_q1, theta1_q2, theta2_q2)
+        if len(param_names) >= 4:
+            # Two-qubit trajectory: plot both qubits' angle evolution
+            theta1_q1_deg = param_arrays[:, 0] * 180 / np.pi
+            theta2_q1_deg = param_arrays[:, 1] * 180 / np.pi
+            theta1_q2_deg = param_arrays[:, 2] * 180 / np.pi
+            theta2_q2_deg = param_arrays[:, 3] * 180 / np.pi
 
-        # Plot trajectory with color gradient
-        scatter = ax.scatter(
-            theta1_deg,
-            theta2_deg,
-            c=epochs,
-            cmap="viridis",
-            s=30,
-            alpha=0.7,
-            edgecolors="black",
-            linewidth=0.5,
-        )
-        ax.plot(theta1_deg, theta2_deg, "k-", alpha=0.3, linewidth=1)
+            # Plot trajectory for qubit 1
+            ax.plot(theta1_q1_deg, theta2_q1_deg, 'o-', linewidth=2, alpha=0.7,
+                   label='Qubit 1', color='tab:blue', markersize=4)
+            # Mark start and end for qubit 1
+            ax.plot(theta1_q1_deg[0], theta2_q1_deg[0], 'o', markersize=10,
+                   color='tab:blue', markeredgecolor='black', markeredgewidth=1.5)
+            ax.plot(theta1_q1_deg[-1], theta2_q1_deg[-1], 's', markersize=10,
+                   color='tab:blue', markeredgecolor='black', markeredgewidth=1.5)
 
-        # Mark start and end points
-        ax.plot(
-            theta1_deg[0], theta2_deg[0], "ro", markersize=8, label="Start", markeredgecolor="black"
-        )
-        ax.plot(
-            theta1_deg[-1], theta2_deg[-1], "gs", markersize=8, label="End", markeredgecolor="black"
-        )
+            # Plot trajectory for qubit 2
+            ax.plot(theta1_q2_deg, theta2_q2_deg, 'o-', linewidth=2, alpha=0.7,
+                   label='Qubit 2', color='tab:orange', markersize=4)
+            # Mark start and end for qubit 2
+            ax.plot(theta1_q2_deg[0], theta2_q2_deg[0], 'o', markersize=10,
+                   color='tab:orange', markeredgecolor='black', markeredgewidth=1.5)
+            ax.plot(theta1_q2_deg[-1], theta2_q2_deg[-1], 's', markersize=10,
+                   color='tab:orange', markeredgecolor='black', markeredgewidth=1.5)
 
-        # Mark reference point if available
-        if reference_params is not None:
-            ref_theta1_deg = reference_params[0] * 180 / np.pi
-            ref_theta2_deg = reference_params[1] * 180 / np.pi
+            ax.set_xlabel("θ₁ (degrees)", fontsize=12)
+            ax.set_ylabel("θ₂ (degrees)", fontsize=12)
+            ax.set_title("Optimization Trajectory (Both Qubits)", fontsize=14)
+            ax.legend(fontsize=10)
+            ax.grid(True, alpha=0.3)
+        else:
+            # Single-qubit trajectory: use first two parameters
+            theta1_deg = param_arrays[:, 0] * 180 / np.pi
+            theta2_deg = param_arrays[:, 1] * 180 / np.pi
+
+            # Plot trajectory with color gradient
+            scatter = ax.scatter(
+                theta1_deg,
+                theta2_deg,
+                c=epochs,
+                cmap="viridis",
+                s=30,
+                alpha=0.7,
+                edgecolors="black",
+                linewidth=0.5,
+            )
+            ax.plot(theta1_deg, theta2_deg, "k-", alpha=0.3, linewidth=1)
+
+            # Mark start and end points
             ax.plot(
-                ref_theta1_deg,
-                ref_theta2_deg,
-                "b^",
-                markersize=10,
-                label="Reference",
-                markeredgecolor="black",
+                theta1_deg[0], theta2_deg[0], "ro", markersize=8, label="Start", markeredgecolor="black"
+            )
+            ax.plot(
+                theta1_deg[-1], theta2_deg[-1], "gs", markersize=8, label="End", markeredgecolor="black"
             )
 
-        ax.set_xlabel(f"{param_names[0]} (degrees)", fontsize=12)
-        ax.set_ylabel(f"{param_names[1]} (degrees)", fontsize=12)
-        ax.set_title("Optimization Trajectory", fontsize=14)
-        ax.legend(fontsize=10)
-        ax.grid(True, alpha=0.3)
+            # Mark reference point if available
+            if reference_params is not None:
+                ref_theta1_deg = reference_params[0] * 180 / np.pi
+                ref_theta2_deg = reference_params[1] * 180 / np.pi
+                ax.plot(
+                    ref_theta1_deg,
+                    ref_theta2_deg,
+                    "b^",
+                    markersize=10,
+                    label="Reference",
+                    markeredgecolor="black",
+                )
 
-        # Add colorbar
-        cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
-        cbar.set_label("Epoch", fontsize=10)
+            ax.set_xlabel(f"{param_names[0]} (degrees)", fontsize=12)
+            ax.set_ylabel(f"{param_names[1]} (degrees)", fontsize=12)
+            ax.set_title("Optimization Trajectory", fontsize=14)
+            ax.legend(fontsize=10)
+            ax.grid(True, alpha=0.3)
+
+            # Add colorbar
+            cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
+            cbar.set_label("Epoch", fontsize=10)
 
     # Plot 5: Detection Probabilities Evolution
     if show_probabilities:

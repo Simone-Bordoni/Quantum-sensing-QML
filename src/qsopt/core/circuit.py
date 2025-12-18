@@ -5,13 +5,6 @@ JAX-Compatible Quantum Circuit
 This module provides a quantum circuit implementation that uses JAX-compatible
 gates and tracks trainable parameters for gradient-based optimization.
 
-Key Features:
-- Build quantum circuits with parametrized gates
-- Track and manage trainable parameters across all gates
-- Compute circuit unitary in JAX format
-- Specify target qubits for gate application
-- Compatible with JAX autodiff
-
 Example:
     >>> import jax.numpy as jnp
     >>> from qsopt.core.circuit import QuantumCircuit
@@ -397,50 +390,3 @@ def create_entangling_layer(
         circuit.add_gate(gate, target=(circuit.num_qubits - 1, 0))
     else:
         raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
-
-
-# Example usage
-if __name__ == "__main__":
-    import numpy as np
-
-    from .gates import CNOTGate, HadamardGate, RXGate, RYGate, RZGate
-
-    print("=" * 70)
-    print("JAX-Compatible Quantum Circuit Demo")
-    print("=" * 70)
-
-    # Create 2-qubit circuit
-    print("\n1. Create 2-Qubit Circuit:")
-    circuit = QuantumCircuit(num_qubits=2)
-    circuit.add_gate(HadamardGate(), target=0)
-    circuit.add_gate(RXGate(theta=np.pi / 4, trainable=True), target=1)
-    circuit.add_gate(CNOTGate(), target=(0, 1))
-    circuit.add_gate(RZGate(theta=np.pi / 2, trainable=True), target=0)
-
-    print(circuit)
-    print("\nCircuit diagram:")
-    print(circuit.draw())
-
-    # Get trainable parameters
-    print("\n2. Trainable Parameters:")
-    params = circuit.get_trainable_parameters()
-    for name, value in params.items():
-        print(f"   {name} = {value:.4f}")
-
-    # Get unitary
-    print("\n3. Circuit Unitary (JAX):")
-    U_jax = circuit.get_unitary_jax()
-    print(f"   Shape: {U_jax.shape}")
-    print(f"   Dtype: {U_jax.dtype}")
-
-    # Update parameters
-    print("\n4. Update Parameters:")
-    circuit.set_trainable_parameters(
-        {"gate_1_theta": jnp.array(np.pi / 2), "gate_3_theta": jnp.array(np.pi)}
-    )
-    print("   Updated gate_1_theta to π/2 and gate_3_theta to π")
-    params = circuit.get_trainable_parameters()
-    for name, value in params.items():
-        print(f"   {name} = {value:.4f}")
-
-    print("\n" + "=" * 70)

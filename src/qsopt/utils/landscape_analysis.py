@@ -144,8 +144,9 @@ def compute_theta1_theta2_landscape(
             callback = exp.run_simulation(batch_size=batch_size)
 
             # Store results (j,i indexing for correct orientation in plots)
-            contrast_map[j, i] = callback.history["contrast"][-1]
-            detection_map[j, i] = callback.history["prob_with"][-1]
+            # Clip values to ensure they're in valid ranges (handle numerical precision issues)
+            contrast_map[j, i] = np.clip(callback.history["contrast"][-1], 0.0, 1.0)
+            detection_map[j, i] = np.clip(callback.history["prob_with"][-1], 0.0, 1.0)
 
             # Progress update
             current_point = i * resolution + j
@@ -432,9 +433,10 @@ def compute_time_interval_landscape(
         callback = exp.run_simulation(batch_size=batch_size)
 
         # Store results (averaged over batch)
-        contrast_vals[i] = callback.history["contrast"][-1]
-        detection_with[i] = callback.history["prob_with"][-1]
-        detection_without[i] = callback.history["prob_without"][-1]
+        # Clip values to ensure they're in valid ranges (handle numerical precision issues)
+        contrast_vals[i] = np.clip(callback.history["contrast"][-1], 0.0, 1.0)
+        detection_with[i] = np.clip(callback.history["prob_with"][-1], 0.0, 1.0)
+        detection_without[i] = np.clip(callback.history["prob_without"][-1], 0.0, 1.0)
 
         # Progress update
         if verbose:
