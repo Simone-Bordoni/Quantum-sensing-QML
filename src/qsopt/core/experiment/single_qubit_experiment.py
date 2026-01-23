@@ -23,8 +23,7 @@ import qutip as qt
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
-from qsopt.core.experimental_parameters import ExperimentalParameters
-from qsopt.core.trainable_parameters import Parameter, ParameterType, TrainableParameters
+from qsopt.core.experimental_parameters import ExperimentalParameters, MeasurementProtocol
 
 if TYPE_CHECKING:
     from qsopt.utils.results import TimeEvolutionResults
@@ -39,6 +38,7 @@ from .quantum_utils import (
     generate_initial_state,
     generate_single_qubit_operators,
     gu,
+    u0,
 )
 
 # Suppress Diffrax complex dtype warning
@@ -69,7 +69,6 @@ class SingleQubitExperiment(Experiment):
         experimental_params: ExperimentalParameters,
         initial_circuit: Optional[QuantumCircuit] = None,
         final_circuit: Optional[QuantumCircuit] = None,
-        optimizer: Optional[optax.GradientTransformation] = None,
     ):
         # Create default circuits if not provided (single RY gates)
         if initial_circuit is None:
@@ -81,12 +80,13 @@ class SingleQubitExperiment(Experiment):
         # Store circuits
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
-        
-        # Create TrainableParameters from circuits
-        trainable_params = self._create_trainable_params_from_circuits(optimizer)
-        
-        # Call parent constructor
-        super().__init__(experimental_params, trainable_params)
+
+        # Store experimental parameters
+        self.experimental_params = experimental_params
+
+        # Extract trainable parameters from both circuits
+        self.trainable_params_initial = self.initial_circuit.get_trainable_parameters()
+        self.trainable_params_final = self.final_circuit.get_trainable_parameters()
 
         # Cache for frequently used objects (significant speedup during optimization)
         self._cached_initial_state: Optional[qt.Qobj] = None
@@ -97,46 +97,6 @@ class SingleQubitExperiment(Experiment):
 
         # Initialize quantum objects
         self.__post_init__()
-
-    def _create_trainable_params_from_circuits(
-        self, optimizer: Optional[optax.GradientTransformation] = None
-    ) -> TrainableParameters:
-        """
-        Extract trainable parameters from initial and final circuits.
-        
-        Creates a TrainableParameters object containing all trainable parameters
-        from both circuits, maintaining the order and structure.
-        
-        Args:
-            optimizer: Optax optimizer to use. If None, defaults to SGD(0.1).
-            
-        Returns:
-            TrainableParameters object with rotation angles from both circuits.
-        """
-        if optimizer is None:
-            optimizer = optax.sgd(0.1)
-        
-        trainable_params = TrainableParameters()
-        
-        # Extract parameters from initial circuit
-        initial_params = self.initial_circuit.get_trainable_parameters()
-        if initial_params:
-            param_names = [f"initial_{name}" for name in initial_params.keys()]
-            param_values = list(initial_params.values())
-            trainable_params.add_rotation_angles(
-                param_names, param_values, optimizer=optimizer
-            )
-        
-        # Extract parameters from final circuit
-        final_params = self.final_circuit.get_trainable_parameters()
-        if final_params:
-            param_names = [f"final_{name}" for name in final_params.keys()]
-            param_values = list(final_params.values())
-            trainable_params.add_rotation_angles(
-                param_names, param_values, optimizer=optimizer
-            )
-        
-        return trainable_params
     
     def _update_circuits_from_trainable_params(self):
         """
@@ -144,37 +104,14 @@ class SingleQubitExperiment(Experiment):
         
         This synchronizes the circuits with the TrainableParameters after optimization steps.
         """
-        rotation_angles = self.trainable_params.get_rotation_angles()
-        
-        # Update initial circuit parameters
-        initial_params = {}
-        for name, value in rotation_angles.items():
-            if name.startswith("initial_"):
-                circuit_param_name = name.replace("initial_", "", 1)
-                initial_params[circuit_param_name] = value[0]
-        
-        if initial_params:
-            self.initial_circuit.set_trainable_parameters(initial_params)
-        
-        # Update final circuit parameters
-        final_params = {}
-        for name, value in rotation_angles.items():
-            if name.startswith("final_"):
-                circuit_param_name = name.replace("final_", "", 1)
-                final_params[circuit_param_name] = value[0]
-        
-        if final_params:
-            self.final_circuit.set_trainable_parameters(final_params)
-        
-        # Invalidate cached unitaries
-        self._cached_circuit_unitaries = None
+        self.initial_circuit.set_trainable_parameters(self.trainable_params_initial)
+        self.final_circuit.set_trainable_parameters(self.trainable_params_final)
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_caches()
-        self._ensure_measurement_interval_sync()
 
     def _generate_operators(self):
         """
@@ -197,6 +134,10 @@ class SingleQubitExperiment(Experiment):
 
         # Use utility function to generate all operators
         self.operators = generate_single_qubit_operators(field_levels, cavity_levels, qubit_levels)
+        
+        # Add composite number operators for efficient reuse
+        self.operators["n_cavity"] = self.operators["a_dag"] * self.operators["a"]
+        self.operators["n_field"] = self.operators["a_in_dag"] * self.operators["a_in"]
 
     def _generate_hamiltonian(self):
         """
@@ -377,21 +318,22 @@ class SingleQubitExperiment(Experiment):
 
         return self._cached_solvers["no_interaction"]
 
-    def _embed_single_qubit_unitary(self, unitary_1q: qt.Qobj) -> qt.Qobj:
+    def _embed_circuit_unitary(self, circuit_unitary: jnp.ndarray) -> qt.Qobj:
         """
         Embed a single-qubit unitary into the full three-system composite space.
         
         The single-qubit unitary acts only on the qubit subsystem (third subsystem),
         while the input field and cavity subsystems remain unchanged.
         
+        Uses JAX operations (Kronecker products) to construct the embedded operator:
+        U_full = I_field ⊗ I_cavity ⊗ U_qubit
+        
         Args:
-            unitary_1q: Single-qubit unitary matrix (2x2)
+            circuit_unitary: Single-qubit unitary matrix as JAX array (2x2)
             
         Returns:
-            Embedded unitary in full composite space (field ⊗ cavity ⊗ qubit)
+            Embedded unitary in full composite space (field ⊗ cavity ⊗ qubit) as QuTiP Qobj
         """
-        from qutip_qip.operations import expand_operator
-        
         field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels_list = self.experimental_params.qubit_levels
@@ -399,17 +341,17 @@ class SingleQubitExperiment(Experiment):
             qubit_levels_list[0] if isinstance(qubit_levels_list, list) else qubit_levels_list
         )
         
+        # Build embedded operator using JAX Kronecker products
+        # The qubit is the third subsystem: I_field ⊗ I_cavity ⊗ U_qubit
+        I_field = jnp.eye(field_levels, dtype=jnp.complex128)
+        I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
+        
+        # Build full operator: I_field ⊗ I_cavity ⊗ U_qubit
+        embedded_jax = jnp.kron(I_field, jnp.kron(I_cavity, circuit_unitary))
+        
+        # Convert to QuTiP Qobj with proper dimensions
         total_dims = [field_levels, cavity_levels, qubit_levels]
-        
-        # The qubit is the third subsystem (index 2)
-        embedded = expand_operator(
-            unitary_1q,
-            N=3,  # Three subsystems
-            targets=[2],  # Qubit is subsystem 2
-            dims=total_dims
-        )
-        
-        return embedded
+        return qt.Qobj(embedded_jax, dims=[total_dims, total_dims])
 
     def _prepare_circuit_unitaries(self) -> Tuple[qt.Qobj, qt.Qobj]:
         """
@@ -420,92 +362,18 @@ class SingleQubitExperiment(Experiment):
         
         Returns:
             Tuple of (initial_unitary, final_unitary) embedded in composite space
-        """
-        if self._cached_circuit_unitaries is not None:
-            return self._cached_circuit_unitaries
-        
+        """ 
         # Update circuits with current trainable parameter values
         self._update_circuits_from_trainable_params()
         
-        # Get single-qubit unitaries from circuits
-        initial_unitary_1q = self.initial_circuit.get_unitary()
-        final_unitary_1q = self.final_circuit.get_unitary()
-        
         # Embed into full composite space
-        initial_unitary = self._embed_single_qubit_unitary(initial_unitary_1q)
-        final_unitary = self._embed_single_qubit_unitary(final_unitary_1q)
+        initial_unitary = self._embed_circuit_unitary(self.initial_circuit.get_unitary(qutip=False))
+        final_unitary = self._embed_circuit_unitary(self.final_circuit.get_unitary(qutip=False))
         
         # Cache for reuse
         self._cached_circuit_unitaries = (initial_unitary, final_unitary)
         
         return initial_unitary, final_unitary
-
-    def _build_rotation_gate(self, axis: str, theta: float) -> qt.Qobj:
-        """Construct embedded single-qubit rotation gate for the specified axis.
-        
-        DEPRECATED: This method is kept for backward compatibility.
-        New code should use QuantumCircuit directly.
-        """
-        if self.operators is None:
-            raise RuntimeError("Operators not initialized")
-
-        axis_key = f"sigma_{axis.lower()}"
-        if axis_key not in self.operators:
-            raise ValueError(f"Unsupported rotation axis '{axis}'. Expected one of x, y, z.")
-
-        generator = self.operators[axis_key]
-        return (-1j * generator * theta / 2).expm()
-
-    def _prepare_rotation_gates(self, theta1: float, theta2: float) -> Tuple[qt.Qobj, qt.Qobj]:
-        """Build rotation gates for optimization angles θ₁ and θ₂.
-        
-        Updates circuits with current theta values and returns embedded unitaries.
-        Works with circuits containing single trainable parameter each.
-        """
-        # Update circuit parameters
-        initial_params = self.initial_circuit.get_trainable_parameters()
-        final_params = self.final_circuit.get_trainable_parameters()
-        
-        if len(initial_params) != 1 or len(final_params) != 1:
-            raise ValueError(
-                "Option 1: Circuits must have exactly 1 trainable parameter each. "
-                f"Initial circuit has {len(initial_params)}, final circuit has {len(final_params)}."
-            )
-        
-        # Set parameter values
-        initial_param_key = list(initial_params.keys())[0]
-        final_param_key = list(final_params.keys())[0]
-        
-        self.initial_circuit.set_trainable_parameters({initial_param_key: jnp.asarray(theta1)})
-        self.final_circuit.set_trainable_parameters({final_param_key: jnp.asarray(theta2)})
-        
-        # Get single-qubit unitaries
-        initial_unitary_1q = self.initial_circuit.get_unitary()
-        final_unitary_1q = self.final_circuit.get_unitary()
-        
-        # Embed into full composite space
-        initial_unitary = self._embed_single_qubit_unitary(initial_unitary_1q)
-        final_unitary = self._embed_single_qubit_unitary(final_unitary_1q)
-        
-        return initial_unitary, final_unitary
-
-    def ry_rotation(self, rho: qt.Qobj, theta: float) -> qt.Qobj:
-        """
-        Apply Ry rotation to qubit in the three-system composite space.
-
-        Uses utility function to apply rotation around the Y-axis for quantum state
-        manipulation. The rotation is applied only to the qubit subsystem while
-        preserving the cavity states in the composite Hilbert space.
-
-        Args:
-            rho: QuTiP Qobj density matrix in composite space (input ⊗ resonator ⊗ qubit)
-            theta: float or JAX array, Ry rotation angle in radians
-
-        Returns:
-            QuTiP Qobj: Rotated density matrix
-        """
-        rotation_gate = self._build_rotation_gate("y", theta)
-        return rotation_gate * rho * rotation_gate.dag()  # type: ignore
 
     def proj0(self, rho: qt.Qobj) -> qt.Qobj:
         """
@@ -556,31 +424,27 @@ class SingleQubitExperiment(Experiment):
         self,
         solver: qt.MESolver,
         rho: qt.Qobj,
-        theta1: float,
-        theta2: float,
         measurements: Union[List[float], np.ndarray],
         args: Optional[Dict] = None,
-        precomputed_rotations: Optional[Tuple[qt.Qobj, qt.Qobj]] = None,
+        precomputed_unitaries: Optional[Tuple[qt.Qobj, qt.Qobj]] = None,
     ) -> jnp.ndarray:
         """
         Complete quantum photon detection simulation workflow.
 
         Workflow Steps:
-        1. Apply first rotation Ry(θ₁) for initial qubit preparation
+        1. Apply initial circuit for qubit preparation
         2. Time evolution under cavity-qubit Hamiltonian H(t)
-        3. Apply second rotation Ry(θ₂) for measurement optimization
+        3. Apply final circuit for measurement optimization
         4. Sequential projective measurements with conditional state updates
         5. Calculate cumulative detection probability
 
         Args:
             solver: QuTiP MESolver, Configured quantum evolution solver
             rho: QuTiP Qobj, Initial density matrix in composite space
-            theta1: float/JAX array, First Ry rotation angle
-            theta2: float/JAX array, Second Ry rotation angle
             measurements: List or array of measurement times (sorted)
             args: dict, System parameters (optional, uses experimental_params if None)
-            precomputed_rotations: Optional tuple of rotation gates ``(R_y(θ₁), R_y(θ₂))``
-                to avoid recomputing exponentials when shared across simulations.
+            precomputed_unitaries: Optional tuple of circuit unitaries ``(U_initial, U_final)``
+                to avoid recomputing circuits when shared across simulations.
 
         Returns:
             float: Probability of detecting at least one excited state
@@ -588,37 +452,34 @@ class SingleQubitExperiment(Experiment):
         """
         if args is None:
             args = {"sigma": self.experimental_params.inverse_pulse_width}
-        if self._cached_projector_0 is None:
-            raise RuntimeError("Measurement projectors are not initialized.")
 
         measurement_array = np.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("Measurement times must be a 1D array with at least two entries.")
 
-        if precomputed_rotations is None:
-            rotation_theta1, rotation_theta2 = self._prepare_rotation_gates(theta1, theta2)
+        if precomputed_unitaries is None:
+            initial_unitary, final_unitary = self._prepare_circuit_unitaries()
         else:
-            rotation_theta1, rotation_theta2 = precomputed_rotations
+            initial_unitary, final_unitary = precomputed_unitaries
 
-        rotation_theta1_dag = rotation_theta1.dag()
-        rotation_theta2_dag = rotation_theta2.dag()
+        initial_unitary_dag = initial_unitary.dag()
+        final_unitary_dag = final_unitary.dag()
         projector_0 = self._cached_projector_0
 
         rho_current = rho
         prob_all_ground = jnp.array(1.0)
 
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
-            rho_after_ry = rotation_theta1 * rho_current * rotation_theta1_dag  # type: ignore
-            evolution_result = solver.run(rho_after_ry, [t0, t1], args=args)
+            rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
+            evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
             rho_evolved = evolution_result.states[-1]
 
-            rho_final = rotation_theta2 * rho_evolved * rotation_theta2_dag  # type: ignore
+            rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
             prob_ground = jnp.real((projector_0 * rho_final * projector_0).tr())  # type: ignore
             prob_all_ground = prob_all_ground * prob_ground
 
             rho_projected = projector_0 * rho_final * projector_0  # type: ignore  # Always project to |0⟩
-            trace_val = rho_projected.tr()
-            rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
+            rho_current = rho_projected / rho_projected.tr()
 
         prob_detection = 1 - prob_all_ground
         return prob_detection
@@ -643,24 +504,7 @@ class SingleQubitExperiment(Experiment):
                 - Detection probabilities (prob_with, prob_without) averaged over batch
                 - Sensing contrast averaged over batch
                 - Optimization-related attributes set to None (converged, final_grad_norm)
-
-        Raises:
-            ValueError: If fewer than 2 rotation parameters are defined
         """
-        self._ensure_measurement_interval_sync()
-
-        # Get rotation parameters using the dedicated method
-        rotation_angles = self.trainable_params.get_rotation_angles()
-
-        if len(rotation_angles) < 2:
-            raise ValueError("Need at least 2 rotation angle parameters")
-
-        # Extract first two rotation parameters (order preserved from TrainableParameters)
-        param_names = list(rotation_angles.keys())
-        param1_name = param_names[0]
-        param2_name = param_names[1]
-        theta1 = float(rotation_angles[param1_name][0])
-        theta2 = float(rotation_angles[param2_name][0])
 
         # Get initial state and solvers
         rho0 = self._cached_initial_state
@@ -680,7 +524,8 @@ class SingleQubitExperiment(Experiment):
                 measurement_times_batch[i] for i in range(measurement_times_batch.shape[0])
             ]
 
-        rotation_pair = self._prepare_rotation_gates(theta1, theta2)
+        # Prepare circuit unitaries once for the entire batch
+        circuit_unitaries = self._prepare_circuit_unitaries()
 
         # Run simulations with batch averaging over uncertainty realizations
         prob_with_list = []
@@ -690,18 +535,14 @@ class SingleQubitExperiment(Experiment):
             prob_with_batch = self.simulation(
                 solver_with,
                 rho0,
-                theta1,
-                theta2,
                 measurement_times,
-                precomputed_rotations=rotation_pair,
+                precomputed_unitaries=circuit_unitaries,
             )
             prob_without_batch = self.simulation(
                 solver_without,
                 rho0,
-                theta1,
-                theta2,
                 measurement_times,
-                precomputed_rotations=rotation_pair,
+                precomputed_unitaries=circuit_unitaries,
             )
 
             prob_with_list.append(prob_with_batch)
@@ -715,14 +556,11 @@ class SingleQubitExperiment(Experiment):
         # Create a callback with single epoch for simulation results
         callback = OptimizationCallback(save_every=1, save_best=True)
         callback(
-            trainable_params=self.trainable_params,
+            trainable_params=(self.trainable_params_initial, self.trainable_params_final),
             prob_with=float(prob_with),
             prob_without=float(prob_without),
             contrast=float(contrast),
         )
-
-        # Keep optimization-related attributes as None/False (not from optimization)
-        # converged and final_grad_norm remain as initialized (False, None)
 
         return callback
 
@@ -737,8 +575,8 @@ class SingleQubitExperiment(Experiment):
 
         Simulates the quantum system evolution over time using the measurement protocol times.
         If intermediate measurement times exist in the protocol, performs projective measurements
-        at those times using the same protocol as run_simulation(): invert rotation Ry(-theta2),
-        project onto basis states, then reapply Ry(theta2).
+        at those times using the same protocol as run_simulation(): apply initial circuit,
+        evolve, apply final circuit, project onto basis states.
 
         This method is useful for understanding the temporal dynamics and creating
         time evolution plots for quantum sensing protocols.
@@ -761,45 +599,24 @@ class SingleQubitExperiment(Experiment):
                 - cumulative_detection: Cumulative detection probability (only when intermediate
                   measurements are present). Monotonically increasing probability of having
                   detected |1⟩ at least once up to each time point.
-
-        Example:
-            >>> # Get time evolution data using default measurement protocol
-            >>> evolution = experiment.time_evolution(n_points=200)
-            >>>
-            >>> # Plot with matplotlib
-            >>> import matplotlib.pyplot as plt
-            >>> plt.plot(evolution['times'], evolution['prob_0'], label='P(|0⟩)')
-            >>> plt.plot(evolution['times'], evolution['prob_1'], label='P(|1⟩)')
-            >>> plt.fill_between(evolution['times'], 0, evolution['pulse_shape'], alpha=0.2)
-            >>> plt.legend()
-            >>> plt.show()
-            >>>
-            >>> # Or use the visualization utility
-            >>> from qsopt.utils import plot_time_evolution
-            >>> # With cavity population displayed on secondary y-axis
-            >>> fig = plot_time_evolution(evolution, show_cavity_population=True)
-            >>> # Without cavity population (default)
-            >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
             measurement_protocol = self.experimental_params.measurement
         
-        # Get measurement times from protocol
-        measurement_times = np.array(measurement_protocol.measurement_times)
+        # Get measurement times from protocol (handles both explicit and interval-based modes)
+        if measurement_protocol.measurement_times is None:
+            # Interval-based mode: compute times from initial_time, final_time, time_interval
+            measurement_times = self.experimental_params.get_measurement_times_with_uncertainty(
+                batch_size=1
+            ).flatten()
+        else:
+            # Explicit mode: use provided times
+            measurement_times = np.array(measurement_protocol.measurement_times)
         
         # Use measurement times for start and end
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
-            
-        # Get current rotation angles
-        rotation_angles = self.trainable_params.get_rotation_angles()
-        if len(rotation_angles) < 2:
-            raise ValueError("Need at least 2 rotation angle parameters")
-
-        param_names = list(rotation_angles.keys())
-        theta1 = float(rotation_angles[param_names[0]][0])
-        theta2 = float(rotation_angles[param_names[1]][0])
 
         # Get initial state and solver
         rho0 = self._cached_initial_state
@@ -812,22 +629,17 @@ class SingleQubitExperiment(Experiment):
             else self.get_solver_no_interaction()
         )
 
-        # Prepare rotation gates
-        rotation_theta1, rotation_theta2 = self._prepare_rotation_gates(theta1, theta2)
-        rotation_theta1_dag = rotation_theta1.dag()
-        rotation_theta2_dag = rotation_theta2.dag()
+        # Prepare circuit unitaries (same as run_simulation)
+        initial_unitary, final_unitary = self._prepare_circuit_unitaries()
+        initial_unitary_dag = initial_unitary.dag()
+        final_unitary_dag = final_unitary.dag()
 
-        # Start with initial state (apply rotation_theta1 at start of each segment)
+        # Start with initial state
         rho_current = rho0
 
-        # Get number operators for population calculation
-        a_dag = self.operators["a_dag"]
-        a = self.operators["a"]
-        n_cavity = a_dag * a  # Cavity number operator a†a
-        
-        a_in_dag = self.operators["a_in_dag"]
-        a_in = self.operators["a_in"]
-        n_field = a_in_dag * a_in  # Field number operator a_in†a_in
+        # Get number operators from cached dictionary
+        n_cavity = self.operators["n_cavity"]
+        n_field = self.operators["n_field"]
         
         args = {"sigma": self.experimental_params.inverse_pulse_width}
         
@@ -853,17 +665,17 @@ class SingleQubitExperiment(Experiment):
                 seg_fraction = (seg_end - seg_start) / (t_end - t_start)
                 seg_n_points = max(2, int(n_points * seg_fraction))
                 
-                # Apply first rotation before evolution (as in simulation method)
-                rho_after_ry = rotation_theta1 * rho_current * rotation_theta1_dag  # type: ignore
+                # Apply initial circuit before evolution
+                rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
                 
                 # Evolve segment
                 seg_times = np.linspace(seg_start, seg_end, seg_n_points)
-                result = solver.run(rho_after_ry, tlist=seg_times, args=args)
+                result = solver.run(rho_after_circuit, tlist=seg_times, args=args)
                 
                 # Extract data for this segment
                 for i, rho_t in enumerate(result.states):
-                    # Apply second rotation for measurement
-                    rho_meas = rotation_theta2 * rho_t * rotation_theta2_dag  # type: ignore
+                    # Apply final circuit for measurement (same as simulation method)
+                    rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
                     
                     # Measure qubit probabilities
                     p0 = float(self.prob0(rho_meas))
@@ -883,8 +695,8 @@ class SingleQubitExperiment(Experiment):
                 if seg_end != t_end:
                     rho_evolved = result.states[-1]
                     
-                    # Apply second rotation for measurement (as in simulation method)
-                    rho_final = rotation_theta2 * rho_evolved * rotation_theta2_dag  # type: ignore
+                    # Apply final circuit for measurement (same as simulation method)
+                    rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
                     
                     # Get probability of detecting |1⟩ at this measurement
                     p1_measurement = float(self.prob1(rho_final))
@@ -902,15 +714,15 @@ class SingleQubitExperiment(Experiment):
                     rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
         else:
             # Continuous evolution without intermediate measurements
-            # Apply first rotation before evolution
-            rho_after_ry = rotation_theta1 * rho_current * rotation_theta1_dag  # type: ignore
+            # Apply initial circuit before evolution
+            rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
             
             times = np.linspace(t_start, t_end, n_points)
-            result = solver.run(rho_after_ry, tlist=times, args=args)
+            result = solver.run(rho_after_circuit, tlist=times, args=args)
             
             for i, rho_t in enumerate(result.states):
-                # Apply second rotation
-                rho_final = rotation_theta2 * rho_t * rotation_theta2_dag  # type: ignore
+                # Apply final circuit for measurement
+                rho_final = final_unitary * rho_t * final_unitary_dag  # type: ignore
 
                 # Measure qubit probabilities
                 p0 = float(self.prob0(rho_final))
@@ -927,8 +739,9 @@ class SingleQubitExperiment(Experiment):
                 field_population_list.append(field_pop)
         
         times = np.array(all_times)
-        # Compute pulse shape u(t) = exp(-t^2)
-        pulse_shape = np.exp(-(times**2))
+        # Compute pulse shape using the same u0 function as visualization
+        sigma = self.experimental_params.inverse_pulse_width
+        pulse_shape = np.array([float(u0(t, sigma=sigma)) for t in times])
 
         # Import at runtime to avoid circular dependency
         from qsopt.utils.results import TimeEvolutionResults
@@ -940,7 +753,7 @@ class SingleQubitExperiment(Experiment):
             measurement_times=measurement_times,
             cavity_population=np.array(cavity_population_list),
             field_population=np.array(field_population_list),            metadata={
-                "chi": self.experimental_params.chi[0],
+                "chi": self.experimental_params.chi,
                 "gamma": self.experimental_params.photon_cavity_coupling,
                 "with_interaction": with_interaction,
             },
@@ -1007,7 +820,6 @@ class SingleQubitExperiment(Experiment):
 
     def _get_cached_measurement_times(self) -> List[float]:
         """Return cached measurement times, ensuring they are up to date."""
-        self._ensure_measurement_interval_sync()
         times_list = self.experimental_params._measurement_times_list
         if times_list is None:
             self.experimental_params._update_measurement_times()
@@ -1015,35 +827,6 @@ class SingleQubitExperiment(Experiment):
         if times_list is None:
             return []
         return [float(t) for t in times_list]
-
-    def _get_measurement_interval_parameter(self) -> Optional[Parameter]:
-        """Return the first measurement-interval parameter if configured."""
-        for param in self.trainable_params.parameters:
-            if param.param_type == ParameterType.MEASUREMENT_TIME:
-                return param
-        return None
-
-    def _ensure_measurement_interval_sync(self) -> float:
-        """Ensure experiment and trainable parameter time intervals stay aligned."""
-        param = self._get_measurement_interval_parameter()
-        if param is not None:
-            interval = float(param.value)
-            if interval <= 0:
-                raise ValueError("Measurement interval in trainable parameters must be positive")
-            current = float(self.experimental_params.measurement.time_interval)
-            if not np.isclose(current, interval):
-                self.experimental_params.measurement.time_interval = interval
-                self.experimental_params.measurement.measurement_times = None
-                self.experimental_params._update_measurement_times()
-        else:
-            interval = float(self.experimental_params.measurement.time_interval)
-            if interval <= 0:
-                raise ValueError("Measurement interval must be positive")
-        return interval
-
-    def get_measurement_interval(self) -> float:
-        """Return the unified measurement interval value used by the experiment."""
-        return self._ensure_measurement_interval_sync()
 
     def optimize_rotations(
         self,
@@ -1083,8 +866,6 @@ class SingleQubitExperiment(Experiment):
 
         # Reset callback at start of new optimization
         callback.reset()
-
-        self._ensure_measurement_interval_sync()
 
         # Get initial state
         rho0 = self._cached_initial_state
@@ -1162,7 +943,10 @@ class SingleQubitExperiment(Experiment):
             theta0 = theta0_raw if trainable_mask[0] else jax.lax.stop_gradient(theta0_raw)
             theta1 = theta1_raw if trainable_mask[1] else jax.lax.stop_gradient(theta1_raw)
 
-            rotation_pair = self._prepare_rotation_gates(theta0, theta1)
+            # Update circuit parameters with current theta values
+            self.trainable_params_initial[0] = theta0
+            self.trainable_params_final[0] = theta1
+            circuit_unitaries = self._prepare_circuit_unitaries()
 
             if batch_size == 1:
                 # Single realization: use current measurement times (supports uncertainty)
@@ -1173,18 +957,14 @@ class SingleQubitExperiment(Experiment):
                 prob_with = self.simulation(
                     solver_with,
                     rho0,
-                    theta0,
-                    theta1,
                     measurement_times_batch,
-                    precomputed_rotations=rotation_pair,
+                    precomputed_unitaries=circuit_unitaries,
                 )
                 prob_without = self.simulation(
                     solver_without,
                     rho0,
-                    theta0,
-                    theta1,
                     measurement_times_batch,
-                    precomputed_rotations=rotation_pair,
+                    precomputed_unitaries=circuit_unitaries,
                 )
                 sensing_contrast = prob_with - prob_without
 
@@ -1202,20 +982,16 @@ class SingleQubitExperiment(Experiment):
                         self.simulation(
                             solver_with,
                             rho0,
-                            theta0,
-                            theta1,
                             measurement_times,
-                            precomputed_rotations=rotation_pair,
+                            precomputed_unitaries=circuit_unitaries,
                         )
                     )
                     prob_without_batch = prob_without_batch.at[i].set(
                         self.simulation(
                             solver_without,
                             rho0,
-                            theta0,
-                            theta1,
                             measurement_times,
-                            precomputed_rotations=rotation_pair,
+                            precomputed_unitaries=circuit_unitaries,
                         )
                     )
 
@@ -1280,7 +1056,7 @@ class SingleQubitExperiment(Experiment):
 
             # Call callback to track progress
             callback(
-                trainable_params=self.trainable_params,
+                trainable_params=(self.trainable_params_initial, self.trainable_params_final),
                 prob_with=float(prob_with),
                 prob_without=float(prob_without),
                 contrast=float(sensing_contrast),
@@ -1374,8 +1150,6 @@ class SingleQubitExperiment(Experiment):
 
         from qsopt.utils.landscape_analysis import compute_time_interval_landscape
 
-        self._ensure_measurement_interval_sync()
-
         rotation_angles = self.rotation_angles
         if len(rotation_angles) < 2:
             raise ValueError("Need at least 2 rotation angle parameters")
@@ -1443,8 +1217,6 @@ class SingleQubitExperiment(Experiment):
         results_with_best["best_contrast"] = best_contrast
         results_with_best["best_index"] = best_index
 
-        self._ensure_measurement_interval_sync()
-
         return results_with_best
 
     def optimize(self, *args, **kwargs) -> OptimizationCallback:
@@ -1494,7 +1266,6 @@ class SingleQubitExperiment(Experiment):
         save_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
         # Build report dictionary
-        self._ensure_measurement_interval_sync()
         cached_times = self._get_cached_measurement_times()
 
         # Handle chi and qubit_levels which may be lists

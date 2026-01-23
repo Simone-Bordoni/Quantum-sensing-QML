@@ -21,7 +21,6 @@ from qsopt.core.experimental_parameters import (
     QubitInteraction,
 )
 from qsopt.core.loss_functions import DetectionFromProbabilities
-from qsopt.core.trainable_parameters import TrainableParameters
 
 if TYPE_CHECKING:
     from qsopt.utils.results import TimeEvolutionResults
@@ -411,82 +410,34 @@ class TwoQubitExperiment(Experiment):
             )
         return self._cached_initial_state
 
-    def _create_trainable_params_from_circuits(self, optimizer=None) -> TrainableParameters:
-        """
-        Extract trainable parameters from quantum circuits.
+    # TODO: Refactor this method to work with circuit-based parameters (tuple structure)
+    # def _create_trainable_params_from_circuits(self, optimizer=None):
+    #     """
+    #     Extract trainable parameters from quantum circuits.
+    #
+    #     For two-qubit system, we expect 4 trainable parameters total:
+    #     - 2 parameters from initial_circuit (one per qubit)
+    #     - 2 parameters from final_circuit (one per qubit)
+    #
+    #     Args:
+    #         optimizer: Optax optimizer. If None, uses SGD(0.1).
+    #
+    #     Returns:
+    #         tuple[list, list] initialized from circuit parameters
+    #     """
+    #     pass
 
-        For two-qubit system, we expect 4 trainable parameters total:
-        - 2 parameters from initial_circuit (one per qubit)
-        - 2 parameters from final_circuit (one per qubit)
-
-        Args:
-            optimizer: Optax optimizer. If None, uses SGD(0.1).
-
-        Returns:
-            TrainableParameters initialized from circuit parameters
-        """
-        import optax
-
-        if optimizer is None:
-            optimizer = optax.sgd(0.1)
-
-        trainable_params = TrainableParameters()
-
-        # Extract parameters from initial circuit as dict
-        initial_params = self.initial_circuit.get_trainable_parameters()
-        if len(initial_params) != 2:
-            raise ValueError(
-                f"Expected 2 trainable parameters in initial_circuit, got {len(initial_params)}"
-            )
-        
-        # Extract parameters from final circuit as dict
-        final_params = self.final_circuit.get_trainable_parameters()
-        if len(final_params) != 2:
-            raise ValueError(
-                f"Expected 2 trainable parameters in final_circuit, got {len(final_params)}"
-            )
-
-        # Convert dicts to lists preserving order (sorted by key)
-        initial_values = [v for k, v in sorted(initial_params.items())]
-        final_values = [v for k, v in sorted(final_params.items())]
-
-        # Combine into flat list: [theta1_initial, theta2_initial, theta1_final, theta2_final]
-        all_param_values = initial_values + final_values
-        
-        # Create parameter names
-        param_names = ["theta1_q1", "theta1_q2", "theta2_q1", "theta2_q2"]
-
-        # Add all parameters to TrainableParameters
-        trainable_params.add_rotation_angles(
-            names=param_names, 
-            initial_values=all_param_values, 
-            optimizer=optimizer
-        )
-
-        return trainable_params
-
-    def _update_circuits_from_trainable_params(self) -> None:
-        """
-        Update circuit parameters from TrainableParameters state.
-
-        Synchronizes the QuantumCircuit objects with current optimization values.
-        Distributes the 4 parameters as:
-        - params[0:2] -> initial_circuit (qubit 1, qubit 2)
-        - params[2:4] -> final_circuit (qubit 1, qubit 2)
-        """
-        current_params = self.trainable_params.get_parameter_vector()
-
-        # Get the parameter keys from circuits (sorted order)
-        initial_keys = sorted(self.initial_circuit.get_trainable_parameters().keys())
-        final_keys = sorted(self.final_circuit.get_trainable_parameters().keys())
-
-        # Build dicts for setting parameters
-        initial_dict = {initial_keys[0]: current_params[0], initial_keys[1]: current_params[1]}
-        final_dict = {final_keys[0]: current_params[2], final_keys[1]: current_params[3]}
-
-        # Update circuits
-        self.initial_circuit.set_trainable_parameters(initial_dict)
-        self.final_circuit.set_trainable_parameters(final_dict)
+    # TODO: Refactor this method to work with circuit-based parameters (tuple structure)
+    # def _update_circuits_from_trainable_params(self) -> None:
+    #     """
+    #     Update circuit parameters from trainable params state.
+    #
+    #     Synchronizes the QuantumCircuit objects with current optimization values.
+    #     Distributes the 4 parameters as:
+    #     - params[0:2] -> initial_circuit (qubit 1, qubit 2)
+    #     - params[2:4] -> final_circuit (qubit 1, qubit 2)
+    #     """
+    #     pass
 
     def get_joint_projector(self, state: str) -> qt.Qobj:
         """

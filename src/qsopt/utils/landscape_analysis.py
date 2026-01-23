@@ -5,19 +5,25 @@ Parameter Landscape Analysis Utilities
 This module provides functions for computing parameter space landscapes
 for quantum sensing optimization.
 
+.. deprecated::
+    These functions depend on TrainableParameters which is being removed.
+    They will be refactored to work with circuit-based parameters in a future release.
+
 Functions:
     compute_theta1_theta2_landscape: Compute 2D landscape over rotation parameters
 """
 
 import math
 import time
+import warnings
 from typing import Any, Dict, Optional, Union
 
 import numpy as np
 
 from qsopt.core.experiment import SingleQubitExperiment
 from qsopt.core.experimental_parameters import ExperimentalParameters
-from qsopt.core.trainable_parameters import TrainableParameters
+# TODO: Remove TrainableParameters dependency - refactor to use circuits
+# from qsopt.core.trainable_parameters import TrainableParameters
 
 
 def compute_theta1_theta2_landscape(
@@ -31,6 +37,10 @@ def compute_theta1_theta2_landscape(
 ) -> Dict[str, Union[np.ndarray, float]]:
     """
     Compute parameter landscape for θ₁, θ₂ rotation strategy.
+
+    .. deprecated::
+        This function depends on TrainableParameters which is being removed.
+        It will be refactored to work with circuit-based parameters in a future release.
 
     This function evaluates the sensing contrast and detection probability
     across a 2D grid of rotation parameters (θ₁, θ₂). Each point represents
@@ -102,72 +112,17 @@ def compute_theta1_theta2_landscape(
     See Also:
         plot_parameter_landscape: Visualize the computed landscape
     """
-    if verbose:
-        print("Computing θ₁, θ₂ landscape...")
-        print(f"  Resolution: {resolution}×{resolution}")
-        print(
-            f"  Center: θ₁={np.degrees(center_theta1):.1f}°, "
-            f"θ₂={np.degrees(center_theta2):.1f}°"
-        )
-        print(f"  Range: ±{np.degrees(param_range):.1f}°")
-
-    # Create parameter grid
-    theta1_vals = np.linspace(center_theta1 - param_range, center_theta1 + param_range, resolution)
-    theta2_vals = np.linspace(center_theta2 - param_range, center_theta2 + param_range, resolution)
-
-    # Initialize result arrays
-    contrast_map = np.zeros((resolution, resolution))
-    detection_map = np.zeros((resolution, resolution))
-
-    # Create trainable parameters template
-    trainable_params = TrainableParameters()
-    trainable_params.add_rotation_angles(
-        names=["theta1", "theta2"],
-        initial_values=[0.0, 0.0],  # Will be overwritten
-        trainable=[False, False],  # Not training, just evaluating
+    warnings.warn(
+        "compute_theta1_theta2_landscape() depends on TrainableParameters which is deprecated. "
+        "This function will be refactored in a future release.",
+        DeprecationWarning,
+        stacklevel=2
     )
-
-    # Create experiment
-    exp = SingleQubitExperiment(exp_params, trainable_params)
-
-    start_time = time.time()
-    total_points = resolution * resolution
-
-    # Compute landscape
-    for i, theta1 in enumerate(theta1_vals):
-        for j, theta2 in enumerate(theta2_vals):
-            # Update parameters
-            exp.trainable_params.parameters[0].value = theta1
-            exp.trainable_params.parameters[1].value = theta2
-
-            # Run simulation with batch averaging for uncertainty
-            callback = exp.run_simulation(batch_size=batch_size)
-
-            # Store results (j,i indexing for correct orientation in plots)
-            # Clip values to ensure they're in valid ranges (handle numerical precision issues)
-            contrast_map[j, i] = np.clip(callback.history["contrast"][-1], 0.0, 1.0)
-            detection_map[j, i] = np.clip(callback.history["prob_with"][-1], 0.0, 1.0)
-
-            # Progress update
-            current_point = i * resolution + j
-            if verbose and (current_point % 50 == 0):
-                progress = current_point / total_points * 100
-                elapsed = time.time() - start_time
-                eta = elapsed / max(current_point, 1) * (total_points - current_point)
-                print(f"  Progress: {progress:.1f}% (ETA: {eta:.1f}s)", end="\r")
-
-    if verbose:
-        elapsed = time.time() - start_time
-        print(f"\nCompleted in {elapsed:.1f}s " f"({elapsed/total_points:.3f}s per point)")
-
-    return {
-        "theta1_vals": theta1_vals,
-        "theta2_vals": theta2_vals,
-        "contrast_map": contrast_map,
-        "detection_map": detection_map,
-        "center_theta1": center_theta1,
-        "center_theta2": center_theta2,
-    }
+    
+    raise NotImplementedError(
+        "This function requires TrainableParameters which has been removed. "
+        "Please use circuit-based parameter management instead."
+    )
 
 
 def compute_time_interval_landscape(
@@ -183,6 +138,10 @@ def compute_time_interval_landscape(
 ) -> Dict[str, Union[np.ndarray, float, str, int]]:
     """
     Compute contrast landscape vs measurement time interval.
+
+    .. deprecated::
+        This function depends on TrainableParameters which is being removed.
+        It will be refactored to work with circuit-based parameters in a future release.
 
     This function evaluates how sensing contrast varies with the time interval
     between measurements, keeping rotation parameters (θ₁, θ₂) fixed. Two modes
@@ -288,11 +247,18 @@ def compute_time_interval_landscape(
         raise ValueError(f"mode must be 'continuous' or 'discrete', got '{mode}'")
     if resolution < 2:
         raise ValueError(f"resolution must be >= 2, got {resolution}")
-
-    # Store original time interval to restore later
-    original_interval = exp_params.measurement.time_interval
-
-    # Calculate total evolution time
+    
+    warnings.warn(
+        "compute_time_interval_landscape() depends on TrainableParameters which is deprecated. "
+        "This function will be refactored in a future release.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
+    raise NotImplementedError(
+        "This function requires TrainableParameters which has been removed. "
+        "Please use circuit-based parameter management instead."
+    )
     initial_time = exp_params.measurement.initial_time
     final_time = exp_params.measurement.final_time
     total_time = final_time - initial_time

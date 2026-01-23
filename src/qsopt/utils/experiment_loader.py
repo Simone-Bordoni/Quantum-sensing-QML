@@ -3,9 +3,14 @@ Experiment Loader Utilities
 ===========================
 
 Utilities for loading and reconstructing experiment configurations from saved reports.
+
+.. deprecated::
+    These functions depend on TrainableParameters which is being removed.
+    They will be refactored to work with circuit-based parameters in a future release.
 """
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -19,17 +24,22 @@ from ..core.experimental_parameters import (
     PhysicalConstants,
     SystemDimensions,
 )
-from ..core.trainable_parameters import ParameterType, TrainableParameters
+# TODO: Remove TrainableParameters dependency - refactor to use circuits
+# from ..core.trainable_parameters import ParameterType, TrainableParameters
 
 
 def load_experiment_from_report(
     json_path: str,
-) -> Tuple[ExperimentalParameters, TrainableParameters, Dict[str, Any]]:
+) -> Tuple[ExperimentalParameters, Any, Dict[str, Any]]:
     """
     Load and reconstruct experiment configuration from a JSON report file.
 
+    .. deprecated::
+        This function depends on TrainableParameters which is being removed.
+        It will be refactored to work with circuit-based parameters in a future release.
+
     This function loads the experiment report and reconstructs the ExperimentalParameters
-    and TrainableParameters objects from the saved configuration.
+    and trainable parameters from the saved configuration.
 
     Args:
         json_path: Path to the JSON report file
@@ -37,27 +47,27 @@ def load_experiment_from_report(
     Returns:
         Tuple containing:
             - ExperimentalParameters: Reconstructed experimental parameters
-            - TrainableParameters: Reconstructed trainable parameters
+            - None: Trainable parameters (deprecated)
             - Dict: Additional metadata including callback information
 
     Example:
-        >>> from qsopt.utils import load_experiment_from_report
-        >>>
-        >>> # Load experiment configuration
-        >>> exp_params, trainable_params, metadata = load_experiment_from_report('results/report.json')
-        >>>
-        >>> # Use the reconstructed objects
-        >>> from qsopt import SingleQubitExperiment
-        >>> experiment = SingleQubitExperiment(exp_params, trainable_params)
-        >>>
-        >>> # Access callback data if available
-        >>> if 'callback_data' in metadata:
-        >>>     epochs = metadata['callback_data']['epochs']
-        >>>     contrast = metadata['callback_data']['contrast']
+        >>> # This function is deprecated
+        >>> # from qsopt.utils import load_experiment_from_report
+        >>> #
+        >>> # # Load experiment configuration
+        >>> # exp_params, trainable_params, metadata = load_experiment_from_report('results/report.json')
     """
-    # Load JSON report
-    with open(json_path, "r", encoding="utf-8") as f:
-        report = json.load(f)
+    warnings.warn(
+        "load_experiment_from_report() depends on TrainableParameters which is deprecated. "
+        "This function will be refactored in a future release.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
+    raise NotImplementedError(
+        "This function requires TrainableParameters which has been removed. "
+        "Please use circuit-based parameter management instead."
+    )
 
     # Extract data from report
     exp_params_dict = report.get("experimental_parameters", {})

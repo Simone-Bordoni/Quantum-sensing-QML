@@ -80,23 +80,16 @@ class TestParameterManagement:
         np.testing.assert_allclose(params[0], 0.1, rtol=1e-10)
         np.testing.assert_allclose(params[1], 0.2, rtol=1e-10)
 
-    def test_set_and_update_parameters(self):
-        """Test setting and updating trainable parameters."""
+    def test_set_trainable_parameters(self):
+        """Test setting trainable parameters."""
         circuit = QuantumCircuit(num_qubits=2)
         circuit.add_gate(RXGate(theta=0.1, target=0, trainable=True))
         circuit.add_gate(RYGate(theta=0.2, target=1, trainable=True))
 
-        # Test set_trainable_parameters
         circuit.set_trainable_parameters([jnp.array(1.5), jnp.array(2.5)])
         params = circuit.get_trainable_parameters()
         np.testing.assert_allclose(params[0], 1.5, rtol=1e-10)
         np.testing.assert_allclose(params[1], 2.5, rtol=1e-10)
-
-        # Test update_parameters
-        circuit.update_parameters([0.5, 0.7])
-        params = circuit.get_trainable_parameters()
-        np.testing.assert_allclose(params[0], 0.5, rtol=1e-10)
-        np.testing.assert_allclose(params[1], 0.7, rtol=1e-10)
 
 
 # --------------------------------------------------------------------------

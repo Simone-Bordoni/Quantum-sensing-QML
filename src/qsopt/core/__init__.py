@@ -25,9 +25,10 @@ from .experimental_parameters import (
     PhysicalConstants,
     SystemDimensions,
 )
-from .trainable_parameters import (
-    Parameter,
-    ParameterConstraints,
-    ParameterType,
-    TrainableParameters,
-)
+# TODO: TrainableParameters has been removed in favor of circuit-based parameter management
+# from .trainable_parameters import (
+#     Parameter,
+#     ParameterConstraints,
+#     ParameterType,
+#     TrainableParameters,
+# )

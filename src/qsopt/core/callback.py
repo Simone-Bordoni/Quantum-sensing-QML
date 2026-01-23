@@ -8,13 +8,9 @@ contrast values, and trainable parameters.
 
 import copy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-
-if TYPE_CHECKING:
-    from qsopt.core.trainable_parameters import TrainableParameters
-
 
 class OptimizationCallback:
     """
@@ -67,7 +63,7 @@ class OptimizationCallback:
 
     def __call__(
         self,
-        trainable_params: "TrainableParameters",
+        trainable_params: tuple[list, list],
         prob_with: float,
         prob_without: float,
         contrast: float,
@@ -79,7 +75,8 @@ class OptimizationCallback:
         state of the optimization, including probabilities, contrast, and parameters.
 
         Args:
-            trainable_params: Current trainable parameters object
+            trainable_params: Tuple of (initial_circuit_params, final_circuit_params)
+                             where each element is a list of JAX arrays
             prob_with: Detection probability with photon interaction
             prob_without: Detection probability without photon interaction
             contrast: Sensing contrast (prob_with - prob_without)
@@ -106,12 +103,13 @@ class OptimizationCallback:
                 "prob_without": float(prob_without),
             }
 
-    def get_best_trainable_params(self) -> Optional[Any]:
+    def get_best_trainable_params(self) -> Optional[tuple[list, list]]:
         """
         Get the best trainable parameters found during optimization.
 
         Returns:
-            Best TrainableParameters object, or None if no parameters recorded yet
+            Tuple of (initial_circuit_params, final_circuit_params), 
+            or None if no parameters recorded yet
         """
         return self.best_trainable_params
 
@@ -170,9 +168,12 @@ class OptimizationCallback:
 
         # Convert trainable_params to parameter arrays for saving
         param_arrays = []
-        for tp in self.history["trainable_params"]:
-            angles = tp.get_rotation_angles()
-            param_arrays.append(np.array([angles[name][0] for name in angles.keys()]))
+        for tp_tuple in self.history["trainable_params"]:
+            # tp_tuple is (initial_params, final_params)
+            initial_params, final_params = tp_tuple
+            # Flatten both lists into a single array
+            all_params = [float(p) for p in initial_params] + [float(p) for p in final_params]
+            param_arrays.append(np.array(all_params))
 
         # Prepare data for saving
         save_dict = {
@@ -185,10 +186,9 @@ class OptimizationCallback:
 
         # Add best parameters if available
         if self.best_trainable_params is not None:
-            best_angles = self.best_trainable_params.get_rotation_angles()
-            save_dict["best_parameters"] = np.array(
-                [best_angles[name][0] for name in best_angles.keys()]
-            )
+            initial_best, final_best = self.best_trainable_params
+            all_best = [float(p) for p in initial_best] + [float(p) for p in final_best]
+            save_dict["best_parameters"] = np.array(all_best)
             save_dict["best_contrast"] = np.array(self.best_contrast)
 
             if self.best_metrics is not None:
@@ -266,17 +266,22 @@ class OptimizationCallback:
 
         # Show angles (best for optimization, current for simulation)
         if self.best_trainable_params is not None:
-            angles = self.best_trainable_params.get_rotation_angles()
-            angle_names = list(angles.keys())
+            initial_params, final_params = self.best_trainable_params
 
             if is_simulation:
                 lines.append("  Current Parameters:")
             else:
                 lines.append("  Best Parameters:")
 
-            for name in angle_names:  # Show rotation angles
-                value = angles[name][0]
-                lines.append(f"     {name}: {value:.6f} rad ({np.rad2deg(value):.2f}°)")
+            # Show initial circuit parameters
+            lines.append("     Initial circuit:")
+            for i, value in enumerate(initial_params):
+                lines.append(f"        param_{i}: {float(value):.6f} rad ({np.rad2deg(float(value)):.2f}°)")
+            
+            # Show final circuit parameters
+            lines.append("     Final circuit:")
+            for i, value in enumerate(final_params):
+                lines.append(f"        param_{i}: {float(value):.6f} rad ({np.rad2deg(float(value)):.2f}°)")
 
         # Show metrics (best for optimization, current for simulation)
         if self.best_metrics is not None:

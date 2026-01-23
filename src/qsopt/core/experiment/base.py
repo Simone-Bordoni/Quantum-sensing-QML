@@ -11,10 +11,11 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Union
 
 import qutip as qt
+import jax.numpy as jnp
 
 from qsopt.core.callback import OptimizationCallback
+from qsopt.core.circuit import QuantumCircuit
 from qsopt.core.experimental_parameters import ExperimentalParameters
-from qsopt.core.trainable_parameters import TrainableParameters
 
 
 class Experiment(ABC):
@@ -27,7 +28,8 @@ class Experiment(ABC):
 
     Attributes:
         experimental_params: Physical and measurement parameters for the experiment
-        trainable_params: Parameters that can be optimized (rotation angles, etc.)
+        initial_circuit: Quantum circuit applied before time evolution
+        final_circuit: Quantum circuit applied after time evolution
         operators: Dictionary of quantum operators for the system
         hamiltonians: Dictionary of Hamiltonians (time-dependent and static)
         lindblad_operators: Dictionary of Lindblad operators for noise modeling
@@ -35,17 +37,22 @@ class Experiment(ABC):
     """
 
     def __init__(
-        self, experimental_params: ExperimentalParameters, trainable_params: TrainableParameters
+        self,
+        experimental_params: ExperimentalParameters,
+        initial_circuit: QuantumCircuit,
+        final_circuit: QuantumCircuit,
     ):
         """
-        Initialize the experiment with physical and trainable parameters.
+        Initialize the experiment with physical parameters and quantum circuits.
 
         Args:
             experimental_params: Physical constants, system dimensions, and measurement protocol
-            trainable_params: Rotation angles and other parameters to be optimized
+            initial_circuit: Quantum circuit applied before time evolution
+            final_circuit: Quantum circuit applied after time evolution
         """
         self.experimental_params = experimental_params
-        self.trainable_params = trainable_params
+        self.initial_circuit = initial_circuit
+        self.final_circuit = final_circuit
 
         # Storage for operators and Hamiltonians
         self.operators: Optional[Dict[str, qt.Qobj]] = None
@@ -101,14 +108,14 @@ class Experiment(ABC):
         pass
 
     @abstractmethod
-    def simulation(self, *args, **kwargs):
+    def simulation(self, *args, **kwargs) -> jnp.ndarray:
         """
         Run a single simulation with given parameters.
 
         This method should perform the core quantum simulation:
-        1. Apply initial rotation
+        1. Apply initial circuit
         2. Evolve under the Hamiltonian
-        3. Apply final rotation
+        3. Apply final circuit
         4. Perform measurement
 
         Returns:
@@ -141,7 +148,7 @@ class Experiment(ABC):
         **kwargs,
     ) -> OptimizationCallback:
         """
-        Optimize rotation parameters to maximize sensing contrast.
+        Optimize circuit parameters to maximize sensing contrast.
 
         Args:
             num_steps: Maximum number of optimization iterations
@@ -170,22 +177,6 @@ class Experiment(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not implement measurement time optimization"
         )
-
-    @property
-    def rotation_angles(self) -> Dict[str, float]:
-        """Get current rotation angle values."""
-        angles = self.trainable_params.get_rotation_angles()
-        return {name: float(val[0]) for name, val in angles.items()}
-
-    @rotation_angles.setter
-    def rotation_angles(self, angles: Dict[str, float]) -> None:
-        """
-        Set rotation angle values.
-
-        Args:
-            angles: Dictionary mapping parameter names to angle values in radians
-        """
-        self.trainable_params.set_rotation_angles(angles)
 
     def save_experiment_report(self, save_path: str = "results/report.json") -> None:
         """

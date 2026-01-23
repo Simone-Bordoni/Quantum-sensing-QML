@@ -165,23 +165,6 @@ class QuantumCircuit:
             return qt.Qobj(U_jax, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
         return U_jax
 
-    def update_parameters(self, parameter_values: List[float]) -> None:
-        """
-        Update trainable parameters from a flat list.
-
-        Convenience method that updates parameters in order they appear
-        in get_trainable_parameters().
-
-        Args:
-            parameter_values: List of parameter values in order
-        """
-        current_params = self.get_trainable_parameters()
-        if len(parameter_values) != len(current_params):
-            raise ValueError(f"Expected {len(current_params)} parameters, got {len(parameter_values)}")
-
-        jax_params = [jnp.asarray(value, dtype=float) for value in parameter_values]
-        self.set_trainable_parameters(jax_params)
-
     def __call__(self, state: Union[jnp.ndarray, qt.Qobj, None] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
         """
         Apply the circuit to a quantum state.

@@ -23,11 +23,5 @@ from .core.experimental_parameters import (
     PhysicalConstants,
     SystemDimensions,
 )
-from .core.trainable_parameters import ParameterConstraints, ParameterType, TrainableParameters
-
-# Visualization utilities
-from .utils.visualization import (
-    plot_contrast_evolution,
-    plot_optimization_dashboard,
-    plot_parameter_trajectory,
-)
+# TODO: TrainableParameters has been removed in favor of circuit-based parameter management
+# from .core.trainable_parameters import ParameterConstraints, ParameterType, TrainableParameters

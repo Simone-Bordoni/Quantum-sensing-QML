@@ -103,17 +103,31 @@ def plot_optimization_dashboard(
     prob_with = np.array(history["prob_with"])
     prob_without = np.array(history["prob_without"])
 
-    # Extract parameter arrays (assuming rotation angles)
+    # Extract parameter arrays from tuple structure
     param_arrays = []
     param_names = []
     if history["trainable_params"]:
-        first_params = history["trainable_params"][0]
-        angles = first_params.get_rotation_angles()
-        param_names = list(angles.keys())
+        # trainable_params is now tuple[list, list] of (initial_params, final_params)
+        first_params_tuple = history["trainable_params"][0]
+        initial_params, final_params = first_params_tuple
+        n_initial = len(initial_params)
+        n_final = len(final_params)
+        
+        # Generate parameter names based on structure
+        if n_initial == 1 and n_final == 1:
+            # Single qubit: theta1, theta2
+            param_names = ["theta1", "theta2"]
+        elif n_initial == 2 and n_final == 2:
+            # Two qubits: theta1_q1, theta1_q2, theta2_q1, theta2_q2
+            param_names = ["theta1_q1", "theta1_q2", "theta2_q1", "theta2_q2"]
+        else:
+            # Generic names
+            param_names = [f"initial_{i}" for i in range(n_initial)] + [f"final_{i}" for i in range(n_final)]
 
-        for tp in history["trainable_params"]:
-            angles = tp.get_rotation_angles()
-            param_arrays.append([angles[name][0] for name in param_names])
+        # Extract all parameter values (flatten tuple to list)
+        for initial_params, final_params in history["trainable_params"]:
+            flat_params = [float(p) for p in initial_params] + [float(p) for p in final_params]
+            param_arrays.append(flat_params)
 
     param_arrays = np.array(param_arrays)
 
@@ -143,9 +157,9 @@ def plot_optimization_dashboard(
             reference_prob_without = ref_history["prob_without"][0]
 
         if ref_history["trainable_params"]:
-            ref_tp = ref_history["trainable_params"][0]
-            ref_angles = ref_tp.get_rotation_angles()
-            reference_params = [ref_angles[name][0] for name in param_names]
+            # Extract reference params from tuple structure
+            ref_initial, ref_final = ref_history["trainable_params"][0]
+            reference_params = [float(p) for p in ref_initial] + [float(p) for p in ref_final]
 
     # Create figure
     fig = plt.figure(figsize=figsize)
@@ -443,17 +457,31 @@ def plot_parameter_trajectory(
     history = optimization_callback.get_history()
     epochs = np.array(history["epochs"])
 
-    # Extract parameters
+    # Extract parameters from tuple structure
     param_arrays = []
     param_names = []
     if history["trainable_params"]:
-        first_params = history["trainable_params"][0]
-        angles = first_params.get_rotation_angles()
-        param_names = list(angles.keys())
+        # trainable_params is now tuple[list, list] of (initial_params, final_params)
+        first_params_tuple = history["trainable_params"][0]
+        initial_params, final_params = first_params_tuple
+        n_initial = len(initial_params)
+        n_final = len(final_params)
+        
+        # Generate parameter names based on structure
+        if n_initial == 1 and n_final == 1:
+            # Single qubit: theta1, theta2
+            param_names = ["theta1", "theta2"]
+        elif n_initial == 2 and n_final == 2:
+            # Two qubits: theta1_q1, theta1_q2, theta2_q1, theta2_q2
+            param_names = ["theta1_q1", "theta1_q2", "theta2_q1", "theta2_q2"]
+        else:
+            # Generic names
+            param_names = [f"initial_{i}" for i in range(n_initial)] + [f"final_{i}" for i in range(n_final)]
 
-        for tp in history["trainable_params"]:
-            angles = tp.get_rotation_angles()
-            param_arrays.append([angles[name][0] for name in param_names])
+        # Extract all parameter values (flatten tuple to list)
+        for initial_params, final_params in history["trainable_params"]:
+            flat_params = [float(p) for p in initial_params] + [float(p) for p in final_params]
+            param_arrays.append(flat_params)
 
     param_arrays = np.array(param_arrays)
 
@@ -503,9 +531,9 @@ def plot_parameter_trajectory(
     if reference_callback is not None:
         ref_history = reference_callback.get_history()
         if ref_history["trainable_params"]:
-            ref_tp = ref_history["trainable_params"][0]
-            ref_angles = ref_tp.get_rotation_angles()
-            ref_params = [ref_angles[name][0] for name in param_names]
+            # Extract reference params from tuple structure
+            ref_initial, ref_final = ref_history["trainable_params"][0]
+            ref_params = [float(p) for p in ref_initial] + [float(p) for p in ref_final]
             ref_theta1_deg = ref_params[idx1] * 180 / np.pi
             ref_theta2_deg = ref_params[idx2] * 180 / np.pi
             ax.plot(
