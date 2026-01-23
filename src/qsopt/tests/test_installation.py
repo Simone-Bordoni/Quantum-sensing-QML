@@ -296,7 +296,7 @@ class TestBasicFunctionality:
         assert hasattr(circuit, "add_gate")
         assert hasattr(circuit, "get_unitary")
         assert hasattr(circuit, "get_trainable_parameters")
-        assert hasattr(circuit, "get_unitary_jax")
+        assert hasattr(circuit, "get_unitary")
 
         # Verify parameter tracking
         params = circuit.get_trainable_parameters()

@@ -79,7 +79,7 @@ history = experiment.optimize_rotations(
 fig = plot_optimization_dashboard(
     optimization_callback=history,
     reference_callback=benchmark_results,
-    save_path='experiments/two_qubits/rotation_opt/results/opt_dashboard_1.png'
+    save_path='experiments/two_qubits/rotation_opt/results/opt_dashboard.png'
 )
 
-experiment.save_experiment_report(save_path='experiments/two_qubits/rotation_opt/results/experiment_report_1.json')
+experiment.save_experiment_report(save_path='experiments/two_qubits/rotation_opt/results/experiment_report.json')

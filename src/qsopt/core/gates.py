@@ -25,13 +25,12 @@ Example:
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Union
+from dataclasses import dataclass
+from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import qutip as qt
-from qutip_qip.operations import cnot, hadamard_transform
 
 
 @dataclass
@@ -42,12 +41,10 @@ class GateParameter:
     Attributes:
         value: Parameter value (JAX array)
         trainable: Whether parameter should be traced by JAX
-        name: Parameter name for identification
     """
 
     value: jnp.ndarray
     trainable: bool = True
-    name: str = "param"
 
     def get(self) -> jnp.ndarray:
         """Get parameter value with appropriate gradient handling."""
@@ -74,129 +71,65 @@ class Gate(ABC):
     Abstract base class for quantum gates.
 
     All gates must implement the matrix() method to return their
-    matrix representation. Parametrized gates should also implement
-    parameter management methods.
+    matrix representation. Parametrized gates can have at most one parameter.
     """
 
-    def __init__(self, name: str, num_qubits: int):
+    def __init__(self, name: str, target: Union[int, Tuple[int, ...]]):
         """
         Initialize gate.
 
         Args:
-            name: Gate name (e.g., "RX", "CNOT")
-            num_qubits: Number of qubits gate acts on
+            name: Gate name (RX, RY, RZ, H, CNOT, CZ)
+            target: Target qubit(s) - int for single-qubit, tuple for multi-qubit gates
         """
         self.name = name
-        self.num_qubits = num_qubits
-        self._parameters: Dict[str, GateParameter] = {}
+        self.target: Union[int, Tuple[int, ...]] = target
+        self._parameter: Optional[GateParameter] = None
 
     @abstractmethod
-    def matrix(self) -> qt.Qobj:
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """
         Return the gate's matrix representation.
 
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+
         Returns:
-            QuTiP Qobj representing the gate matrix
+            QuTiP Qobj or JAX array depending on qutip flag
         """
         pass
 
-    def has_parameters(self) -> bool:
-        """Check if gate has trainable parameters."""
-        return len(self._parameters) > 0
+    def has_parameter(self) -> bool:
+        """Check if gate has a parameter."""
+        return self._parameter is not None
 
-    def get_parameters(self) -> Dict[str, jnp.ndarray]:
+    def get_parameter(self) -> jnp.ndarray:
         """
-        Get all parameters with gradient handling.
+        Get parameter value.
 
         Returns:
-            Dictionary mapping parameter names to values
+            Parameter value with appropriate gradient handling
         """
-        return {name: param.get() for name, param in self._parameters.items()}
+        if self._parameter is None:
+            raise ValueError(f"Gate {self.name} has no parameters")
+        return self._parameter.get()
 
-    def get_parameter(self, name: str = None) -> jnp.ndarray:
-        """
-        Get specific parameter value.
-
-        Args:
-            name: Parameter name. If None and only one parameter exists, returns it.
-
-        Returns:
-            Parameter value
-        """
-        if name is None:
-            if len(self._parameters) == 1:
-                return list(self._parameters.values())[0].get()
-            else:
-                raise ValueError("Must specify parameter name when multiple parameters exist")
-        return self._parameters[name].get()
-
-    def set_parameter(self, value: Union[float, jnp.ndarray], name: str = None) -> None:
+    def set_parameter(self, value: Union[float, jnp.ndarray]) -> None:
         """
         Update parameter value.
 
         Args:
             value: New parameter value
-            name: Parameter name. If None and only one parameter exists, updates it.
         """
-        if name is None:
-            if len(self._parameters) == 1:
-                list(self._parameters.values())[0].set(value)
-            else:
-                raise ValueError("Must specify parameter name when multiple parameters exist")
-        else:
-            self._parameters[name].set(value)
-
-    def enable_gradients(self, name: str = None) -> None:
-        """
-        Enable gradient tracing for parameters.
-
-        Args:
-            name: Parameter name. If None, enables all parameters.
-        """
-        if name is None:
-            for param in self._parameters.values():
-                param.enable_gradients()
-        else:
-            self._parameters[name].enable_gradients()
-
-    def disable_gradients(self, name: str = None) -> None:
-        """
-        Disable gradient tracing for parameters.
-
-        Args:
-            name: Parameter name. If None, disables all parameters.
-        """
-        if name is None:
-            for param in self._parameters.values():
-                param.disable_gradients()
-        else:
-            self._parameters[name].disable_gradients()
-
-    def is_trainable(self, name: str = None) -> bool:
-        """
-        Check if parameter is trainable.
-
-        Args:
-            name: Parameter name. If None and only one parameter exists, checks it.
-
-        Returns:
-            True if parameter is trainable
-        """
-        if name is None:
-            if len(self._parameters) == 1:
-                return list(self._parameters.values())[0].trainable
-            else:
-                raise ValueError("Must specify parameter name when multiple parameters exist")
-        return self._parameters[name].trainable
+        if self._parameter is None:
+            raise ValueError(f"Gate {self.name} has no parameters")
+        self._parameter.set(value)
 
     def __repr__(self) -> str:
         """String representation of gate."""
-        if self.has_parameters():
-            params_str = ", ".join(
-                f"{name}={param.value:.4f}" for name, param in self._parameters.items()
-            )
-            return f"{self.name}({params_str})"
-        return f"{self.name}"
+        if self.has_parameter():
+            return f"{self.name}({self._parameter.value:.4f})[{self.target}]"
+        return f"{self.name}[{self.target}]"
 
 
 # ============================================================================
@@ -216,24 +149,33 @@ class RXGate(Gate):
         >>> rx.set_parameter(jnp.pi/2)
     """
 
-    def __init__(self, theta: Union[float, jnp.ndarray] = 0.0, trainable: bool = True):
+    def __init__(self, theta: Union[float, jnp.ndarray], target: int, trainable: bool = True):
         """
         Initialize RX gate.
 
         Args:
             theta: Rotation angle in radians
+            target: Target qubit index
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RX", num_qubits=1)
-        self._parameters["theta"] = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable, name="theta"
+        super().__init__("RX", target=target)
+        self._parameter = GateParameter(
+            value=jnp.asarray(theta, dtype=float), trainable=trainable
         )
 
-    def matrix(self) -> qt.Qobj:
-        """Return RX gate matrix."""
-        theta = self.get_parameter("theta")
-        sx = qt.sigmax()
-        return (-1j * theta * sx / 2).expm()
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+        """Return RX gate matrix.
+        
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+        """
+        theta = self.get_parameter()
+        # Get Pauli X matrix as JAX array
+        sx_data = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
+        # Compute rotation: exp(-i theta sx / 2)
+        matrix_data = jax.scipy.linalg.expm(-1j * theta * sx_data / 2)
+        # Return JAX array or wrap in Qobj
+        return qt.Qobj(matrix_data, dims=[[2], [2]]) if qutip else matrix_data
 
 
 class RYGate(Gate):
@@ -247,24 +189,33 @@ class RYGate(Gate):
         >>> matrix = ry.matrix()
     """
 
-    def __init__(self, theta: Union[float, jnp.ndarray] = 0.0, trainable: bool = True):
+    def __init__(self, theta: Union[float, jnp.ndarray], target: int, trainable: bool = True):
         """
         Initialize RY gate.
 
         Args:
             theta: Rotation angle in radians
+            target: Target qubit index
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RY", num_qubits=1)
-        self._parameters["theta"] = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable, name="theta"
+        super().__init__("RY", target=target)
+        self._parameter = GateParameter(
+            value=jnp.asarray(theta, dtype=float), trainable=trainable
         )
 
-    def matrix(self) -> qt.Qobj:
-        """Return RY gate matrix."""
-        theta = self.get_parameter("theta")
-        sy = qt.sigmay()
-        return (-1j * theta * sy / 2).expm()
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+        """Return RY gate matrix.
+        
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+        """
+        theta = self.get_parameter()
+        # Get Pauli Y matrix as JAX array
+        sy_data = jnp.array([[0, -1j], [1j, 0]], dtype=jnp.complex128)
+        # Compute rotation: exp(-i theta sy / 2)
+        matrix_data = jax.scipy.linalg.expm(-1j * theta * sy_data / 2)
+        # Return JAX array or wrap in Qobj
+        return qt.Qobj(matrix_data, dims=[[2], [2]]) if qutip else matrix_data
 
 
 class RZGate(Gate):
@@ -278,24 +229,33 @@ class RZGate(Gate):
         >>> matrix = rz.matrix()
     """
 
-    def __init__(self, theta: Union[float, jnp.ndarray] = 0.0, trainable: bool = True):
+    def __init__(self, theta: Union[float, jnp.ndarray], target: int, trainable: bool = True):
         """
         Initialize RZ gate.
 
         Args:
             theta: Rotation angle in radians
+            target: Target qubit index
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RZ", num_qubits=1)
-        self._parameters["theta"] = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable, name="theta"
+        super().__init__("RZ", target=target)
+        self._parameter = GateParameter(
+            value=jnp.asarray(theta, dtype=float), trainable=trainable
         )
 
-    def matrix(self) -> qt.Qobj:
-        """Return RZ gate matrix."""
-        theta = self.get_parameter("theta")
-        sz = qt.sigmaz()
-        return (-1j * theta * sz / 2).expm()
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+        """Return RZ gate matrix.
+        
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+        """
+        theta = self.get_parameter()
+        # Get Pauli Z matrix as JAX array
+        sz_data = jnp.array([[1, 0], [0, -1]], dtype=jnp.complex128)
+        # Compute rotation: exp(-i theta sz / 2)
+        matrix_data = jax.scipy.linalg.expm(-1j * theta * sz_data / 2)
+        # Return JAX array or wrap in Qobj
+        return qt.Qobj(matrix_data, dims=[[2], [2]]) if qutip else matrix_data
 
 
 # ============================================================================
@@ -314,13 +274,23 @@ class HadamardGate(Gate):
         >>> matrix = h.matrix()
     """
 
-    def __init__(self):
-        """Initialize Hadamard gate."""
-        super().__init__("H", num_qubits=1)
+    def __init__(self, target: int):
+        """Initialize Hadamard gate.
+        
+        Args:
+            target: Target qubit index
+        """
+        super().__init__("H", target=target)
 
-    def matrix(self) -> qt.Qobj:
-        """Return Hadamard gate matrix."""
-        return hadamard_transform()
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+        """Return Hadamard gate matrix.
+        
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+        """
+        # H = (1/√2) * [[1, 1], [1, -1]]
+        h_data = jnp.array([[1, 1], [1, -1]], dtype=jnp.complex128) / jnp.sqrt(2)
+        return qt.Qobj(h_data, dims=[[2], [2]]) if qutip else h_data
 
 
 class CNOTGate(Gate):
@@ -340,13 +310,28 @@ class CNOTGate(Gate):
         >>> matrix = cnot.matrix()
     """
 
-    def __init__(self):
-        """Initialize CNOT gate."""
-        super().__init__("CNOT", num_qubits=2)
+    def __init__(self, target: Tuple[int, int]):
+        """Initialize CNOT gate.
+        
+        Args:
+            target: Tuple of (control, target) qubit indices
+        """
+        super().__init__("CNOT", target=target)
 
-    def matrix(self) -> qt.Qobj:
-        """Return CNOT gate matrix."""
-        return cnot()
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+        """Return CNOT gate matrix.
+        
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+        """
+        # CNOT = [[1, 0, 0, 0],
+        #         [0, 1, 0, 0],
+        #         [0, 0, 0, 1],
+        #         [0, 0, 1, 0]]
+        cnot_data = jnp.array(
+            [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=jnp.complex128
+        )
+        return qt.Qobj(cnot_data, dims=[[2, 2], [2, 2]]) if qutip else cnot_data
 
 
 class CZGate(Gate):
@@ -365,103 +350,22 @@ class CZGate(Gate):
         >>> matrix = cz.matrix()
     """
 
-    def __init__(self):
-        """Initialize CZ gate."""
-        super().__init__("CZ", num_qubits=2)
+    def __init__(self, target: Tuple[int, int]):
+        """Initialize CZ gate.
+        
+        Args:
+            target: Tuple of (control, target) qubit indices
+        """
+        super().__init__("CZ", target=target)
 
-    def matrix(self) -> qt.Qobj:
-        """Return CZ gate matrix."""
+    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+        """Return CZ gate matrix.
+        
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
+        """
         # CZ = diag(1, 1, 1, -1)
-        return qt.Qobj(
-            jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, -1]], dtype=complex),
-            dims=[[2, 2], [2, 2]],
+        cz_data = jnp.array(
+            [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, -1]], dtype=jnp.complex128
         )
-
-
-# ============================================================================
-# Utility Functions
-# ============================================================================
-
-
-def apply_gate(gate: Gate, state: qt.Qobj) -> qt.Qobj:
-    """
-    Apply gate to quantum state.
-
-    Args:
-        gate: Gate to apply
-        state: Quantum state (ket or density matrix)
-
-    Returns:
-        Transformed state
-    """
-    gate_matrix = gate.matrix()
-    if state.type == "ket":
-        return gate_matrix * state
-    elif state.type == "oper":
-        return gate_matrix * state * gate_matrix.dag()
-    else:
-        raise ValueError(f"Unsupported state type: {state.type}")
-
-
-def gate_sequence_product(gates: list) -> qt.Qobj:
-    """
-    Compute product of gate matrices (gates applied in list order).
-
-    Gates are applied in the order they appear in the list. The matrix
-    product is computed so that gates[0] is applied first, gates[1] second, etc.
-    This means: U = gates[-1] * ... * gates[1] * gates[0]
-
-    Example:
-        gates = [RX, RY, RZ]  # RX applied first, then RY, then RZ
-        U = RZ * RY * RX
-        |ψ'⟩ = U|ψ⟩ = RZ(RY(RX|ψ⟩))
-
-    Args:
-        gates: List of Gate objects
-
-    Returns:
-        Combined gate matrix
-    """
-    if not gates:
-        raise ValueError("Gate list is empty")
-
-    # Build product: gates[n-1] * ... * gates[1] * gates[0]
-    # So gates[0] is applied first to a state
-    result = gates[0].matrix()
-    for gate in gates[1:]:
-        result = gate.matrix() * result
-    return result
-
-
-def get_all_trainable_parameters(gates: list) -> Dict[str, jnp.ndarray]:
-    """
-    Extract all trainable parameters from gate sequence.
-
-    Args:
-        gates: List of Gate objects
-
-    Returns:
-        Dictionary mapping "gate_index.param_name" to parameter values
-    """
-    all_params = {}
-    for i, gate in enumerate(gates):
-        if gate.has_parameters():
-            params = gate.get_parameters()
-            for name, value in params.items():
-                if gate.is_trainable(name):
-                    all_params[f"gate_{i}.{name}"] = value
-    return all_params
-
-
-def set_trainable_parameters(gates: list, parameters: Dict[str, jnp.ndarray]) -> None:
-    """
-    Update trainable parameters in gate sequence.
-
-    Args:
-        gates: List of Gate objects
-        parameters: Dictionary mapping "gate_index.param_name" to new values
-    """
-    for key, value in parameters.items():
-        gate_idx, param_name = key.split(".")
-        idx = int(gate_idx.replace("gate_", ""))
-        gates[idx].set_parameter(value, param_name)
+        return qt.Qobj(cz_data, dims=[[2, 2], [2, 2]]) if qutip else cz_data

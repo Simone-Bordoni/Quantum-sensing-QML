@@ -12,63 +12,27 @@ Example:
     >>>
     >>> # Create 2-qubit circuit
     >>> circuit = QuantumCircuit(num_qubits=2)
-    >>> circuit.add_gate(RXGate(theta=jnp.pi/4), target=0)
-    >>> circuit.add_gate(RYGate(theta=jnp.pi/2), target=1)
-    >>> circuit.add_gate(CNOTGate(), target=(0, 1))
+    >>> rx = RXGate(theta=jnp.pi/4)
+    >>> rx.target = 0
+    >>> circuit.add_gate(rx)
+    >>> ry = RYGate(theta=jnp.pi/2)
+    >>> ry.target = 1
+    >>> circuit.add_gate(ry)
+    >>> cnot = CNOTGate()
+    >>> cnot.target = (0, 1)
+    >>> circuit.add_gate(cnot)
     >>>
     >>> # Get circuit unitary
-    >>> U = circuit.get_unitary_jax()
+    >>> U = circuit.get_unitary(qutip=False)
     >>>
     >>> # Get trainable parameters
     >>> params = circuit.get_trainable_parameters()
 """
 
-from typing import Dict, List, Tuple, Union
-
+from typing import List, Union
 import jax.numpy as jnp
 import qutip as qt
-from qutip_qip.operations import expand_operator
-
 from .gates import Gate
-
-
-class GateApplication:
-    """
-    Container for a gate and its target qubit(s).
-
-    Attributes:
-        gate: The quantum gate to apply
-        target: Target qubit index (int) or tuple of indices for multi-qubit gates
-    """
-
-    def __init__(self, gate: Gate, target: Union[int, Tuple[int, ...]]):
-        """
-        Initialize gate application.
-
-        Args:
-            gate: Gate object to apply
-            target: Target qubit(s). Single int for 1-qubit gates,
-                   tuple of ints for multi-qubit gates
-        """
-        self.gate = gate
-
-        # Normalize target to tuple
-        if isinstance(target, int):
-            self.target = (target,)
-        else:
-            self.target = tuple(target)
-
-        # Validate target matches gate dimensions
-        if len(self.target) != gate.num_qubits:
-            raise ValueError(
-                f"Gate {gate.name} requires {gate.num_qubits} qubit(s), "
-                f"but {len(self.target)} target(s) provided"
-            )
-
-    def __repr__(self) -> str:
-        """String representation."""
-        target_str = str(self.target[0]) if len(self.target) == 1 else str(self.target)
-        return f"{self.gate.name}[{target_str}]"
 
 
 class QuantumCircuit:
@@ -90,86 +54,116 @@ class QuantumCircuit:
             raise ValueError("Number of qubits must be at least 1")
 
         self.num_qubits = num_qubits
-        self._gates: List[GateApplication] = []
+        self._gates: List[Gate] = []
 
-    def add_gate(self, gate: Gate, target: Union[int, Tuple[int, ...]]) -> None:
+    def add_gate(self, gate: Gate) -> None:
         """
         Add a gate to the circuit.
 
         Args:
             gate: Gate object to add
-            target: Target qubit index (int) or indices (tuple) for the gate
 
         Raises:
-            ValueError: If target qubits are out of range
+            ValueError: If target qubits are out of range or not set
         """
-        gate_app = GateApplication(gate, target)
 
+        # Normalize target to tuple for validation
+        target_tuple = (gate.target,) if isinstance(gate.target, int) else tuple(gate.target)
+        
         # Validate all target qubits are in range
-        for qubit in gate_app.target:
+        for qubit in target_tuple:
             if qubit < 0 or qubit >= self.num_qubits:
                 raise ValueError(
                     f"Target qubit {qubit} is out of range. "
                     f"Circuit has {self.num_qubits} qubits (0-{self.num_qubits-1})"
                 )
+        
+        self._gates.append(gate)
 
-        self._gates.append(gate_app)
-
-    def get_gates(self) -> List[GateApplication]:
-        """
-        Get list of all gate applications in the circuit.
-
-        Returns:
-            List of GateApplication objects
-        """
-        return self._gates.copy()
-
-    def num_gates(self) -> int:
-        """Return number of gates in the circuit."""
-        return len(self._gates)
-
-    def get_trainable_parameters(self) -> Dict[str, jnp.ndarray]:
+    def get_trainable_parameters(self) -> List[jnp.ndarray]:
         """
         Get all trainable parameters from the circuit.
 
-        Returns dictionary mapping parameter identifiers to values.
-        Parameter identifiers have the format: "gate_{index}_{param_name}"
-
         Returns:
-            Dictionary of trainable parameters
+            List of trainable parameter values
         """
-        params = {}
-        for i, gate_app in enumerate(self._gates):
-            gate = gate_app.gate
-            if gate.has_parameters():
-                gate_params = gate.get_parameters()
-                for param_name, param_value in gate_params.items():
-                    # Only include trainable parameters
-                    if gate.is_trainable(param_name):
-                        key = f"gate_{i}_{param_name}"
-                        params[key] = param_value
+        params = []
+        for gate in self._gates:
+            if gate.has_parameter() and gate._parameter.trainable:
+                params.append(gate.get_parameter())
         return params
 
-    def set_trainable_parameters(self, parameters: Dict[str, jnp.ndarray]) -> None:
+    def count_trainable_parameters(self) -> int:
+        """
+        Count the number of trainable parameters in the circuit.
+
+        Returns:
+            Number of trainable parameters
+        """
+        count = 0
+        for gate in self._gates:
+            if gate.has_parameter() and gate._parameter.trainable:
+                count += 1
+        return count
+
+    def set_trainable_parameters(self, parameters: List[jnp.ndarray]) -> None:
         """
         Update trainable parameters in the circuit.
 
         Args:
-            parameters: Dictionary mapping "gate_{index}_{param_name}" to values
+            parameters: List of parameter values (must match number of trainable parameters)
         """
-        for key, value in parameters.items():
-            # Parse key: gate_{index}_{param_name}
-            parts = key.split("_")
-            if len(parts) < 3 or parts[0] != "gate":
-                raise ValueError(f"Invalid parameter key format: {key}")
+        expected_count = self.count_trainable_parameters()
+        if len(parameters) != expected_count:
+            raise ValueError(f"Expected {expected_count} parameters, got {len(parameters)}")
+        
+        param_idx = 0
+        for gate in self._gates:
+            if gate.has_parameter() and gate._parameter.trainable:
+                gate.set_parameter(parameters[param_idx])
+                param_idx += 1
 
-            gate_idx = int(parts[1])
-            param_name = "_".join(parts[2:])  # Handle param names with underscores
+    def get_unitary(self, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
+        """
+        Compute the circuit unitary.
 
-            if gate_idx < 0 or gate_idx >= len(self._gates):
-                raise ValueError(f"Gate index {gate_idx} out of range")
+        Args:
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
 
-            self._gates[gate_idx].gate.set_parameter(value, param_name)
+        Returns:
+            Circuit unitary matrix as QuTiP Qobj or JAX array
+        """
+        if len(self._gates) == 0:
+            # Identity for empty circuit
+            identity = jnp.eye(2**self.num_qubits, dtype=jnp.complex128)
+            if qutip:
+                return qt.Qobj(identity, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
+            return identity
+
+        # Build unitary by applying gates in sequence
+        dim = 2**self.num_qubits
+        U_jax = jnp.eye(dim, dtype=jnp.complex128)
+
+        for gate in self._gates:
+            # Get gate matrix as JAX array directly
+            gate_jax = gate.matrix(qutip=False)
+
+            # Expand to full Hilbert space using JAX operations
+            if self.num_qubits == 1:
+                # Single qubit circuit
+                expanded_jax = gate_jax
+            else:
+                # Multi-qubit circuit - manually expand using Kronecker products
+                target_tuple = (gate.target,) if isinstance(gate.target, int) else gate.target
+                expanded_jax = self._expand_gate_jax(gate_jax, target_tuple)
+
+            # Apply gate (multiply on left since gates are applied left to right)
+            U_jax = expanded_jax @ U_jax
+
+        # Return JAX array or wrap in Qobj
+        if qutip:
+            return qt.Qobj(U_jax, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
+        return U_jax
 
     def update_parameters(self, parameter_values: List[float]) -> None:
         """
@@ -181,154 +175,154 @@ class QuantumCircuit:
         Args:
             parameter_values: List of parameter values in order
         """
-        params_dict = self.get_trainable_parameters()
-        if len(parameter_values) != len(params_dict):
-            raise ValueError(f"Expected {len(params_dict)} parameters, got {len(parameter_values)}")
+        current_params = self.get_trainable_parameters()
+        if len(parameter_values) != len(current_params):
+            raise ValueError(f"Expected {len(current_params)} parameters, got {len(parameter_values)}")
 
-        updated_params = {}
-        for key, value in zip(params_dict.keys(), parameter_values):
-            updated_params[key] = jnp.asarray(value, dtype=float)
+        jax_params = [jnp.asarray(value, dtype=float) for value in parameter_values]
+        self.set_trainable_parameters(jax_params)
 
-        self.set_trainable_parameters(updated_params)
-
-    def get_unitary(self) -> qt.Qobj:
+    def __call__(self, state: Union[jnp.ndarray, qt.Qobj, None] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
         """
-        Compute the circuit unitary as a QuTiP Qobj.
+        Apply the circuit to a quantum state.
+
+        The circuit is applied by evolving the density matrix through the unitary:
+        ρ_final = U ρ_initial U†
+
+        Args:
+            state: Initial quantum state (can be JAX array or QuTiP Qobj, pure state or density matrix).
+                   If None, uses ground state |0...0⟩ as initial state.
+            qutip: If True, return QuTiP Qobj; if False, return JAX array
 
         Returns:
-            Circuit unitary matrix as QuTiP Qobj
+            Final quantum state after circuit application
+
+        Example:
+            >>> circuit = QuantumCircuit(num_qubits=2)
+            >>> circuit.add_gate(HadamardGate(target=0))
+            >>> # Use ground state by default
+            >>> rho_final = circuit()
+            >>> # Or provide initial state
+            >>> psi0 = qt.basis(2, 0)
+            >>> psi_final = circuit(psi0)
         """
-        if len(self._gates) == 0:
-            # Identity for empty circuit
-            return qt.qeye([2] * self.num_qubits)
+        # Get circuit unitary as JAX array
+        U = self.get_unitary(qutip=False)
 
-        # Build unitary by applying gates in sequence
-        # Start with identity
-        U = qt.qeye([2] * self.num_qubits)
-
-        for gate_app in self._gates:
-            # Get gate matrix
-            gate_matrix = gate_app.gate.matrix()
-
-            # Expand to full Hilbert space
-            if self.num_qubits == 1:
-                # Single qubit circuit
-                expanded = gate_matrix
+        # If no state provided, use ground state |0...0⟩
+        if state is None:
+            # Create ground state as density matrix |0...0⟩⟨0...0|
+            dim = 2 ** self.num_qubits
+            rho = jnp.zeros((dim, dim), dtype=jnp.complex128)
+            rho = rho.at[0, 0].set(1.0)
+        else:
+            # Convert state to JAX array if it's a QuTiP object
+            if isinstance(state, qt.Qobj):
+                state_jax = jnp.array(state.full(), dtype=jnp.complex128)
             else:
-                # Multi-qubit circuit - use qutip_qip's expand_operator
-                expanded = expand_operator(
-                    gate_matrix,
-                    N=self.num_qubits,
-                    targets=list(gate_app.target),
-                    dims=[2] * self.num_qubits,
-                )
+                state_jax = jnp.asarray(state, dtype=jnp.complex128)
 
-            # Apply gate (multiply on left since gates are applied left to right)
-            U = expanded * U
+            # Check if state is a pure state (vector) or density matrix
+            if state_jax.ndim == 1:
+                # Pure state vector - convert to column vector then to density matrix
+                state_jax = state_jax.reshape(-1, 1)
+                rho = state_jax @ state_jax.conj().T
+            elif state_jax.shape[1] == 1:
+                # Column vector - convert to density matrix
+                rho = state_jax @ state_jax.conj().T
+            else:
+                # Already a density matrix
+                rho = state_jax
 
-        return U
+        # Apply circuit: ρ_final = U ρ U†
+        rho_final = U @ rho @ U.conj().T
 
-    def get_unitary_jax(self) -> jnp.ndarray:
+        # Return in requested format
+        if qutip:
+            return qt.Qobj(rho_final, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
+        return rho_final
+    
+    def _expand_gate_jax(self, gate_matrix: jnp.ndarray, targets: tuple) -> jnp.ndarray:
         """
-        Compute the circuit unitary as a JAX array.
-
-        This is useful for JAX-based simulations and autodiff.
-
+        Expand a gate matrix to act on specific qubits in the full Hilbert space.
+        
+        Uses JAX operations (Kronecker products) to build the expanded operator,
+        maintaining JAX traceability for autodiff.
+        
+        Args:
+            gate_matrix: Gate matrix as JAX array
+            targets: Tuple of target qubit indices
+            
         Returns:
-            Circuit unitary matrix as JAX array (complex128)
+            Expanded gate matrix as JAX array
         """
-        U = self.get_unitary()
-        return jnp.array(U.full(), dtype=jnp.complex128)
-
-    def enable_gradients(self, gate_index: int = None, param_name: str = None) -> None:
-        """
-        Enable gradient tracing for parameters.
-
-        Args:
-            gate_index: Index of gate (None = all gates)
-            param_name: Name of parameter (None = all parameters)
-        """
-        if gate_index is None:
-            # Enable for all gates
-            for gate_app in self._gates:
-                gate_app.gate.enable_gradients(param_name)
-        else:
-            if gate_index < 0 or gate_index >= len(self._gates):
-                raise ValueError(f"Gate index {gate_index} out of range")
-            self._gates[gate_index].gate.enable_gradients(param_name)
-
-    def disable_gradients(self, gate_index: int = None, param_name: str = None) -> None:
-        """
-        Disable gradient tracing for parameters.
-
-        Args:
-            gate_index: Index of gate (None = all gates)
-            param_name: Name of parameter (None = all parameters)
-        """
-        if gate_index is None:
-            # Disable for all gates
-            for gate_app in self._gates:
-                gate_app.gate.disable_gradients(param_name)
-        else:
-            if gate_index < 0 or gate_index >= len(self._gates):
-                raise ValueError(f"Gate index {gate_index} out of range")
-            self._gates[gate_index].gate.disable_gradients(param_name)
-
+        if len(targets) == 1:
+            # Single-qubit gate
+            target = targets[0]
+            matrices = []
+            for i in range(self.num_qubits):
+                if i == target:
+                    matrices.append(gate_matrix)
+                else:
+                    matrices.append(jnp.eye(2, dtype=jnp.complex128))
+            
+            # Build full operator using Kronecker products
+            result = matrices[0]
+            for mat in matrices[1:]:
+                result = jnp.kron(result, mat)
+            return result
+        
+        elif len(targets) == 2:
+            # Two-qubit gate (e.g., CNOT)
+            # Build the full operator by expanding the 4x4 gate matrix to the full Hilbert space
+            # while preserving the control-target relationship
+            
+            q0, q1 = targets  # Qubits as specified in gate (e.g., control, target for CNOT)
+            
+            # Create full operator matrix
+            dim = 2 ** self.num_qubits
+            full_matrix = jnp.zeros((dim, dim), dtype=jnp.complex128)
+            
+            # Iterate over all basis states
+            for i in range(dim):
+                for j in range(dim):
+                    # Convert i and j to binary representations (basis states)
+                    # QuTiP uses big-endian ordering: |q_{n-1}...q_1 q_0⟩
+                    # So qubit k's bit is at position (num_qubits - 1 - k)
+                    i_bits = [(i >> (self.num_qubits - 1 - k)) & 1 for k in range(self.num_qubits)]
+                    j_bits = [(j >> (self.num_qubits - 1 - k)) & 1 for k in range(self.num_qubits)]
+                    
+                    # Check if all other qubits (not q0, q1) are the same
+                    other_qubits_match = all(
+                        i_bits[k] == j_bits[k] for k in range(self.num_qubits) if k != q0 and k != q1
+                    )
+                    
+                    if other_qubits_match:
+                        # Get the 2-qubit state indices for gate application
+                        # The gate matrix expects: |q0, q1⟩ ordering
+                        # So index 0 = |00⟩, 1 = |01⟩, 2 = |10⟩, 3 = |11⟩ for qubits (q0, q1)
+                        i_gate = i_bits[q0] * 2 + i_bits[q1]  # Row index in 4x4 gate matrix
+                        j_gate = j_bits[q0] * 2 + j_bits[q1]  # Col index in 4x4 gate matrix
+                        
+                        # Apply the gate matrix element
+                        full_matrix = full_matrix.at[i, j].set(gate_matrix[i_gate, j_gate])
+            
+            return full_matrix
+        
     def __repr__(self) -> str:
         """String representation of circuit."""
         header = f"QuantumCircuit({self.num_qubits} qubits, {len(self._gates)} gates)"
         if len(self._gates) == 0:
             return header
 
-        gates_str = "\n".join(f"  {i}: {gate_app}" for i, gate_app in enumerate(self._gates))
+        gates_str = "\n".join(
+            f"  {i}: {gate}[{gate.target}]" for i, gate in enumerate(self._gates)
+        )
         return f"{header}\n{gates_str}"
-
-    def draw(self) -> str:
-        """
-        Generate a simple text representation of the circuit.
-
-        Returns:
-            String visualization of the circuit
-        """
-        if len(self._gates) == 0:
-            return f"Empty circuit with {self.num_qubits} qubit(s)"
-
-        # Create wire for each qubit
-        lines = [f"q{i}: " for i in range(self.num_qubits)]
-
-        # Add each gate
-        for gate_app in self._gates:
-            gate_name = str(gate_app.gate)
-            targets = gate_app.target
-
-            if len(targets) == 1:
-                # Single qubit gate
-                target = targets[0]
-                for i in range(self.num_qubits):
-                    if i == target:
-                        lines[i] += f"--[{gate_name}]--"
-                    else:
-                        lines[i] += f"--{'-' * (len(gate_name) + 2)}--"
-            else:
-                # Multi-qubit gate
-                min_target = min(targets)
-                max_target = max(targets)
-
-                for i in range(self.num_qubits):
-                    if i == min_target:
-                        lines[i] += f"--*{'-' * (len(gate_name))}--"
-                    elif i == max_target:
-                        lines[i] += f"--[{gate_name}]--"
-                    elif min_target < i < max_target:
-                        lines[i] += f"--|{'-' * (len(gate_name))}--"
-                    else:
-                        lines[i] += f"--{'-' * (len(gate_name) + 2)}--"
-
-        return "\n".join(lines)
+    
 
 
 # Utility functions for circuit construction
-
 
 def create_layer(
     circuit: QuantumCircuit,
@@ -357,8 +351,8 @@ def create_layer(
         )
 
     for qubit, param in zip(qubits, parameters):
-        gate = gate_type(theta=param, trainable=trainable)
-        circuit.add_gate(gate, target=qubit)
+        gate = gate_type(theta=param, target=qubit, trainable=trainable)
+        circuit.add_gate(gate)
 
 
 def create_entangling_layer(
@@ -378,15 +372,63 @@ def create_entangling_layer(
     if pattern == "linear":
         # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
         for i in range(circuit.num_qubits - 1):
-            gate = gate_type()
-            circuit.add_gate(gate, target=(i, i + 1))
+            gate = gate_type(target=(i, i + 1))
+            circuit.add_gate(gate)
     elif pattern == "circular":
         # Linear + connect last to first
         for i in range(circuit.num_qubits - 1):
-            gate = gate_type()
-            circuit.add_gate(gate, target=(i, i + 1))
+            gate = gate_type(target=(i, i + 1))
+            circuit.add_gate(gate)
         # Wrap around
-        gate = gate_type()
-        circuit.add_gate(gate, target=(circuit.num_qubits - 1, 0))
+        gate = gate_type(target=(circuit.num_qubits - 1, 0))
+        circuit.add_gate(gate)
     else:
         raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
+
+
+def create_ry_circuit_layer(
+    num_qubits: int,
+    theta_values: List[float] = None,
+    trainable: bool = True,
+) -> QuantumCircuit:
+    """
+    Create a quantum circuit with RY gates on all qubits.
+
+    This is a utility function for creating default rotation layers,
+    commonly used in quantum sensing and variational quantum algorithms.
+
+    Args:
+        num_qubits: Number of qubits in the circuit
+        theta_values: List of rotation angles (one per qubit). If None,
+                     initializes all to π/2.
+        trainable: Whether the rotation parameters should be trainable
+
+    Returns:
+        QuantumCircuit with RY gate on each qubit
+
+    Example:
+        >>> # Create 2-qubit circuit with trainable RY gates
+        >>> circuit = create_ry_circuit_layer(num_qubits=2, theta_values=[np.pi/4, -np.pi/4])
+        >>>
+        >>> # Default initialization (all π/2)
+        >>> circuit = create_ry_circuit_layer(num_qubits=3)
+    """
+    from .gates import RYGate
+    import numpy as np
+
+    if theta_values is None:
+        theta_values = [np.pi / 2] * num_qubits
+
+    if len(theta_values) != num_qubits:
+        raise ValueError(
+            f"Number of theta values ({len(theta_values)}) must match "
+            f"number of qubits ({num_qubits})"
+        )
+
+    circuit = QuantumCircuit(num_qubits=num_qubits)
+
+    for qubit_idx, theta in enumerate(theta_values):
+        gate = RYGate(theta=theta, target=qubit_idx, trainable=trainable)
+        circuit.add_gate(gate)
+
+    return circuit

@@ -22,6 +22,7 @@ import optax
 import qutip as qt
 
 from qsopt.core.callback import OptimizationCallback
+from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.core.trainable_parameters import Parameter, ParameterType, TrainableParameters
 
@@ -52,12 +53,38 @@ class SingleQubitExperiment(Experiment):
     Hilbert space: input_cavity ⊗ resonator_cavity ⊗ qubit.
 
     The system workflow:
-    |ψ₀⟩ → Ry(θ₁) → H(t) Evolution → Ry(θ₂) → Measurement → Detection Probability
+    |ψ₀⟩ → Circuit₁ → H(t) Evolution → Circuit₂ → Measurement → Detection Probability
+    
+    Args:
+        experimental_params: Physical system parameters
+        initial_circuit: QuantumCircuit to apply before evolution. If None, creates
+                        default single RY gate with trainable parameter.
+        final_circuit: QuantumCircuit to apply after evolution. If None, creates
+                      default single RY gate with trainable parameter.
+        optimizer: Optax optimizer for trainable parameters. If None, uses SGD(0.1).
     """
 
     def __init__(
-        self, experimental_params: ExperimentalParameters, trainable_params: TrainableParameters
+        self,
+        experimental_params: ExperimentalParameters,
+        initial_circuit: Optional[QuantumCircuit] = None,
+        final_circuit: Optional[QuantumCircuit] = None,
+        optimizer: Optional[optax.GradientTransformation] = None,
     ):
+        # Create default circuits if not provided (single RY gates)
+        if initial_circuit is None:
+            initial_circuit = create_ry_circuit_layer(num_qubits=1, theta_values=[np.pi/2])
+        
+        if final_circuit is None:
+            final_circuit = create_ry_circuit_layer(num_qubits=1, theta_values=[-np.pi/2])
+        
+        # Store circuits
+        self.initial_circuit = initial_circuit
+        self.final_circuit = final_circuit
+        
+        # Create TrainableParameters from circuits
+        trainable_params = self._create_trainable_params_from_circuits(optimizer)
+        
         # Call parent constructor
         super().__init__(experimental_params, trainable_params)
 
@@ -66,9 +93,81 @@ class SingleQubitExperiment(Experiment):
         self._cached_projector_0: Optional[qt.Qobj] = None
         self._cached_projector_1: Optional[qt.Qobj] = None
         self._cached_solvers: Dict[str, qt.MESolver] = {}
+        self._cached_circuit_unitaries: Optional[Tuple[qt.Qobj, qt.Qobj]] = None
 
         # Initialize quantum objects
         self.__post_init__()
+
+    def _create_trainable_params_from_circuits(
+        self, optimizer: Optional[optax.GradientTransformation] = None
+    ) -> TrainableParameters:
+        """
+        Extract trainable parameters from initial and final circuits.
+        
+        Creates a TrainableParameters object containing all trainable parameters
+        from both circuits, maintaining the order and structure.
+        
+        Args:
+            optimizer: Optax optimizer to use. If None, defaults to SGD(0.1).
+            
+        Returns:
+            TrainableParameters object with rotation angles from both circuits.
+        """
+        if optimizer is None:
+            optimizer = optax.sgd(0.1)
+        
+        trainable_params = TrainableParameters()
+        
+        # Extract parameters from initial circuit
+        initial_params = self.initial_circuit.get_trainable_parameters()
+        if initial_params:
+            param_names = [f"initial_{name}" for name in initial_params.keys()]
+            param_values = list(initial_params.values())
+            trainable_params.add_rotation_angles(
+                param_names, param_values, optimizer=optimizer
+            )
+        
+        # Extract parameters from final circuit
+        final_params = self.final_circuit.get_trainable_parameters()
+        if final_params:
+            param_names = [f"final_{name}" for name in final_params.keys()]
+            param_values = list(final_params.values())
+            trainable_params.add_rotation_angles(
+                param_names, param_values, optimizer=optimizer
+            )
+        
+        return trainable_params
+    
+    def _update_circuits_from_trainable_params(self):
+        """
+        Update circuit parameters from current trainable parameter values.
+        
+        This synchronizes the circuits with the TrainableParameters after optimization steps.
+        """
+        rotation_angles = self.trainable_params.get_rotation_angles()
+        
+        # Update initial circuit parameters
+        initial_params = {}
+        for name, value in rotation_angles.items():
+            if name.startswith("initial_"):
+                circuit_param_name = name.replace("initial_", "", 1)
+                initial_params[circuit_param_name] = value[0]
+        
+        if initial_params:
+            self.initial_circuit.set_trainable_parameters(initial_params)
+        
+        # Update final circuit parameters
+        final_params = {}
+        for name, value in rotation_angles.items():
+            if name.startswith("final_"):
+                circuit_param_name = name.replace("final_", "", 1)
+                final_params[circuit_param_name] = value[0]
+        
+        if final_params:
+            self.final_circuit.set_trainable_parameters(final_params)
+        
+        # Invalidate cached unitaries
+        self._cached_circuit_unitaries = None
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
@@ -278,8 +377,75 @@ class SingleQubitExperiment(Experiment):
 
         return self._cached_solvers["no_interaction"]
 
+    def _embed_single_qubit_unitary(self, unitary_1q: qt.Qobj) -> qt.Qobj:
+        """
+        Embed a single-qubit unitary into the full three-system composite space.
+        
+        The single-qubit unitary acts only on the qubit subsystem (third subsystem),
+        while the input field and cavity subsystems remain unchanged.
+        
+        Args:
+            unitary_1q: Single-qubit unitary matrix (2x2)
+            
+        Returns:
+            Embedded unitary in full composite space (field ⊗ cavity ⊗ qubit)
+        """
+        from qutip_qip.operations import expand_operator
+        
+        field_levels = self.experimental_params.field_levels
+        cavity_levels = self.experimental_params.cavity_levels
+        qubit_levels_list = self.experimental_params.qubit_levels
+        qubit_levels = (
+            qubit_levels_list[0] if isinstance(qubit_levels_list, list) else qubit_levels_list
+        )
+        
+        total_dims = [field_levels, cavity_levels, qubit_levels]
+        
+        # The qubit is the third subsystem (index 2)
+        embedded = expand_operator(
+            unitary_1q,
+            N=3,  # Three subsystems
+            targets=[2],  # Qubit is subsystem 2
+            dims=total_dims
+        )
+        
+        return embedded
+
+    def _prepare_circuit_unitaries(self) -> Tuple[qt.Qobj, qt.Qobj]:
+        """
+        Get embedded unitaries for initial and final circuits.
+        
+        Computes and caches the full-space unitaries for both circuits.
+        Updates circuits from trainable parameters before computing.
+        
+        Returns:
+            Tuple of (initial_unitary, final_unitary) embedded in composite space
+        """
+        if self._cached_circuit_unitaries is not None:
+            return self._cached_circuit_unitaries
+        
+        # Update circuits with current trainable parameter values
+        self._update_circuits_from_trainable_params()
+        
+        # Get single-qubit unitaries from circuits
+        initial_unitary_1q = self.initial_circuit.get_unitary()
+        final_unitary_1q = self.final_circuit.get_unitary()
+        
+        # Embed into full composite space
+        initial_unitary = self._embed_single_qubit_unitary(initial_unitary_1q)
+        final_unitary = self._embed_single_qubit_unitary(final_unitary_1q)
+        
+        # Cache for reuse
+        self._cached_circuit_unitaries = (initial_unitary, final_unitary)
+        
+        return initial_unitary, final_unitary
+
     def _build_rotation_gate(self, axis: str, theta: float) -> qt.Qobj:
-        """Construct embedded single-qubit rotation gate for the specified axis."""
+        """Construct embedded single-qubit rotation gate for the specified axis.
+        
+        DEPRECATED: This method is kept for backward compatibility.
+        New code should use QuantumCircuit directly.
+        """
         if self.operators is None:
             raise RuntimeError("Operators not initialized")
 
@@ -291,10 +457,37 @@ class SingleQubitExperiment(Experiment):
         return (-1j * generator * theta / 2).expm()
 
     def _prepare_rotation_gates(self, theta1: float, theta2: float) -> Tuple[qt.Qobj, qt.Qobj]:
-        """Build rotation gates for optimization angles θ₁ and θ₂."""
-        rotation_theta1 = self._build_rotation_gate("y", theta1)
-        rotation_theta2 = self._build_rotation_gate("y", theta2)
-        return rotation_theta1, rotation_theta2
+        """Build rotation gates for optimization angles θ₁ and θ₂.
+        
+        Updates circuits with current theta values and returns embedded unitaries.
+        Works with circuits containing single trainable parameter each.
+        """
+        # Update circuit parameters
+        initial_params = self.initial_circuit.get_trainable_parameters()
+        final_params = self.final_circuit.get_trainable_parameters()
+        
+        if len(initial_params) != 1 or len(final_params) != 1:
+            raise ValueError(
+                "Option 1: Circuits must have exactly 1 trainable parameter each. "
+                f"Initial circuit has {len(initial_params)}, final circuit has {len(final_params)}."
+            )
+        
+        # Set parameter values
+        initial_param_key = list(initial_params.keys())[0]
+        final_param_key = list(final_params.keys())[0]
+        
+        self.initial_circuit.set_trainable_parameters({initial_param_key: jnp.asarray(theta1)})
+        self.final_circuit.set_trainable_parameters({final_param_key: jnp.asarray(theta2)})
+        
+        # Get single-qubit unitaries
+        initial_unitary_1q = self.initial_circuit.get_unitary()
+        final_unitary_1q = self.final_circuit.get_unitary()
+        
+        # Embed into full composite space
+        initial_unitary = self._embed_single_qubit_unitary(initial_unitary_1q)
+        final_unitary = self._embed_single_qubit_unitary(final_unitary_1q)
+        
+        return initial_unitary, final_unitary
 
     def ry_rotation(self, rho: qt.Qobj, theta: float) -> qt.Qobj:
         """

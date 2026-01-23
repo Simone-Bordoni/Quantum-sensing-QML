@@ -14,6 +14,7 @@ import numpy as np
 import qutip as qt
 
 from qsopt.core.callback import OptimizationCallback
+from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     InteractionType,
@@ -68,7 +69,9 @@ class TwoQubitExperiment(Experiment):
     def __init__(
         self,
         experimental_params: ExperimentalParameters,
-        trainable_params: TrainableParameters,
+        initial_circuit: Optional[QuantumCircuit] = None,
+        final_circuit: Optional[QuantumCircuit] = None,
+        optimizer: Optional = None,
         detector: Optional[DetectionFromProbabilities] = None,
     ):
         """
@@ -76,9 +79,29 @@ class TwoQubitExperiment(Experiment):
 
         Args:
             experimental_params: Physical and measurement parameters
-            trainable_params: Rotation angles and other optimizable parameters
+            initial_circuit: QuantumCircuit to apply before evolution. If None, creates
+                           default 2-qubit RY circuit with trainable parameters.
+            final_circuit: QuantumCircuit to apply after evolution. If None, creates
+                          default 2-qubit RY circuit with trainable parameters.
+            optimizer: Optax optimizer for trainable parameters. If None, uses SGD(0.1).
             detector: Custom detection probability calculator. If None, uses default 1-P(00).
         """
+        import optax
+        
+        # Create default circuits if not provided (2-qubit RY gates)
+        if initial_circuit is None:
+            initial_circuit = create_ry_circuit_layer(num_qubits=2, theta_values=[np.pi/2, np.pi/2])
+        
+        if final_circuit is None:
+            final_circuit = create_ry_circuit_layer(num_qubits=2, theta_values=[-np.pi/2, -np.pi/2])
+        
+        # Store circuits
+        self.initial_circuit = initial_circuit
+        self.final_circuit = final_circuit
+        
+        # Create TrainableParameters from circuits
+        trainable_params = self._create_trainable_params_from_circuits(optimizer)
+        
         super().__init__(experimental_params, trainable_params)
 
         # Verify we have 2 qubits configured
@@ -388,6 +411,83 @@ class TwoQubitExperiment(Experiment):
             )
         return self._cached_initial_state
 
+    def _create_trainable_params_from_circuits(self, optimizer=None) -> TrainableParameters:
+        """
+        Extract trainable parameters from quantum circuits.
+
+        For two-qubit system, we expect 4 trainable parameters total:
+        - 2 parameters from initial_circuit (one per qubit)
+        - 2 parameters from final_circuit (one per qubit)
+
+        Args:
+            optimizer: Optax optimizer. If None, uses SGD(0.1).
+
+        Returns:
+            TrainableParameters initialized from circuit parameters
+        """
+        import optax
+
+        if optimizer is None:
+            optimizer = optax.sgd(0.1)
+
+        trainable_params = TrainableParameters()
+
+        # Extract parameters from initial circuit as dict
+        initial_params = self.initial_circuit.get_trainable_parameters()
+        if len(initial_params) != 2:
+            raise ValueError(
+                f"Expected 2 trainable parameters in initial_circuit, got {len(initial_params)}"
+            )
+        
+        # Extract parameters from final circuit as dict
+        final_params = self.final_circuit.get_trainable_parameters()
+        if len(final_params) != 2:
+            raise ValueError(
+                f"Expected 2 trainable parameters in final_circuit, got {len(final_params)}"
+            )
+
+        # Convert dicts to lists preserving order (sorted by key)
+        initial_values = [v for k, v in sorted(initial_params.items())]
+        final_values = [v for k, v in sorted(final_params.items())]
+
+        # Combine into flat list: [theta1_initial, theta2_initial, theta1_final, theta2_final]
+        all_param_values = initial_values + final_values
+        
+        # Create parameter names
+        param_names = ["theta1_q1", "theta1_q2", "theta2_q1", "theta2_q2"]
+
+        # Add all parameters to TrainableParameters
+        trainable_params.add_rotation_angles(
+            names=param_names, 
+            initial_values=all_param_values, 
+            optimizer=optimizer
+        )
+
+        return trainable_params
+
+    def _update_circuits_from_trainable_params(self) -> None:
+        """
+        Update circuit parameters from TrainableParameters state.
+
+        Synchronizes the QuantumCircuit objects with current optimization values.
+        Distributes the 4 parameters as:
+        - params[0:2] -> initial_circuit (qubit 1, qubit 2)
+        - params[2:4] -> final_circuit (qubit 1, qubit 2)
+        """
+        current_params = self.trainable_params.get_parameter_vector()
+
+        # Get the parameter keys from circuits (sorted order)
+        initial_keys = sorted(self.initial_circuit.get_trainable_parameters().keys())
+        final_keys = sorted(self.final_circuit.get_trainable_parameters().keys())
+
+        # Build dicts for setting parameters
+        initial_dict = {initial_keys[0]: current_params[0], initial_keys[1]: current_params[1]}
+        final_dict = {final_keys[0]: current_params[2], final_keys[1]: current_params[3]}
+
+        # Update circuits
+        self.initial_circuit.set_trainable_parameters(initial_dict)
+        self.final_circuit.set_trainable_parameters(final_dict)
+
     def get_joint_projector(self, state: str) -> qt.Qobj:
         """
         Get joint measurement projector for both qubits.
@@ -526,55 +626,121 @@ class TwoQubitExperiment(Experiment):
 
         return measure_qubits_probability(rho, qubits, self.operators, state=state)
 
-    def _build_rotation_gate(self, qubit: int, axis: str, theta: float) -> qt.Qobj:
+    def _embed_circuit_unitary(self, U_circuit: qt.Qobj) -> qt.Qobj:
         """
-        Build rotation gate for specified qubit and axis.
+        Embed a 2-qubit circuit unitary into the full composite Hilbert space.
 
-        This creates a rotation operator in the full composite Hilbert space
-        that only acts on the specified qubit. The rotation is JAX-compatible
-        through qutip-jax's expm implementation.
+        The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2
+        The circuit acts only on the qubit subspace (qubit1 ⊗ qubit2).
 
         Args:
-            qubit: Qubit index (0 for q1, 1 for q2)
-            axis: Rotation axis ('x', 'y', or 'z')
-            theta: Rotation angle in radians
+            U_circuit: 4x4 unitary matrix for the 2-qubit circuit (as qt.Qobj)
 
         Returns:
-            Rotation operator exp(-i σ_axis θ/2)
+            Full-space operator: I_field ⊗ I_cavity ⊗ U_circuit
         """
-        if self.operators is None:
-            raise RuntimeError("Operators not initialized")
+        field_levels = self.experimental_params.field_levels
+        cavity_levels = self.experimental_params.cavity_levels
 
-        # Map qubit index to operator key
-        qubit_label = qubit + 1  # Convert 0,1 to 1,2 for operator naming
-        axis_key = f"sigma_{axis.lower()}{qubit_label}"
+        # Extract JAX array from circuit unitary
+        if hasattr(U_circuit.data, '_jxa'):  # JaxArray backend
+            U_jax = U_circuit.data._jxa
+        elif hasattr(U_circuit.data, 'to_array'):  # Dense backend
+            U_jax = jnp.array(U_circuit.data.to_array())
+        else:
+            U_jax = jnp.array(U_circuit.full())
 
-        if axis_key not in self.operators:
-            raise ValueError(f"Operator '{axis_key}' not found")
+        # Build full operator using JAX Kronecker products
+        # I_field ⊗ I_cavity ⊗ U_circuit
+        I_field = jnp.eye(field_levels, dtype=jnp.complex128)
+        I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
+        
+        # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
+        U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), U_jax)
 
-        generator = self.operators[axis_key]
-        return (-1j * generator * theta / 2).expm()
+        # Wrap in Qobj with proper dimensions
+        return qt.Qobj(
+            U_full_jax, 
+            dims=[[field_levels, cavity_levels, 2, 2], [field_levels, cavity_levels, 2, 2]]
+        )
 
     def _prepare_rotation_gates(
         self, theta1_q1: float, theta2_q1: float, theta1_q2: float, theta2_q2: float
     ) -> tuple:
         """
-        Build all four rotation gates for two-qubit optimization.
+        Build rotation unitaries from circuits for two-qubit optimization.
+
+        Updates the quantum circuits with current parameters and returns
+        embedded unitary operators. The circuits compute their unitaries using
+        JAX-compatible gate.matrix() methods, maintaining gradient flow.
 
         Args:
-            theta1_q1: First Y-rotation for qubit 1
-            theta2_q1: Second Y-rotation for qubit 1
-            theta1_q2: First Y-rotation for qubit 2
-            theta2_q2: Second Y-rotation for qubit 2
+            theta1_q1: First rotation parameter for qubit 1 (initial circuit)
+            theta2_q1: Second rotation parameter for qubit 1 (final circuit)
+            theta1_q2: First rotation parameter for qubit 2 (initial circuit)
+            theta2_q2: Second rotation parameter for qubit 2 (final circuit)
 
         Returns:
-            Tuple of (R1_q1, R2_q1, R1_q2, R2_q2) rotation operators
+            Tuple of (R1_full, R2_full) - embedded unitaries for initial and final circuits
         """
-        R1_q1 = self._build_rotation_gate(0, "y", theta1_q1)
-        R2_q1 = self._build_rotation_gate(0, "y", theta2_q1)
-        R1_q2 = self._build_rotation_gate(1, "y", theta1_q2)
-        R2_q2 = self._build_rotation_gate(1, "y", theta2_q2)
-        return R1_q1, R2_q1, R1_q2, R2_q2
+        # Get parameter keys (sorted for consistent ordering)
+        initial_keys = sorted(self.initial_circuit.get_trainable_parameters().keys())
+        final_keys = sorted(self.final_circuit.get_trainable_parameters().keys())
+
+        # Update circuits with current parameter values
+        initial_dict = {initial_keys[0]: theta1_q1, initial_keys[1]: theta1_q2}
+        final_dict = {final_keys[0]: theta2_q1, final_keys[1]: theta2_q2}
+        
+        self.initial_circuit.set_trainable_parameters(initial_dict)
+        self.final_circuit.set_trainable_parameters(final_dict)
+
+        # Get circuit unitaries (4x4 matrices acting on qubit1 ⊗ qubit2)
+        # These are JAX-compatible through gate.matrix() -> expm()
+        U_initial = self.initial_circuit.get_unitary()
+        U_final = self.final_circuit.get_unitary()
+
+        # Embed in full composite Hilbert space
+        R1_full = self._embed_circuit_unitary(U_initial)
+        R2_full = self._embed_circuit_unitary(U_final)
+
+        return R1_full, R2_full
+
+    def _embed_two_qubit_unitary(self, U: jnp.ndarray, qubit_index: int) -> qt.Qobj:
+        """
+        Embed a 2x2 single-qubit unitary into the full composite Hilbert space.
+
+        The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2
+
+        Args:
+            U: 2x2 unitary matrix (JAX array) for the qubit
+            qubit_index: Which qubit this unitary acts on (0 for qubit1, 1 for qubit2)
+
+        Returns:
+            Full-space operator that applies U to specified qubit
+        """
+        field_levels = self.experimental_params.field_levels
+        cavity_levels = self.experimental_params.cavity_levels
+        qubit_levels = self.experimental_params.qubit_levels[qubit_index]
+        other_qubit_levels = self.experimental_params.qubit_levels[1 - qubit_index]
+
+        # Create identity operators
+        I_field = qt.qeye(field_levels)
+        I_cavity = qt.qeye(cavity_levels)
+        I_qubit1 = qt.qeye(self.experimental_params.qubit_levels[0])
+        I_qubit2 = qt.qeye(self.experimental_params.qubit_levels[1])
+
+        # Convert JAX array to QuTiP Qobj
+        U_qobj = qt.Qobj(U, dims=[[qubit_levels], [qubit_levels]])
+
+        # Build full operator based on which qubit we're acting on
+        if qubit_index == 0:
+            # Act on qubit 1: I_field ⊗ I_cavity ⊗ U ⊗ I_qubit2
+            R_full = qt.tensor(I_field, I_cavity, U_qobj, I_qubit2)
+        else:
+            # Act on qubit 2: I_field ⊗ I_cavity ⊗ I_qubit1 ⊗ U
+            R_full = qt.tensor(I_field, I_cavity, I_qubit1, U_qobj)
+
+        return R_full
 
     def _measure_joint_probabilities(self, rho: qt.Qobj) -> Dict[str, jnp.ndarray]:
         """
@@ -732,19 +898,17 @@ class TwoQubitExperiment(Experiment):
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
 
-        # Get rotation gates (precomputed or build new)
+        # Get rotation unitaries (precomputed or build new)
         if precomputed_rotations is None:
-            R1_q1, R2_q1, R1_q2, R2_q2 = self._prepare_rotation_gates(
+            R1_full, R2_full = self._prepare_rotation_gates(
                 theta1_q1, theta2_q1, theta1_q2, theta2_q2
             )
         else:
-            R1_q1, R2_q1, R1_q2, R2_q2 = precomputed_rotations
+            R1_full, R2_full = precomputed_rotations
 
         # Precompute dagger operators
-        R1_q1_dag = R1_q1.dag()
-        R2_q1_dag = R2_q1.dag()
-        R1_q2_dag = R1_q2.dag()
-        R2_q2_dag = R2_q2.dag()
+        R1_full_dag = R1_full.dag()
+        R2_full_dag = R2_full.dag()
 
         # Get projectors
         P00 = self._cached_joint_projectors["00"]
@@ -761,17 +925,15 @@ class TwoQubitExperiment(Experiment):
             t0_float = float(t0)
             t1_float = float(t1)
 
-            # Apply first rotations
-            rho_after_r1 = R1_q1 * rho_current * R1_q1_dag  # type: ignore
-            rho_after_r1 = R1_q2 * rho_after_r1 * R1_q2_dag  # type: ignore
+            # Apply initial circuit rotations (both qubits simultaneously)
+            rho_after_r1 = R1_full * rho_current * R1_full_dag  # type: ignore
 
             # Evolve
             evolution_result = solver.run(rho_after_r1, [t0_float, t1_float], args=args)
             rho_evolved = evolution_result.states[-1]
 
-            # Apply second rotations
-            rho_final = R2_q1 * rho_evolved * R2_q1_dag  # type: ignore
-            rho_final = R2_q2 * rho_final * R2_q2_dag  # type: ignore
+            # Apply final circuit rotations (both qubits simultaneously)
+            rho_final = R2_full * rho_evolved * R2_full_dag  # type: ignore
 
             # Measure all joint probabilities
             probs = self._measure_joint_probabilities(rho_final)
@@ -788,9 +950,8 @@ class TwoQubitExperiment(Experiment):
             trace_val = rho_projected.tr()
             rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
 
-            # Undo second rotations for next iteration
-            rho_current = R2_q2_dag * rho_current * R2_q2  # type: ignore
-            rho_current = R2_q1_dag * rho_current * R2_q1  # type: ignore
+            # Undo final circuit rotations for next iteration
+            rho_current = R2_full_dag * rho_current * R2_full  # type: ignore
 
         # Total detection probability = 1 - P(no detection at any step)
         prob_detection = 1 - prob_all_no_detect

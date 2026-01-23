@@ -13,281 +13,153 @@ import numpy as np
 import pytest
 import qutip as qt
 from qutip_qip.circuit import QubitCircuit
-from qutip_qip.operations import cnot, hadamard_transform, rx, ry, rz
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from qsopt.core.circuit import (
-    GateApplication,
     QuantumCircuit,
     create_entangling_layer,
     create_layer,
 )
-from qsopt.core.gates import CNOTGate, CZGate, HadamardGate, RXGate, RYGate, RZGate
+from qsopt.core.gates import CNOTGate, HadamardGate, RXGate, RYGate, RZGate
 
 
-class TestGateApplication:
-    """Test GateApplication class."""
+# --------------------------------------------------------------------------
+# Basic circuit functionality tests
+# --------------------------------------------------------------------------
 
-    def test_single_qubit_gate(self):
-        """Test single qubit gate application."""
-        gate = RXGate(theta=0.5)
-        gate_app = GateApplication(gate, target=0)
+class TestCircuitBasics:
+    """Test basic circuit functionality."""
 
-        assert gate_app.target == (0,)
-        assert gate_app.gate.name == "RX"
-
-    def test_two_qubit_gate(self):
-        """Test two qubit gate application."""
-        gate = CNOTGate()
-        gate_app = GateApplication(gate, target=(0, 1))
-
-        assert gate_app.target == (0, 1)
-        assert gate_app.gate.name == "CNOT"
-
-    def test_target_mismatch_error(self):
-        """Test error when target qubits don't match gate dimensions."""
-        gate = CNOTGate()  # 2-qubit gate
-
-        with pytest.raises(ValueError, match="requires 2 qubit"):
-            GateApplication(gate, target=0)  # Only 1 target
-
-
-class TestQuantumCircuitBasics:
-    """Test basic QuantumCircuit functionality."""
-
-    def test_circuit_creation(self):
-        """Test creating empty circuit."""
+    def test_circuit_creation_and_gate_addition(self):
+        """Test creating circuit and adding gates."""
         circuit = QuantumCircuit(num_qubits=3)
         assert circuit.num_qubits == 3
-        assert circuit.num_gates() == 0
+        assert len(circuit._gates) == 0
 
-    def test_invalid_num_qubits(self):
-        """Test error for invalid number of qubits."""
+        # Add single and two-qubit gates
+        circuit.add_gate(RXGate(theta=0.5, target=0))
+        circuit.add_gate(CNOTGate(target=(0, 1)))
+        assert len(circuit._gates) == 2
+
+    def test_invalid_inputs(self):
+        """Test error handling for invalid inputs."""
         with pytest.raises(ValueError, match="at least 1"):
             QuantumCircuit(num_qubits=0)
 
-    def test_add_single_qubit_gate(self):
-        """Test adding single qubit gate."""
         circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.5), target=0)
-
-        assert circuit.num_gates() == 1
-
-    def test_add_two_qubit_gate(self):
-        """Test adding two qubit gate."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(CNOTGate(), target=(0, 1))
-
-        assert circuit.num_gates() == 1
-
-    def test_invalid_target_qubit(self):
-        """Test error for out of range target qubit."""
-        circuit = QuantumCircuit(num_qubits=2)
-
         with pytest.raises(ValueError, match="out of range"):
-            circuit.add_gate(RXGate(theta=0.5), target=5)
+            circuit.add_gate(RXGate(theta=0.5, target=5))
 
-    def test_get_gates(self):
-        """Test retrieving gate list."""
+    def test_circuit_repr(self):
+        """Test string representation."""
         circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.5), target=0)
-        circuit.add_gate(RYGate(theta=0.3), target=1)
+        circuit.add_gate(RXGate(theta=0.5, target=0))
+        assert "2 qubits" in repr(circuit) and "1 gates" in repr(circuit)
 
-        gates = circuit.get_gates()
-        assert len(gates) == 2
-        assert gates[0].gate.name == "RX"
-        assert gates[1].gate.name == "RY"
 
+# --------------------------------------------------------------------------
+# Parameter management tests
+# --------------------------------------------------------------------------
 
 class TestParameterManagement:
     """Test parameter management in circuits."""
 
-    def test_get_trainable_parameters(self):
-        """Test getting trainable parameters."""
+    def test_get_and_count_trainable_parameters(self):
+        """Test getting and counting trainable parameters."""
         circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.1, trainable=True), target=0)
-        circuit.add_gate(RYGate(theta=0.2, trainable=True), target=1)
-        circuit.add_gate(HadamardGate(), target=0)  # No parameters
+        circuit.add_gate(RXGate(theta=0.1, target=0, trainable=True))
+        circuit.add_gate(RYGate(theta=0.2, target=1, trainable=True))
+        circuit.add_gate(HadamardGate(target=0))
+        circuit.add_gate(RZGate(theta=0.3, target=1, trainable=False))
 
-        params = circuit.get_trainable_parameters()
-
-        assert len(params) == 2
-        assert "gate_0_theta" in params
-        assert "gate_1_theta" in params
-        np.testing.assert_allclose(params["gate_0_theta"], 0.1, rtol=1e-10)
-        np.testing.assert_allclose(params["gate_1_theta"], 0.2, rtol=1e-10)
-
-    def test_exclude_non_trainable_parameters(self):
-        """Test that non-trainable parameters are excluded."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.1, trainable=True), target=0)
-        circuit.add_gate(RYGate(theta=0.2, trainable=False), target=1)
-
-        params = circuit.get_trainable_parameters()
-
-        assert len(params) == 1
-        assert "gate_0_theta" in params
-        assert "gate_1_theta" not in params
-
-    def test_set_trainable_parameters(self):
-        """Test updating trainable parameters."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.1, trainable=True), target=0)
-        circuit.add_gate(RYGate(theta=0.2, trainable=True), target=1)
-
-        # Update parameters
-        new_params = {"gate_0_theta": jnp.array(1.5), "gate_1_theta": jnp.array(2.5)}
-        circuit.set_trainable_parameters(new_params)
-
-        # Verify update
-        params = circuit.get_trainable_parameters()
-        np.testing.assert_allclose(params["gate_0_theta"], 1.5, rtol=1e-10)
-        np.testing.assert_allclose(params["gate_1_theta"], 2.5, rtol=1e-10)
-
-    def test_update_parameters_from_list(self):
-        """Test updating parameters from flat list."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.1, trainable=True), target=0)
-        circuit.add_gate(RYGate(theta=0.2, trainable=True), target=1)
-
-        circuit.update_parameters([1.5, 2.5])
-
-        params = circuit.get_trainable_parameters()
-        np.testing.assert_allclose(params["gate_0_theta"], 1.5, rtol=1e-10)
-        np.testing.assert_allclose(params["gate_1_theta"], 2.5, rtol=1e-10)
-
-    def test_enable_disable_gradients(self):
-        """Test enabling and disabling gradients."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.1, trainable=True), target=0)
-        circuit.add_gate(RYGate(theta=0.2, trainable=True), target=1)
-
-        # Disable all gradients
-        circuit.disable_gradients()
-        params = circuit.get_trainable_parameters()
-        assert len(params) == 0  # No trainable parameters
-
-        # Enable all gradients
-        circuit.enable_gradients()
         params = circuit.get_trainable_parameters()
         assert len(params) == 2
+        assert circuit.count_trainable_parameters() == 2
+        np.testing.assert_allclose(params[0], 0.1, rtol=1e-10)
+        np.testing.assert_allclose(params[1], 0.2, rtol=1e-10)
 
-        # Disable specific gate
-        circuit.disable_gradients(gate_index=0)
+    def test_set_and_update_parameters(self):
+        """Test setting and updating trainable parameters."""
+        circuit = QuantumCircuit(num_qubits=2)
+        circuit.add_gate(RXGate(theta=0.1, target=0, trainable=True))
+        circuit.add_gate(RYGate(theta=0.2, target=1, trainable=True))
+
+        # Test set_trainable_parameters
+        circuit.set_trainable_parameters([jnp.array(1.5), jnp.array(2.5)])
         params = circuit.get_trainable_parameters()
-        assert len(params) == 1
-        assert "gate_1_theta" in params
+        np.testing.assert_allclose(params[0], 1.5, rtol=1e-10)
+        np.testing.assert_allclose(params[1], 2.5, rtol=1e-10)
 
+        # Test update_parameters
+        circuit.update_parameters([0.5, 0.7])
+        params = circuit.get_trainable_parameters()
+        np.testing.assert_allclose(params[0], 0.5, rtol=1e-10)
+        np.testing.assert_allclose(params[1], 0.7, rtol=1e-10)
+
+
+# --------------------------------------------------------------------------
+# Unitary computation tests
+# --------------------------------------------------------------------------
 
 class TestUnitaryComputation:
     """Test circuit unitary computation."""
 
-    def test_empty_circuit_unitary(self):
-        """Test unitary of empty circuit is identity."""
+    def test_empty_circuit_and_jax_format(self):
+        """Test empty circuit unitary and JAX array format."""
         circuit = QuantumCircuit(num_qubits=2)
-        U = circuit.get_unitary()
+        
+        # Empty circuit should be identity
+        U_qutip = circuit.get_unitary(qutip=True)
+        np.testing.assert_allclose(U_qutip.full(), qt.qeye([2, 2]).full(), rtol=1e-10)
 
-        expected = qt.qeye([2, 2])
-        np.testing.assert_allclose(U.full(), expected.full(), rtol=1e-10)
-
-    def test_single_gate_circuit(self):
-        """Test unitary of single gate circuit."""
-        theta = np.pi / 4
-        circuit = QuantumCircuit(num_qubits=1)
-        circuit.add_gate(RXGate(theta=theta), target=0)
-
-        U = circuit.get_unitary()
-        expected = rx(theta)
-
-        np.testing.assert_allclose(U.full(), expected.full(), rtol=1e-10)
-
-    def test_two_gate_sequence(self):
-        """Test unitary of two-gate sequence."""
-        theta1 = np.pi / 4
-        theta2 = np.pi / 3
-
-        circuit = QuantumCircuit(num_qubits=1)
-        circuit.add_gate(RXGate(theta=theta1), target=0)
-        circuit.add_gate(RYGate(theta=theta2), target=0)
-
-        U_custom = circuit.get_unitary()
-
-        # Build equivalent QuTiP circuit
-        qc = QubitCircuit(1)
-        qc.add_gate("RX", targets=0, arg_value=theta1)
-        qc.add_gate("RY", targets=0, arg_value=theta2)
-        U_qutip = qc.compute_unitary()
-
-        np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
-
-    def test_unitary_jax_format(self):
-        """Test getting unitary as JAX array."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(HadamardGate(), target=0)
-        circuit.add_gate(CNOTGate(), target=(0, 1))
-
-        U_jax = circuit.get_unitary_jax()
-
+        # Test JAX array format
+        U_jax = circuit.get_unitary(qutip=False)
         assert isinstance(U_jax, jnp.ndarray)
         assert U_jax.dtype == jnp.complex128
-        assert U_jax.shape == (4, 4)
+        np.testing.assert_allclose(U_jax, U_qutip.full(), rtol=1e-10)
 
-    def test_multi_qubit_gate_expansion(self):
-        """Test proper expansion of gates in multi-qubit circuits."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=np.pi / 2), target=0)
+    @pytest.mark.parametrize("num_qubits", [1, 2, 3])
+    def test_unitarity_property(self, num_qubits):
+        """Test that circuit unitaries satisfy U†U = I."""
+        circuit = QuantumCircuit(num_qubits=num_qubits)
+        circuit.add_gate(RXGate(theta=0.5, target=0))
+        circuit.add_gate(RYGate(theta=0.7, target=0))
+        if num_qubits >= 2:
+            circuit.add_gate(CNOTGate(target=(0, 1)))
 
-        U_custom = circuit.get_unitary()
+        U = circuit.get_unitary(qutip=True)
+        identity = U.dag() * U
+        np.testing.assert_allclose(identity.full(), qt.qeye([2] * num_qubits).full(), rtol=1e-10, atol=1e-12)
 
-        # Build equivalent QuTiP circuit
-        qc = QubitCircuit(2)
-        qc.add_gate("RX", targets=0, arg_value=np.pi / 2)
-        U_qutip = qc.compute_unitary()
 
-        np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
-
+# --------------------------------------------------------------------------
+# Circuit vs QuTiP comparison tests
+# --------------------------------------------------------------------------
 
 class TestCircuitVsQuTiP:
-    """Compare circuit unitaries with QuTiP's circuit builder."""
+    """Compare circuit unitaries with QuTiP reference."""
 
-    def test_single_qubit_rotations(self):
-        """Test single qubit rotation circuits match QuTiP."""
-        angles = [0.0, np.pi / 4, np.pi / 2, np.pi, 2 * np.pi]
-
-        for theta in angles:
-            # Custom circuit
-            circuit = QuantumCircuit(num_qubits=1)
-            circuit.add_gate(RXGate(theta=theta), target=0)
-            U_custom = circuit.get_unitary()
-
-            # QuTiP circuit
-            qc = QubitCircuit(1)
-            qc.add_gate("RX", targets=0, arg_value=theta)
-            U_qutip = qc.compute_unitary()
-
-            np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10, atol=1e-12)
-
-    def test_hadamard_circuit(self):
-        """Test Hadamard circuit matches QuTiP."""
+    @pytest.mark.parametrize("theta", [0.0, np.pi / 4, np.pi / 2, np.pi])
+    def test_single_qubit_gates(self, theta):
+        """Test single qubit gates match QuTiP."""
         circuit = QuantumCircuit(num_qubits=1)
-        circuit.add_gate(HadamardGate(), target=0)
-        U_custom = circuit.get_unitary()
+        circuit.add_gate(RXGate(theta=theta, target=0))
+        U_custom = circuit.get_unitary(qutip=True)
 
         qc = QubitCircuit(1)
-        qc.add_gate("SNOT", targets=0)  # SNOT is Hadamard in QuTiP
+        qc.add_gate("RX", targets=0, arg_value=theta)
         U_qutip = qc.compute_unitary()
 
-        np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
+        np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10, atol=1e-12)
 
     def test_bell_state_circuit(self):
-        """Test Bell state preparation circuit matches QuTiP."""
-        # H on qubit 0, then CNOT(0,1)
+        """Test Bell state preparation (H + CNOT) matches QuTiP."""
         circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(HadamardGate(), target=0)
-        circuit.add_gate(CNOTGate(), target=(0, 1))
-        U_custom = circuit.get_unitary()
+        circuit.add_gate(HadamardGate(target=0))
+        circuit.add_gate(CNOTGate(target=(0, 1)))
+        U_custom = circuit.get_unitary(qutip=True)
 
         qc = QubitCircuit(2)
         qc.add_gate("SNOT", targets=0)
@@ -296,16 +168,16 @@ class TestCircuitVsQuTiP:
 
         np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
 
-    def test_complex_multi_gate_circuit(self):
-        """Test complex circuit with multiple gates matches QuTiP."""
+    def test_multi_gate_circuit(self):
+        """Test multi-gate circuit matches QuTiP."""
         theta1, theta2, theta3 = np.pi / 4, np.pi / 3, np.pi / 6
 
         circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=theta1), target=0)
-        circuit.add_gate(RYGate(theta=theta2), target=1)
-        circuit.add_gate(CNOTGate(), target=(0, 1))
-        circuit.add_gate(RZGate(theta=theta3), target=0)
-        U_custom = circuit.get_unitary()
+        circuit.add_gate(RXGate(theta=theta1, target=0))
+        circuit.add_gate(RYGate(theta=theta2, target=1))
+        circuit.add_gate(CNOTGate(target=(0, 1)))
+        circuit.add_gate(RZGate(theta=theta3, target=0))
+        U_custom = circuit.get_unitary(qutip=True)
 
         qc = QubitCircuit(2)
         qc.add_gate("RX", targets=0, arg_value=theta1)
@@ -316,115 +188,191 @@ class TestCircuitVsQuTiP:
 
         np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
 
-    def test_three_qubit_circuit(self):
-        """Test three-qubit circuit matches QuTiP."""
-        circuit = QuantumCircuit(num_qubits=3)
-        circuit.add_gate(HadamardGate(), target=0)
-        circuit.add_gate(HadamardGate(), target=1)
-        circuit.add_gate(CNOTGate(), target=(0, 2))
-        circuit.add_gate(CNOTGate(), target=(1, 2))
-        U_custom = circuit.get_unitary()
+    @pytest.mark.parametrize("target", [0, 1])
+    def test_gate_on_different_qubits(self, target):
+        """Test gates on different qubits match QuTiP."""
+        theta = np.pi / 3
+        circuit = QuantumCircuit(num_qubits=2)
+        circuit.add_gate(RXGate(theta=theta, target=target))
+        U_custom = circuit.get_unitary(qutip=True)
 
-        qc = QubitCircuit(3)
-        qc.add_gate("SNOT", targets=0)
-        qc.add_gate("SNOT", targets=1)
-        qc.add_gate("CNOT", controls=0, targets=2)
-        qc.add_gate("CNOT", controls=1, targets=2)
+        qc = QubitCircuit(2)
+        qc.add_gate("RX", targets=target, arg_value=theta)
         U_qutip = qc.compute_unitary()
 
         np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
 
-    def test_gate_on_different_qubits(self):
-        """Test gates applied to different qubits in multi-qubit circuit."""
-        theta = np.pi / 3
+    @pytest.mark.parametrize("control,target", [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2)])
+    def test_cnot_configurations(self, control, target):
+        """Test CNOT with different control-target pairs matches QuTiP."""
+        num_qubits = max(control, target) + 1
+        circuit = QuantumCircuit(num_qubits=num_qubits)
+        circuit.add_gate(CNOTGate(target=(control, target)))
+        U_custom = circuit.get_unitary(qutip=True)
 
-        # Test RX on qubit 0 vs qubit 1
-        for target_qubit in [0, 1]:
-            circuit = QuantumCircuit(num_qubits=2)
-            circuit.add_gate(RXGate(theta=theta), target=target_qubit)
-            U_custom = circuit.get_unitary()
+        qc = QubitCircuit(num_qubits)
+        qc.add_gate("CNOT", controls=control, targets=target)
+        U_qutip = qc.compute_unitary()
 
-            qc = QubitCircuit(2)
-            qc.add_gate("RX", targets=target_qubit, arg_value=theta)
-            U_qutip = qc.compute_unitary()
-
-            np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10)
+        np.testing.assert_allclose(U_custom.full(), U_qutip.full(), rtol=1e-10,
+                                   err_msg=f"Failed for CNOT({control}, {target})")
 
 
-class TestCircuitLayers:
-    """Test circuit layer creation utilities."""
+# --------------------------------------------------------------------------
+# Circuit application to quantum states
+# --------------------------------------------------------------------------
 
-    def test_create_rotation_layer(self):
-        """Test creating layer of rotation gates."""
+class TestCircuitApplication:
+    """Test applying circuits to quantum states."""
+
+    def test_apply_to_pure_state_qutip(self):
+        """Test applying circuit to pure state (QuTiP Qobj)."""
+        circuit = QuantumCircuit(num_qubits=1)
+        circuit.add_gate(HadamardGate(target=0))
+
+        # Start with |0⟩
+        psi0 = qt.basis(2, 0)
+        rho_final = circuit(psi0, qutip=True)
+
+        # H|0⟩|0⟩⟨0|⟨0|H† = |+⟩⟨+|
+        # Should have equal probabilities for |0⟩ and |1⟩
+        assert isinstance(rho_final, qt.Qobj)
+        np.testing.assert_allclose(rho_final.diag(), [0.5, 0.5], rtol=1e-10)
+
+    def test_apply_to_pure_state_jax_vector(self):
+        """Test applying circuit to pure state (JAX vector)."""
+        circuit = QuantumCircuit(num_qubits=1)
+        circuit.add_gate(HadamardGate(target=0))
+
+        # Start with |0⟩ as JAX array
+        psi0 = jnp.array([1.0, 0.0], dtype=jnp.complex128)
+        rho_final = circuit(psi0, qutip=False)
+
+        # Check it's a density matrix
+        assert isinstance(rho_final, jnp.ndarray)
+        assert rho_final.shape == (2, 2)
+        np.testing.assert_allclose(jnp.diag(rho_final), [0.5, 0.5], rtol=1e-10)
+
+    def test_apply_to_density_matrix_qutip(self):
+        """Test applying circuit to density matrix (QuTiP)."""
+        circuit = QuantumCircuit(num_qubits=1)
+        circuit.add_gate(RXGate(theta=np.pi / 2, target=0))
+
+        # Start with |0⟩⟨0| density matrix
+        rho0 = qt.ket2dm(qt.basis(2, 0))
+        rho_final = circuit(rho0, qutip=True)
+
+        # RX(π/2) rotates |0⟩ to (|0⟩ - i|1⟩)/√2
+        # Density matrix should have equal diagonal elements
+        assert isinstance(rho_final, qt.Qobj)
+        np.testing.assert_allclose(rho_final.diag(), [0.5, 0.5], rtol=1e-10)
+
+    def test_apply_to_density_matrix_jax(self):
+        """Test applying circuit to density matrix (JAX array)."""
+        circuit = QuantumCircuit(num_qubits=1)
+        circuit.add_gate(RXGate(theta=np.pi / 2, target=0))
+
+        # Start with |0⟩⟨0| density matrix as JAX array
+        rho0 = jnp.array([[1.0, 0.0], [0.0, 0.0]], dtype=jnp.complex128)
+        rho_final = circuit(rho0, qutip=False)
+
+        assert isinstance(rho_final, jnp.ndarray)
+        np.testing.assert_allclose(jnp.diag(rho_final), [0.5, 0.5], rtol=1e-10)
+
+    def test_bell_state_preparation(self):
+        """Test Bell state preparation using circuit application."""
+        circuit = QuantumCircuit(num_qubits=2)
+        circuit.add_gate(HadamardGate(target=0))
+        circuit.add_gate(CNOTGate(target=(0, 1)))
+
+        # Start with |00⟩
+        psi0 = qt.tensor(qt.basis(2, 0), qt.basis(2, 0))
+        rho_final = circuit(psi0, qutip=True)
+
+        # Should get |Φ+⟩ = (|00⟩ + |11⟩)/√2
+        # Density matrix should have ρ[0,0] = ρ[3,3] = 0.5, ρ[0,3] = ρ[3,0] = 0.5
+        expected_diag = [0.5, 0.0, 0.0, 0.5]
+        np.testing.assert_allclose(rho_final.diag(), expected_diag, rtol=1e-10)
+        np.testing.assert_allclose(abs(rho_final.full()[0, 3]), 0.5, rtol=1e-10)
+
+    def test_multi_qubit_state_evolution(self):
+        """Test evolving multi-qubit state through circuit."""
+        theta1, theta2 = np.pi / 4, np.pi / 3
+        circuit = QuantumCircuit(num_qubits=2)
+        circuit.add_gate(RXGate(theta=theta1, target=0))
+        circuit.add_gate(RYGate(theta=theta2, target=1))
+
+        # Start with |00⟩
+        psi0 = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.complex128)
+        rho_final_jax = circuit(psi0, qutip=False)
+
+        # Compare with QuTiP
+        U = circuit.get_unitary(qutip=True)
+        psi0_qutip = qt.tensor(qt.basis(2, 0), qt.basis(2, 0))
+        rho0_qutip = qt.ket2dm(psi0_qutip)
+        rho_expected = U * rho0_qutip * U.dag()
+
+        np.testing.assert_allclose(rho_final_jax, rho_expected.full(), rtol=1e-10)
+
+    def test_apply_with_default_ground_state(self):
+        """Test applying circuit with default ground state."""
+        circuit = QuantumCircuit(num_qubits=2)
+        circuit.add_gate(HadamardGate(target=0))
+
+        # Use default ground state |00⟩
+        rho_final = circuit(qutip=True)
+
+        # Should be same as explicitly providing |00⟩
+        psi0 = qt.tensor(qt.basis(2, 0), qt.basis(2, 0))
+        rho_expected = circuit(psi0, qutip=True)
+
+        np.testing.assert_allclose(rho_final.full(), rho_expected.full(), rtol=1e-10)
+
+    def test_default_ground_state_single_qubit(self):
+        """Test default ground state for single qubit."""
+        circuit = QuantumCircuit(num_qubits=1)
+        circuit.add_gate(RXGate(theta=np.pi / 2, target=0))
+
+        # Apply with default ground state
+        rho_final = circuit(qutip=False)
+
+        # Should start from |0⟩⟨0|
+        assert rho_final.shape == (2, 2)
+        # RX(π/2) on |0⟩ gives equal superposition
+        np.testing.assert_allclose(jnp.diag(rho_final), [0.5, 0.5], rtol=1e-10)
+
+
+# --------------------------------------------------------------------------
+# Utility function tests
+# --------------------------------------------------------------------------
+
+class TestCircuitUtilities:
+    """Test circuit utility functions."""
+
+    def test_create_layer(self):
+        """Test creating rotation layer."""
         circuit = QuantumCircuit(num_qubits=3)
-        params = [0.1, 0.2, 0.3]
-        create_layer(circuit, RXGate, params, trainable=True)
+        create_layer(circuit, RXGate, [0.1, 0.2, 0.3], trainable=True)
 
-        assert circuit.num_gates() == 3
-        params_dict = circuit.get_trainable_parameters()
-        assert len(params_dict) == 3
+        assert len(circuit._gates) == 3
+        assert circuit.count_trainable_parameters() == 3
 
-    def test_create_entangling_layer_linear(self):
-        """Test creating linear entangling layer."""
+    def test_create_entangling_layers(self):
+        """Test creating entangling layers."""
+        # Linear pattern
         circuit = QuantumCircuit(num_qubits=4)
         create_entangling_layer(circuit, CNOTGate, pattern="linear")
+        assert len(circuit._gates) == 3  # (0,1), (1,2), (2,3)
 
-        # Should have 3 CNOTs: (0,1), (1,2), (2,3)
-        assert circuit.num_gates() == 3
-
-    def test_create_entangling_layer_circular(self):
-        """Test creating circular entangling layer."""
+        # Circular pattern
         circuit = QuantumCircuit(num_qubits=4)
         create_entangling_layer(circuit, CNOTGate, pattern="circular")
-
-        # Should have 4 CNOTs: (0,1), (1,2), (2,3), (3,0)
-        assert circuit.num_gates() == 4
+        assert len(circuit._gates) == 4  # (0,1), (1,2), (2,3), (3,0)
 
 
-class TestCircuitUnitarity:
-    """Test that circuit unitaries are actually unitary."""
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
 
-    @pytest.mark.parametrize("num_qubits", [1, 2, 3])
-    def test_unitary_property(self, num_qubits):
-        """Test that U†U = I for various circuits."""
-        circuit = QuantumCircuit(num_qubits=num_qubits)
-
-        # Add random gates
-        circuit.add_gate(RXGate(theta=0.5), target=0)
-        circuit.add_gate(RYGate(theta=0.7), target=0)
-        if num_qubits >= 2:
-            circuit.add_gate(CNOTGate(), target=(0, 1))
-
-        U = circuit.get_unitary()
-        identity = U.dag() * U
-        expected_identity = qt.qeye([2] * num_qubits)
-
-        np.testing.assert_allclose(
-            identity.full(), expected_identity.full(), rtol=1e-10, atol=1e-12
-        )
-
-
-class TestCircuitVisualization:
-    """Test circuit visualization methods."""
-
-    def test_repr(self):
-        """Test string representation."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(RXGate(theta=0.5), target=0)
-
-        repr_str = repr(circuit)
-        assert "2 qubits" in repr_str
-        assert "1 gates" in repr_str
-
-    def test_draw(self):
-        """Test circuit drawing."""
-        circuit = QuantumCircuit(num_qubits=2)
-        circuit.add_gate(HadamardGate(), target=0)
-        circuit.add_gate(CNOTGate(), target=(0, 1))
-
-        drawing = circuit.draw()
-        assert "q0:" in drawing
-        assert "q1:" in drawing
 
 
 if __name__ == "__main__":
