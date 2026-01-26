@@ -262,6 +262,128 @@ def generate_two_qubit_operators(
 
         return operators
 
+def generate_n_qubit_operators(
+    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int
+) -> Dict[str, qt.Qobj]:
+    """
+    Generate operators for an n-qubit composite system.
+
+    Creates operators for (field ⊗ cavity ⊗ qubit1 ⊗ ... ⊗ qubitn) composite space.
+    Each qubit can have different level truncation for flexibility.
+
+    Args:
+        field_levels: Number of Fock levels for input field mode
+        cavity_levels: Number of Fock levels for resonator cavity mode
+        qubit_levels: Number of levels for each qubit. Can be:
+                     - int: Same levels for both qubits (typically 2)
+                     - List[int]: Individual levels [qubit1_levels, qubit2_levels, ..., qubitn_levels]
+
+    Returns:
+        Dictionary containing all operators in composite space:
+        - Field operators: a_in, a_in_dag
+        - Cavity operators: a, a_dag
+        - Lists of qubits operators: sigma_z, sigma_x, sigma_y, sigma_minus, sigma_plus
+        - Matrix 2 x n of measurement projectors: P (matrix of joint qubit states)
+        - Lists of individual projectors: P0_q, P1_q
+        - Rotation operators:
+            * roty_q: list of Y-rotation on individual qubits
+            * roty: Simultaneous Y-rotation on all qubits
+
+    Example:
+        >>> ops = generate_two_qubit_operators(2, 2, 2)
+        >>> # Access operators for each qubit
+        >>> sz1 = ops['sigma_z[1]']
+        >>> sz2 = ops['sigma_z[2]']
+        >>> # Joint measurement projector |00⟩⟨00|
+        >>> P00 = ops['P[0][0]']
+    """
+    # Handle qubit_levels as list or int
+    if isinstance(qubit_levels, int):
+        q_levels = [qubit_levels] * n_qubits
+    elif isinstance(qubit_levels, list):
+        if len(qubit_levels) != n_qubits:
+            raise ValueError(
+                f"qubit_levels list must have n_qubits={n_qubits} elements, got {len(qubit_levels)}"
+            )
+        q_levels = qubit_levels
+    else:
+        raise TypeError(f"qubit_levels must be int or list, got {type(qubit_levels)}")
+
+    # Generate operators with JAX backend for autodiff compatibility
+    with qt.CoreOptions(default_dtype="jax"):
+        # Identity operators for each subsystem
+        I_field = qt.identity(field_levels)
+        I_cavity = qt.identity(cavity_levels)
+
+        # Individual subsystem operators
+        a_field = qt.destroy(field_levels)  # Field annihilation
+        a_cavity = qt.destroy(cavity_levels)  # Cavity annihilation
+
+        # Lists of qubits operators
+        I_q = []
+        sigma_z = []
+        sigma_x = []
+        sigma_y = []
+        sigma_minus = []
+        for i in range(n_qubits):
+            I_q.append(qt.identity(q_levels[i]))
+            sigma_z.append(qt.sigmaz() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "z"))
+            sigma_x.append(qt.sigmax() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "x"))
+            sigma_y.append(qt.sigmay() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "y"))
+            sigma_minus.append(qt.destroy(q_levels[i]))
+
+        # Measurement projectors for 2-level qubits
+        P0 = qt.Qobj([[1, 0], [0, 0]])  # Ground state |0⟩⟨0|
+        P1 = qt.Qobj([[0, 0], [0, 1]])  # Excited state |1⟩⟨1|
+
+        # Rotation operator (Y-rotation by π/2)
+        # Ry(π/2) = [[cos(π/4), -sin(π/4)], [sin(π/4), cos(π/4)]]
+        # = (1/√2)[[1, -1], [1, 1]]
+        rot_single = qt.Qobj([[1, -1], [1, 1]]) / jnp.sqrt(2.0)
+
+        # Embed operators in composite space (input_field ⊗ cavity ⊗ qubit1 ⊗ qubit2)
+        operators = {
+            # Input field operators
+            "a_in": qt.tensor([a_field, I_cavity]+I_q),
+            "a_in_dag": qt.tensor([a_field.dag(), I_cavity]+I_q),
+            # Resonator cavity operators
+            "a": qt.tensor([I_field, a_cavity]+I_q),
+            "a_dag": qt.tensor([I_field, a_cavity.dag()]+I_q),
+            # Qubit operators -------------------------------------------------------------RIPRENDERE DA QUA
+            "sigma_z": qt.tensor(I_field, I_cavity, sigma_z1, I_q2),
+            "sigma_x": qt.tensor(I_field, I_cavity, sigma_x1, I_q2),
+            "sigma_y": qt.tensor(I_field, I_cavity, sigma_y1, I_q2),
+            "sigma_minus": qt.tensor(I_field, I_cavity, sigma_minus1, I_q2),
+            "sigma_plus": qt.tensor(I_field, I_cavity, sigma_minus1.dag(), I_q2),
+            # Qubit 2 operators
+            "sigma_z2": qt.tensor(I_field, I_cavity, I_q1, sigma_z2),
+            "sigma_x2": qt.tensor(I_field, I_cavity, I_q1, sigma_x2),
+            "sigma_y2": qt.tensor(I_field, I_cavity, I_q1, sigma_y2),
+            "sigma_minus2": qt.tensor(I_field, I_cavity, I_q1, sigma_minus2),
+            "sigma_plus2": qt.tensor(I_field, I_cavity, I_q1, sigma_minus2.dag()),
+            # Joint measurement projectors (for 2-level qubits)
+            "P00": qt.tensor(I_field, I_cavity, P0, P0),  # |00⟩⟨00|
+            "P01": qt.tensor(I_field, I_cavity, P0, P1),  # |01⟩⟨01|
+            "P10": qt.tensor(I_field, I_cavity, P1, P0),  # |10⟩⟨10|
+            "P11": qt.tensor(I_field, I_cavity, P1, P1),  # |11⟩⟨11|
+            # Individual qubit projectors
+            "P0_q1": qt.tensor(I_field, I_cavity, P0, I_q2),  # |0⟩⟨0| ⊗ I for qubit1
+            "P1_q1": qt.tensor(I_field, I_cavity, P1, I_q2),  # |1⟩⟨1| ⊗ I for qubit1
+            "P0_q2": qt.tensor(I_field, I_cavity, I_q1, P0),  # I ⊗ |0⟩⟨0| for qubit2
+            "P1_q2": qt.tensor(I_field, I_cavity, I_q1, P1),  # I ⊗ |1⟩⟨1| for qubit2
+            # Rotation operators (Y-rotation by π/2, can be applied independently)
+            "roty_q1": qt.tensor(I_field, I_cavity, rot_single, I_q2),  # Ry on qubit1 only
+            "roty_q2": qt.tensor(I_field, I_cavity, I_q1, rot_single),  # Ry on qubit2 only
+            "roty": qt.tensor(I_field, I_cavity, rot_single, rot_single),  # Simultaneous Ry on both
+            # Identity operators for reference
+            "I_field": I_field,
+            "I_cavity": I_cavity,
+            "I_q1": I_q1,
+            "I_q2": I_q2,
+        }
+
+        return operators
+
 
 def build_qubit_noise_operators(
     sigma_x: qt.Qobj,
