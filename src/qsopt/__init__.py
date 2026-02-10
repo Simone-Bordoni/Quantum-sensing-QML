@@ -11,7 +11,7 @@ __author__ = "Simone Bordoni, Nathan Campioni"
 __email__ = "simone.bordoni@uniroma1.it"
 
 from .core.callback import OptimizationCallback
-from .core.experiment import Experiment, NQubitExperiment
+from .core.experiment import Experiment
 
 # Core experimental framework
 from .core.experimental_parameters import (

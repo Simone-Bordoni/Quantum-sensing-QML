@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, Union
 
 import numpy as np
 
-from qsopt.core.experiment import NQubitExperiment
+from qsopt.core.experiment import Experiment
 from qsopt.core.experimental_parameters import ExperimentalParameters
 # TODO: Remove TrainableParameters dependency - refactor to use circuits
 # from qsopt.core.trainable_parameters import TrainableParameters
@@ -380,7 +380,7 @@ def compute_time_interval_landscape(
     )
 
     # Create experiment instance
-    exp = NQubitExperiment(exp_params, trainable_params,n_qubits=1)
+    exp = Experiment(exp_params, trainable_params,n_qubits=1)
 
     start_time = time.time()
 

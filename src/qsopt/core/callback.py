@@ -63,10 +63,12 @@ class OptimizationCallback:
 
     def __call__(
         self,
-        trainable_params: tuple[list, list],
-        prob_with: float,
-        prob_without: float,
-        contrast: float,
+        trainable_params_initial: Optional[list] = None,
+        trainable_params_final: Optional[list] = None,
+        prob_with: float = 0.0,
+        prob_without: float = 0.0,
+        contrast: float = 0.0,
+        **kwargs
     ) -> None:
         """
         Record metrics from current optimization step.
@@ -75,13 +77,17 @@ class OptimizationCallback:
         state of the optimization, including probabilities, contrast, and parameters.
 
         Args:
-            trainable_params: Tuple of (initial_circuit_params, final_circuit_params)
-                             where each element is a list of JAX arrays
+            trainable_params_initial: Initial circuit trainable parameters (list of values)
+            trainable_params_final: Final circuit trainable parameters (list of values)
             prob_with: Detection probability with photon interaction
             prob_without: Detection probability without photon interaction
             contrast: Sensing contrast (prob_with - prob_without)
+            **kwargs: Additional keyword arguments (for backward compatibility)
         """
         self.epoch += 1
+
+        # Package parameters as tuple for internal storage
+        trainable_params = (trainable_params_initial, trainable_params_final)
 
         # Save history every N epochs
         if self.epoch % self.save_every == 0:

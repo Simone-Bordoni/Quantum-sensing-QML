@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
 
-from .base import Experiment
 from .quantum_utils import (
     apply_qubit_rotation,
     build_qubit_noise_operators,
@@ -43,7 +42,7 @@ from .quantum_utils import (
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
 
 
-class NQubitExperiment(Experiment):
+class Experiment:
     """
     N-qubit quantum sensing experiment.
 
@@ -71,8 +70,7 @@ class NQubitExperiment(Experiment):
         experimental_params: ExperimentalParameters,
         initial_circuit: Optional[QuantumCircuit] = None,
         final_circuit: Optional[QuantumCircuit] = None,
-        optimizer: Optional = None,
-        detector: Optional[DetectionFromProbabilities] = None,
+        metric: Optional[DetectionFromProbabilities] = None,
     ):
         """
         Initialize n-qubit experiment.
@@ -83,46 +81,58 @@ class NQubitExperiment(Experiment):
                            default 2-qubit RY circuit with trainable parameters.
             final_circuit: QuantumCircuit to apply after evolution. If None, creates
                           default 2-qubit RY circuit with trainable parameters.
-            optimizer: Optax optimizer for trainable parameters. If None, uses SGD(0.1).
-            detector: Custom detection probability calculator. If None, uses default 1-P(00).
+            metric: Custom detection probability calculator. If None, uses default 1-P(0).
         """
-        import optax
-
-        n_qubits = experimental_params.n_qubits
-        levels = experimental_params.qubit_levels
 
         # Create default circuits if not provided (2-qubit RY gates)
         if initial_circuit is None:
-            initial_circuit = create_ry_circuit_layer(n_qubits=n_qubits, levels=levels, theta_values=np.pi/2)
+            initial_circuit = create_ry_circuit_layer(experimental_params.n_qubits, levels=experimental_params.qubit_levels, theta_values=np.pi/2)
         
         if final_circuit is None:
-            final_circuit = create_ry_circuit_layer(n_qubits=n_qubits, levels=levels, theta_values=-np.pi/2)
+            final_circuit = create_ry_circuit_layer(experimental_params.n_qubits, levels=experimental_params.qubit_levels, theta_values=-np.pi/2)
         
-        # Store circuits
+        self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
-        
-        # Create TrainableParameters from circuits
-        trainable_params = self._create_trainable_params_from_circuits(optimizer)
-        
-        super().__init__(experimental_params, trainable_params)
+        self.metric = metric if metric is not None else DetectionFromProbabilities()
 
-        # Detection probability calculator
-        self.detector = detector if detector is not None else DetectionFromProbabilities()
+        # Normalize qubit_levels to always be a list
+        if isinstance(self.experimental_params.qubit_levels, int):
+            self.experimental_params.qubit_levels = [self.experimental_params.qubit_levels] * self.experimental_params.n_qubits
 
-        # Two-qubit specific caches
+        # Precompute total dimensions for QuTiP Qobj creation
+        self.total_dims = [
+            self.experimental_params.field_levels,
+            self.experimental_params.cavity_levels
+        ] + self.experimental_params.qubit_levels
+
+        # Extract trainable parameters from both circuits
+        self.trainable_params_initial = self.initial_circuit.get_trainable_parameters()
+        self.trainable_params_final = self.final_circuit.get_trainable_parameters()
+
+        # Caches
         self._cached_initial_state: Optional[qt.Qobj] = None
         self._cached_projectors: Dict[str, qt.Qobj] = {}
         self._cached_solvers: Dict[str, qt.MESolver] = {}
+        self._cached_circuit_unitaries: Optional[tuple] = None
 
         # Initialize quantum objects
         self.__post_init__()
+
+    def _update_circuits_from_trainable_params(self):
+        """
+        Update circuit parameters from current trainable parameter values.
+        
+        This synchronizes the circuits with their trainable parameters after optimization steps.
+        """
+        self.initial_circuit.set_trainable_parameters(self.trainable_params_initial)
+        self.final_circuit.set_trainable_parameters(self.trainable_params_final)
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
         self._generate_operators()
         self._generate_hamiltonian()
-        self._initialize_caches()
+        self._initialize_initial_state()
 
     def _generate_operators(self) -> None:
         """
@@ -148,7 +158,7 @@ class NQubitExperiment(Experiment):
             field_levels, cavity_levels, qubit_levels, n_qubits, gen_all_proj=True
         )
 
-    def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj: #------------------- riprendi da qua
+    def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
         """
         Build qubit-qubit interaction Hamiltonian from configured interactions.
 
@@ -274,27 +284,42 @@ class NQubitExperiment(Experiment):
         noise_config = self.experimental_params.noise_config
 
         # Extract noise rates for each qubit
-        # Type narrowing: noise rates are always lists for two-qubit experiments
         depolarizing = noise_config.depolarizing
         dephasing = noise_config.dephasing
         relaxation = noise_config.relaxation
 
-        if (
-            isinstance(depolarizing, list)
-            and isinstance(dephasing, list)
-            and isinstance(relaxation, list)
-        ):
-            True
-            #depolarizing1, depolarizing2 = depolarizing[0], depolarizing[1]
-            #dephasing1, dephasing2 = dephasing[0], dephasing[1]
-            #relaxation1, relaxation2 = relaxation[0], relaxation[1]
+        # Convert float parameters to lists of length n_qubits, or validate list lengths
+        if isinstance(depolarizing, float):
+            depolarizing = [depolarizing] * n_qubits
+        elif isinstance(depolarizing, list):
+            if len(depolarizing) != n_qubits:
+                raise ValueError(
+                    f"depolarizing list length ({len(depolarizing)}) must match n_qubits ({n_qubits})"
+                )
         else:
-            # Should not reach here due to __init__ validation, but type checker needs this
-            depolarizing = [depolarizing if isinstance(depolarizing, float) else 0.0]*n
-            dephasing = [dephasing if isinstance(dephasing, float) else 0.0]*n
-            relaxation = [relaxation if isinstance(relaxation, float) else 0.0]*n
+            raise TypeError(f"depolarizing must be float or list, got {type(depolarizing)}")
 
-        # Build Lindblad noise operators for qubit 1 using helper function
+        if isinstance(dephasing, float):
+            dephasing = [dephasing] * n_qubits
+        elif isinstance(dephasing, list):
+            if len(dephasing) != n_qubits:
+                raise ValueError(
+                    f"dephasing list length ({len(dephasing)}) must match n_qubits ({n_qubits})"
+                )
+        else:
+            raise TypeError(f"dephasing must be float or list, got {type(dephasing)}")
+
+        if isinstance(relaxation, float):
+            relaxation = [relaxation] * n_qubits
+        elif isinstance(relaxation, list):
+            if len(relaxation) != n_qubits:
+                raise ValueError(
+                    f"relaxation list length ({len(relaxation)}) must match n_qubits ({n_qubits})"
+                )
+        else:
+            raise TypeError(f"relaxation must be float or list, got {type(relaxation)}")
+
+        # Build Lindblad noise operators for each qubit using helper function
         lindblad_noise_q = [build_qubit_noise_operators(
             sigma_x=sigma_x[i],
             sigma_y=sigma_y[i],
@@ -305,8 +330,11 @@ class NQubitExperiment(Experiment):
             relaxation_rate=relaxation[i],
         ) for i in range(n_qubits)]
         
-        # Combine noise operators for both qubits
-        lindblad_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [lindblad_noise_q[i][j] for j in range(2) for i in range(n_qubits)]
+        # Combine noise operators for all qubits
+        # Flatten list: collect all operators from each qubit
+        lindblad_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [
+            op for i in range(n_qubits) for op in lindblad_noise_q[i]
+        ]
 
         # Add custom Lindblad operators if provided
         if noise_config.custom_operators is not None:
@@ -331,149 +359,17 @@ class NQubitExperiment(Experiment):
             "no_interaction": no_interaction_ops,
         }
 
-    def _initialize_caches(self) -> None:
+    def _initialize_initial_state(self) -> None:
         """
-        Initialize cached values for n-qubit experiment.
-
-        Caches:
-        - Joint measurement projectors (|00...0⟩, |10...0⟩, |01...0⟩, ... , |11...1⟩)
-        - Individual qubit projectors
-        - Initial state with all qubits in equal superposition
+        Generate and cache the initial state of the system.
         """
-        if self.operators is None:
-            raise RuntimeError("Operators must be generated before initializing caches")
-
-        # Cache joint measurement projectors ------------------------ PERCHÈ LE VARIABILI INIZIANO CON _??????????? 
-        # poi perchè questa viene vista come Qobj quando è un dizionario?
-        self._cached_joint_projectors = self.operators["P"]
-
-        # Cache individual qubit projectors
-        self._cached_0projectors = self.operators["P0_q"]
-
-        self._cached_1projectors = self.operators["P1_q"]
-
-        # Generate and cache initial state
         self._cached_initial_state = generate_initial_state(
             initial_config=self.experimental_params.initial_state,
             field_levels=self.experimental_params.field_levels,
             cavity_levels=self.experimental_params.cavity_levels,
             qubit_levels=self.experimental_params.qubit_levels,
-            n_qubits=experimental_params.n_qubits,
+            n_qubits=self.experimental_params.n_qubits,
         )
-
-    def get_initial_state(self) -> qt.Qobj: #----------------------- RIINIZIA DA QUA, MA CONTROLLA COMMENTO PRIMA
-                                            # poi controlla cosa usasse le variabili prima (_cached_0/1projectors) perchè il nome è cambiato
-        """
-        Get initial n-qubit state.
-
-        Returns the cached initial state with:
-        - Single photon in input field
-        - Vacuum in cavity
-        - All qubits in equal superposition (|1⟩+|2⟩+...+|n⟩)/√n
-
-        Returns:
-            Initial n-qubit quantum state
-
-        Raises:
-            RuntimeError: If initial state has not been cached
-        """
-        if self._cached_initial_state is None:
-            raise RuntimeError(
-                "Initial state has not been cached. " "Ensure _initialize_caches was called."
-            )
-        return self._cached_initial_state
-
-    # TODO: Refactor this method to work with circuit-based parameters (tuple structure)
-    # def _create_trainable_params_from_circuits(self, optimizer=None):
-    #     """
-    #     Extract trainable parameters from quantum circuits.
-    #
-    #     For two-qubit system, we expect 4 trainable parameters total:
-    #     - 2 parameters from initial_circuit (one per qubit)
-    #     - 2 parameters from final_circuit (one per qubit)
-    #
-    #     Args:
-    #         optimizer: Optax optimizer. If None, uses SGD(0.1).
-    #
-    #     Returns:
-    #         tuple[list, list] initialized from circuit parameters
-    #     """
-    #     pass
-
-    # TODO: Refactor this method to work with circuit-based parameters (tuple structure)
-    # def _update_circuits_from_trainable_params(self) -> None:
-    #     """
-    #     Update circuit parameters from trainable params state.
-    #
-    #     Synchronizes the QuantumCircuit objects with current optimization values.
-    #     Distributes the 4 parameters as:
-    #     - params[0:2] -> initial_circuit (qubit 1, qubit 2)
-    #     - params[2:4] -> final_circuit (qubit 1, qubit 2)
-    #     """
-    #     pass
-
-    def get_joint_projector(self, state: str) -> qt.Qobj:
-        """
-        Get joint measurement projector for both qubits.
-
-        Args:
-            state: Joint state to project onto ('00...0', '10...0', '01...0', ... , '11...1')
-
-        Returns:
-            Joint measurement projector |state⟩⟨state|
-
-        Raises:
-            ValueError: If state string is invalid
-            RuntimeError: If projectors have not been cached
-        """
-        if self._cached_joint_projectors is None:
-            raise RuntimeError(
-                "Joint projectors have not been cached. " "Ensure _initialize_caches was called."
-            )
-
-        if state not in self._cached_joint_projectors:
-            raise ValueError(
-                f"Invalid joint state '{state}'. "
-                f"Must be one of: {list(self._cached_joint_projectors.keys())}"
-            )
-
-        return self._cached_joint_projectors[state]
-
-    def get_qubit_projector(self, qubit: int, state: str) -> qt.Qobj:
-        """
-        Get measurement projector for a specific qubit.
-
-        Args:
-            qubit: Qubit index
-            state: Qubit state to project onto ('0' or '1')
-
-        Returns:
-            Single-qubit measurement projector
-
-        Raises:
-            ValueError: If qubit index or state is invalid
-            RuntimeError: If projectors have not been cached
-        """
-        n_qubits = experimental_params.n_qubits,
-
-        if (qubit < n_qubits) & ():
-            projectors = {
-            "0": self._cached_0projectors[qubit],
-            "1": self._cached_1projectors[qubit],
-            }
-        else:
-            raise ValueError(f"Invalid qubit index {qubit}. Must be in the interval [0,{n_qubits-1}].")
-
-        if projectors is None:
-            raise RuntimeError(
-                f"Projectors for qubit {qubit} have not been cached. "
-                "Ensure _initialize_caches was called."
-            )
-
-        if state not in projectors:
-            raise ValueError(f"Invalid qubit state '{state}'. Must be '0' or '1'.")
-
-        return projectors[state]
 
     def get_solver_with_interaction(self) -> qt.MESolver:
         """Get Lindblad master equation solver WITH input photon interaction (cached)."""
@@ -495,92 +391,65 @@ class NQubitExperiment(Experiment):
             )
         return self._cached_solvers["no_interaction"]
 
-    def apply_rotation(self, rho: qt.Qobj, theta: float, qubit: int, axis: str = "y") -> qt.Qobj:
+    def prob(self, rho: qt.Qobj, qubits: Optional[List[int]] = None) -> List[float]:
         """
-        Apply rotation to specified qubit.
-
-        Unified rotation method for any single qubit in the system.
+        Measure ground state probability for specified qubits.
 
         Args:
             rho: Density matrix in composite space
-            theta: Rotation angle in radians
-            qubit: Qubit index (between 0 and n_qubits-1)
-            axis: Rotation axis ('x', 'y', or 'z'), default 'y'
+            qubits: List of qubit indices to measure. If None, measures all qubits.
 
         Returns:
-            Rotated density matrix
+            List of ground state probabilities for each measured qubit
 
         Example:
-            >>> # Rotate qubit 1 by π/4 around Y-axis
-            >>> rho_rot = experiment.apply_rotation(rho, np.pi/4, qubit=0)
-            >>> # Rotate qubit 4 by π/2 around X-axis
-            >>> rho_rot = experiment.apply_rotation(rho, np.pi/2, qubit=3, axis='x')
-        """
-        if self.operators is None:
-            raise RuntimeError("Operators must be generated before applying rotations")
-
-        return apply_qubit_rotation(rho, theta, qubit, self.operators, axis=axis)
-
-    def prob(self, rho: qt.Qobj, qubits: Union[int, str], state: str = "0") -> float:
-        """
-        Measure probability for specified qubits.
-
-        Unified measurement method supporting:
-        - Single qubit: qubits=[i] measures i qubit only
-        - Multiple qubits: qubits='all' measures all qubits jointly
-
-        Args:
-            rho: Density matrix in composite space
-            qubits: List of qubit indices to measure
-            state: State to measure:
-                   - For single qubit: '0', '1', ... , 'n_qubits-1'
-                   - For multiple qubits: '00...0', '10...0', '01...0', ... , '11...1'
-
-        Returns:
-            Measurement probability ∈ [0,1]
-
-        Example:
-            >>> # Measure qubit 1 in ground state
-            >>> p0_q1 = experiment.prob(rho, qubits=[0], state='0')
-            >>> # Measure qubit 3 in excited state
-            >>> p1_q2 = experiment.prob(rho, qubits=[2], state='1')
-            >>> # Measure multiple qubits in |000⟩
-            >>> p000 = experiment.prob(rho, qubits='all', state='000')
+            >>> # Measure all qubits
+            >>> probs = experiment.prob(rho)  # Returns [p0_q0, p0_q1, ..., p0_qn]
+            >>> 
+            >>> # Measure specific qubits
+            >>> probs = experiment.prob(rho, qubits=[0, 2])  # Returns [p0_q0, p0_q2]
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before measuring")
         
+        n_qubits = self.experimental_params.n_qubits
+        
+        # If qubits not specified, measure all qubits
+        if qubits is None:
+            qubits = list(range(n_qubits))
+        
+        # Validate qubit indices
+        for qubit_idx in qubits:
+            if qubit_idx < 0 or qubit_idx >= n_qubits:
+                raise ValueError(f"Invalid qubit index {qubit_idx}. Must be in [0, {n_qubits-1}]")
+        
+        # Get ground state projectors for each qubit
+        P0_q = self.operators["P0_q"]
+        
+        # Measure ground state probability for each qubit
+        probabilities = []
+        for qubit_idx in qubits:
+            P0 = P0_q[qubit_idx]
+            prob = float(jnp.real((P0 * rho).tr()))
+            probabilities.append(prob)
+        
+        return probabilities
 
-        field_levels = self.experimental_params.field_levels
-        cavity_levels = self.experimental_params.cavity_levels
-        q_levels = self.experimental_params.qubit_levels
-
-        return measure_qubits_probability(rho, qubits, self.operators, state=state, field_levels=field_levels, cavity_levels=cavity_levels, q_levels=q_levels)
-
-    def _embed_circuit_unitary(self, U_circuit: qt.Qobj) -> qt.Qobj:
+    def _embed_circuit_unitary(self, U_circuit: jnp.ndarray) -> jnp.ndarray:
         """
-        Embed an n-qubit circuit unitary into the full composite Hilbert space.
+        Embed an n-qubit circuit unitary into the full composite Hilbert space using JAX.
 
         The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
         The circuit acts only on the qubit subspace (qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn).
 
         Args:
-            U_circuit: (Σ qubit_levels)x(Σ qubit_levels) unitary matrix for the n-qubit circuit (as qt.Qobj)
+            U_circuit: (Σ qubit_levels)x(Σ qubit_levels) unitary matrix for the n-qubit circuit as JAX array
 
         Returns:
-            Full-space operator: I_field ⊗ I_cavity ⊗t U_circuit
+            Full-space unitary as JAX array: I_field ⊗ I_cavity ⊗ U_circuit
         """
         field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
-        qubit_levels = self.experimental_params.qubit_levels
-
-        # Extract JAX array from circuit unitary
-        if hasattr(U_circuit.data, '_jxa'):  # JaxArray backend
-            U_jax = U_circuit.data._jxa
-        elif hasattr(U_circuit.data, 'to_array'):  # Dense backend
-            U_jax = jnp.array(U_circuit.data.to_array())
-        else:
-            U_jax = jnp.array(U_circuit.full())
 
         # Build full operator using JAX Kronecker products
         # I_field ⊗ I_cavity ⊗ U_circuit
@@ -588,232 +457,70 @@ class NQubitExperiment(Experiment):
         I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
         
         # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
-        U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), U_jax)
+        U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), U_circuit)
 
-        # Wrap in Qobj with proper dimensions
-        return qt.Qobj(
-            U_full_jax, 
-            dims=[[field_levels, cavity_levels] + qubit_levels, [field_levels, cavity_levels] + qubit_levels]
-        )
+        return U_full_jax
 
-    def _prepare_rotation_gates(
-        self, theta1_q: Union[float,List[float]], theta2_q: Union[float,List[float]]
-    ) -> tuple:
+    def _prepare_circuit_unitaries(self) -> tuple:
         """
-        Build rotation unitaries from circuits for n-qubit optimization.
-
-        Updates the quantum circuits with current parameters and returns
-        embedded unitary operators. The circuits compute their unitaries using
-        JAX-compatible gate.matrix() methods, maintaining gradient flow.
-
-        Args:
-            theta1_q: List of first rotation parameter for all qubits (initial circuit)
-            theta2_q: List of second rotation parameter for all qubits (final circuit)
-
-        Returns:
-            Tuple of (R1_full, R2_full) - embedded unitaries for initial and final circuits
-        """
-        # Get parameter keys (sorted for consistent ordering)
-        initial_keys = sorted(self.initial_circuit.get_trainable_parameters().keys())
-        final_keys = sorted(self.final_circuit.get_trainable_parameters().keys())
-
-        n_gates = len(initial_keys)
-        if isinstance(theta1_q,float):
-            theta1_q = [theta1_q] * n_gates
-        elif len(theta1_q) != n_gates:
-            raise ValueError(f"lenght of theta1_q ({len(theta1_q)}) does not match lenght of initial keys ({n_gates})")
+        Get embedded unitaries for initial and final circuits with their daggers.
         
-        n_gates = len(final_keys)
-        if isinstance(theta2_q,float):
-            theta2_q = [theta2_q] * n_gates
-        elif len(theta2_q) != n_gates:
-            raise ValueError(f"lenght of theta2_q ({len(theta2_q)}) does not match lenght of final keys ({n_gates})")
-
-
-        # Update circuits with current parameter values
-        initial_dict = dict(zip(initial_keys,theta1_q))
-        final_dict = dict(zip(initial_keys,theta1_q))
+        Computes and caches the full-space unitaries for both circuits and their
+        conjugate transposes (daggers). Updates circuits from trainable parameters
+        before computing.
         
-        self.initial_circuit.set_trainable_parameters(initial_dict)
-        self.final_circuit.set_trainable_parameters(final_dict)
-
-        # Get circuit unitaries (matrices acting on qubit1 ⊗ ... ⊗ qubitn)
-        # These are JAX-compatible through gate.matrix() -> expm()
-        U_initial = self.initial_circuit.get_unitary()
-        U_final = self.final_circuit.get_unitary()
-
-        # Embed in full composite Hilbert space
-        R1_full = self._embed_circuit_unitary(U_initial)
-        R2_full = self._embed_circuit_unitary(U_final)
-
-        return R1_full, R2_full
-
-    def _embed_n_qubit_unitary(self, U: jnp.ndarray, idx: int) -> qt.Qobj:
-        """
-        Embed a 2x2 single-qubit unitary into the full composite Hilbert space.
-
-        The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ ... ⊗ qubitn
-
-        Args:
-            U: 2x2 unitary matrix (JAX array) for the qubit
-            idx: Index of the qubit this unitary acts on (from 0 to n_qubits-1)
-
         Returns:
-            Full-space operator that applies U to specified qubit
+            Tuple of (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
+            embedded in composite space as JAX arrays
         """
-        field_levels = self.experimental_params.field_levels
-        cavity_levels = self.experimental_params.cavity_levels
-        qubit_levels = self.experimental_params.qubit_levels
-
-        # Create identity operators
-        I_field = qt.qeye(field_levels)
-        I_cavity = qt.qeye(cavity_levels)
-        I_qubits = [qt.qeye(level) for level in qubit_levels]
-
-        # Convert JAX array to QuTiP Qobj
-        U_qobj = qt.Qobj(U, dims=[[qubit_levels[idx]], [qubit_levels[idx]]])
-
-        # Build full operator based on which qubit we're acting on
-        # Act on qubit indexed: I_field ⊗ I_cavity ⊗ I_qubit1 ⊗ ... ⊗ U ⊗ ... ⊗ I_qubitn
-        R_full = qt.tensor([I_field, I_cavity] + I_qubits[:idx] + U_qobj + I_qubits[(idx+1):])
-
-        return R_full
-
-    def _measure_joint_probabilities(self, rho: qt.Qobj) -> Dict[str, jnp.ndarray]:
-        """
-        Measure all joint n-qubit probabilities (JAX-compatible).
-
-        Args:
-            rho: Density matrix
-
-        Returns:
-            Dictionary with p00, p01, p10, p11 as JAX arrays
-        """
-        P = self._cached_joint_projectors
-        n_qubits = self.experimental_params.n_qubits
-
-        # Use real part and ensure JAX array
-
-        return {f'{i:0{n_qubits}b}': \
-                jnp.real((P[f'{i:0{n_qubits}b}'] * rho * P[f'{i:0{n_qubits}b}']).tr()) \
-                for i in range(2^n_qubits) \
-                }
-
-    def compute_final_probabilities(
-        self,
-        solver: qt.MESolver,
-        rho: qt.Qobj,
-        theta1: Union[float, List[float]],
-        theta2: Union[float, List[float]],
-        t_start: float = -5.0,
-        t_end: float = 5.0,
-        args: Optional[Dict] = None,
-    ) -> Dict[str, jnp.ndarray]:
-        """
-        Compute final state probabilities after evolution without repeated measurements.
-
-        This simulates a single evolution and final measurement, returning all
-        joint n-qubit outcome probabilities. Useful for parameter sweeps and
-        reproducing experiments from the reference notebook.
-
-        Workflow:
-        1. Apply first rotations Ry(θ₁) to each qubit
-        2. Evolve from t_start to t_end
-        3. Apply second rotations Ry(θ₂) to each qubit
-        4. Measure all joint probabilities P(00...0), P(10...0), P(01...0) , ... , P(11...1)
-
-        Args:
-            solver: Configured quantum evolution solver
-            rho: Initial density matrix in composite space
-            theta1: List of first Y-rotation angle for each qubit
-            theta2: List of second Y-rotation angle for each qubit
-            t_start: Evolution start time (default: -5.0)
-            t_end: Evolution end time (default: 5.0)
-            args: System parameters (optional, uses experimental_params if None)
-
-        Returns:
-            Dictionary with probabilities: {'p00...0': (...), 'p10...0': (...), 'p01...0': (...), ... , 'p11...1': (...)}
-
-        Example:
-            >>> solver = experiment.get_solver_with_interaction()
-            >>> rho0 = experiment.get_initial_state()
-            >>> probs = experiment.compute_final_probabilities(
-            ...     solver, rho0, theta1=0.0, theta2=np.pi/2
-            ... )
-            >>> print(f"P(11) = {probs['p11']:.4f}")
-        """
-        if args is None:
-            args = {"sigma": self.experimental_params.inverse_pulse_width}
-
-        # Build rotation gates (JAX-compatible)
-        R1_full, R2_full = self._prepare_rotation_gates(
-            theta1, theta2
-        )
-
-        # Initial rotations on both qubits
-        rho_rotated = R1_full * rho * R1_full.dag()  # type: ignore
-
-        # Evolve system
-        result = solver.run(rho_rotated, tlist=[t_start, t_end], args=args)
-        rho_final = result.states[-1]
-
-        # Apply final rotations
-        rho_final = R2_full * rho_final * R2_full.dag()  # type: ignore
-
-        # Measure all joint probabilities (JAX-compatible)
-        return self._measure_joint_probabilities(rho_final)
+        # Update circuits with current trainable parameter values
+        self._update_circuits_from_trainable_params()
+        
+        # Get unitaries from circuits (as JAX arrays or QuTiP objects)
+        initial_unitary_circuit = self.initial_circuit.get_unitary(qutip=False)
+        final_unitary_circuit = self.final_circuit.get_unitary(qutip=False)
+        
+        # Embed into full composite space
+        initial_unitary = self._embed_circuit_unitary(initial_unitary_circuit)
+        final_unitary = self._embed_circuit_unitary(final_unitary_circuit)
+        
+        # Precompute daggers (conjugate transpose) in JAX
+        initial_unitary_dag = jnp.conj(initial_unitary.T)
+        final_unitary_dag = jnp.conj(final_unitary.T)
+        
+        # Cache for reuse
+        self._cached_circuit_unitaries = (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
+        
+        return initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag
 
     def simulation(
         self,
         solver: qt.MESolver,
         rho: qt.Qobj,
-        theta1: Union[float, List[float]],
-        theta2: Union[float, List[float]],
         measurements: Union[List[float], np.ndarray],
         args: Optional[Dict] = None,
-        precomputed_rotations: Optional[tuple] = None,
+        precomputed_unitaries: Optional[tuple] = None,
         loss_function: Optional[DetectionFromProbabilities] = None,
     ) -> jnp.ndarray:
         """
         JAX-compatible simulation for n-qubit system with customizable detection.
 
-        This method implements sequential measurements, projecting onto joint
-        measurement states at each time point and computing cumulative detection
-        probability using a user-defined or default detection criterion.
-
-        Protocol:
-        1. Apply first rotations to all qubits
-        2. Sequential time evolution with measurements
-        3. At each measurement: apply second rotations, measure final probabilities
-        4. Apply detection criterion to get detection probability
-        5. Project to non-detected state and continue
-
         Args:
             solver: Configured quantum evolution solver
             rho: Initial density matrix
-            theta1: List of first Y-rotation for each qubit
-            theta2: List of second Y-rotation for each qubit
             measurements: Array of measurement times (sorted)
             args: System parameters (optional)
-            precomputed_rotations: Optional tuple (R1_full, R2_full) to avoid recomputation
+            precomputed_unitaries: Optional tuple (U_initial, U_initial_dag, U_final, U_final_dag)
+                                  to avoid recomputation
             loss_function: Optional DetectionFromProbabilities instance. If None, uses 1-P(00).
 
         Returns:
             Detection probability as JAX array
-
-        Example:
-            >>> # Default: 1 - P(00)
-            >>> prob = experiment.simulation(solver, rho0, [0.5, 0.3], [-0.5, -0.3], times)
-            >>>
-            >>> # Custom: P(11) only
-            >>> detector = DetectionFromProbabilities(lambda p: p['p11'], name="P(11)", n_qubits=2)
-            >>> prob = experiment.simulation(solver, rho0, [0.5, 0.3], [-0.5, -0.3], times,
-            ...                               loss_function=detector)
         """
         if args is None:
             args = {"sigma": self.experimental_params.inverse_pulse_width}
 
-        # Default to 1-P(00) detection
+        # Default to 1-P(0) detection
         if loss_function is None:
             loss_function = DetectionFromProbabilities()
 
@@ -821,20 +528,17 @@ class NQubitExperiment(Experiment):
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
 
-        # Get rotation unitaries (precomputed or build new)
-        if precomputed_rotations is None:
-            R1_full, R2_full = self._prepare_rotation_gates(
-                theta1_q, theta2_q
-            )
+        # Get circuit unitaries (precomputed or compute from circuits)
+        if precomputed_unitaries is None:
+            initial_unitary_jax, initial_unitary_dag_jax, final_unitary_jax, final_unitary_dag_jax = self._prepare_circuit_unitaries()
         else:
-            R1_full, R2_full = precomputed_rotations
+            initial_unitary_jax, initial_unitary_dag_jax, final_unitary_jax, final_unitary_dag_jax = precomputed_unitaries
 
-        # Precompute dagger operators
-        R1_full_dag = R1_full.dag()
-        R2_full_dag = R2_full.dag()
-
-        # Get projector to all 0 state
-        P_all0 = self._cached_joint_projectors[f'{0:0{n_qubits}b}']
+        # Convert JAX arrays to QuTiP objects with proper dimensions
+        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
+        initial_unitary_dag = qt.Qobj(initial_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary_dag = qt.Qobj(final_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
 
         # Initial state
         rho_current = rho
@@ -848,33 +552,34 @@ class NQubitExperiment(Experiment):
             t0_float = float(t0)
             t1_float = float(t1)
 
-            # Apply initial circuit rotations (both qubits simultaneously)
-            rho_after_r1 = R1_full * rho_current * R1_full_dag  # type: ignore
+            # Apply initial circuit
+            rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
 
             # Evolve
-            evolution_result = solver.run(rho_after_r1, [t0_float, t1_float], args=args)
+            evolution_result = solver.run(rho_after_circuit, [t0_float, t1_float], args=args)
             rho_evolved = evolution_result.states[-1]
 
-            # Apply final circuit rotations (both qubits simultaneously)
-            rho_final = R2_full * rho_evolved * R2_full_dag  # type: ignore
+            # Apply final circuit
+            rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
-            # Measure all joint probabilities
-            probs = self._measure_joint_probabilities(rho_final)
+            # Measure probability of all qubits in ground state |00...0⟩
+            P_all0 = self.operators["P_all0"]
+            prob_all_ground = float(jnp.real((P_all0 * rho_final).tr()))
 
-            # Apply detection criterion
-            prob_detect_this_step = loss_function(probs)
-            prob_no_detect_this_step = 1.0 - prob_detect_this_step
+            # Detection criterion: 1 - P(all ground)
+            prob_detect_this_step = 1.0 - prob_all_ground
+            prob_no_detect_this_step = prob_all_ground
 
             # Update cumulative non-detection probability
             prob_all_no_detect = prob_all_no_detect * prob_no_detect_this_step
 
-            # Project onto |00⟩ (non-detected state) and renormalize
+            # Project onto |00...0⟩ (non-detected state) and renormalize
             rho_projected = P_all0 * rho_final * P_all0  # type: ignore
             trace_val = rho_projected.tr()
             rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
 
-            # Undo final circuit rotations for next iteration
-            rho_current = R2_full_dag * rho_current * R2_full  # type: ignore
+            # Undo final circuit for next iteration
+            rho_current = final_unitary_dag * rho_current * final_unitary  # type: ignore
 
         # Total detection probability = 1 - P(no detection at any step)
         prob_detection = 1 - prob_all_no_detect
@@ -904,26 +609,12 @@ class NQubitExperiment(Experiment):
                 - Sensing contrast averaged over batch
 
         Raises:
-            ValueError: If fewer than 2*n_qubits rotation parameters are defined (2 per qubit)
+            ValueError: If initial state cache is not initialized
         """
-        # Get rotation parameters - need 2 angles for each qubit
-        rotation_angles = self.trainable_params.get_rotation_angles()
-        n_qubits = self.experimental_params.n_qubits
-
-        if len(rotation_angles) < 2*n_qubits:
-            raise ValueError(
-                f"{n_qubit}-qubit experiment requires at least {2*n_qubit} rotation parameters (2 per qubit), "
-                f"got {len(rotation_angles)}"
-            )
-
-        # Extract rotation angles lists - order matters!
-        # Assuming order: theta1, theta2
-        param_names = list(rotation_angles.keys())
-        theta1 = float(rotation_angles[param_names[0]][0])
-        theta2 = float(rotation_angles[param_names[1]][0])
-
         # Get initial state and solvers
-        rho0 = self.get_initial_state()
+        rho0 = self._cached_initial_state
+        if rho0 is None:
+            raise RuntimeError("Initial state cache is not initialized.")
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
 
@@ -936,6 +627,9 @@ class NQubitExperiment(Experiment):
         else:
             measurement_sequences = [measurement_times_batch[i, :] for i in range(batch_size)]
 
+        # Prepare circuit unitaries once for the entire batch
+        circuit_unitaries = self._prepare_circuit_unitaries()
+
         # Run simulations with batch averaging over uncertainty realizations
         prob_with_list = []
         prob_without_list = []
@@ -945,9 +639,8 @@ class NQubitExperiment(Experiment):
             prob_with = self.simulation(
                 solver=solver_with,
                 rho=rho0,
-                theta1=theta1,
-                theta2=theta2,
                 measurements=measurement_times,
+                precomputed_unitaries=circuit_unitaries,
             )
             prob_with_list.append(prob_with)
 
@@ -955,9 +648,8 @@ class NQubitExperiment(Experiment):
             prob_without = self.simulation(
                 solver=solver_without,
                 rho=rho0,
-                theta1=theta1,
-                theta2=theta2,
                 measurements=measurement_times,
+                precomputed_unitaries=circuit_unitaries,
             )
             prob_without_list.append(prob_without)
 
@@ -969,7 +661,8 @@ class NQubitExperiment(Experiment):
         # Create callback with single epoch for simulation results
         callback = OptimizationCallback(save_every=1, save_best=True)
         callback(
-            trainable_params=self.trainable_params,
+            trainable_params_initial=self.trainable_params_initial,
+            trainable_params_final=self.trainable_params_final,
             prob_with=float(prob_with),
             prob_without=float(prob_without),
             contrast=float(contrast),
@@ -984,7 +677,7 @@ class NQubitExperiment(Experiment):
         Run simulation and return all final state probabilities and detection metrics.
 
         This method computes final state probabilities after evolution, then uses
-        the configured detector to compute detection probabilities and contrast.
+        the configured metric to compute detection probabilities and contrast.
         Useful for parameter sweeps and reproducing notebook experiments.
 
         Args:
@@ -1000,47 +693,45 @@ class NQubitExperiment(Experiment):
                 - 'contrast': Sensing contrast
 
         Example:
-            >>> experiment = NQubitExperiment(exp_params, train_params)
+            >>> experiment = Experiment(exp_params)
             >>> results = experiment.run_simulation_with_probabilities()
             >>> print(f"P(11) with photon: {results['probs_with']['p11']:.4f}")
             >>> print(f"Contrast: {results['contrast']:.4f}")
         """
-        # Get rotation parameters
-        rotation_angles = self.trainable_params.get_rotation_angles()
-        n_qubits = self.experimental_params.n_qubits
-
-        if len(rotation_angles) < 2*n_qubits:
-            raise ValueError(
-                f"{n_qubit}-qubit experiment requires at least {2*n_qubit} rotation parameters (2 per qubit), "
-                f"got {len(rotation_angles)}"
-            )
-
-        # Extract rotation angles lists - order matters!
-        # Assuming order: theta1, theta2
-        param_names = list(rotation_angles.keys())
-        theta1 = float(rotation_angles[param_names[0]][0])
-        theta2 = float(rotation_angles[param_names[1]][0])
-
         # Get initial state and solvers
-        rho0 = self.get_initial_state()
+        rho0 = self._cached_initial_state
+        if rho0 is None:
+            raise RuntimeError("Initial state cache is not initialized.")
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
 
-        # Compute final probabilities with photon
-        probs_with = self.compute_final_probabilities(
-            solver_with, rho0, theta1, theta2, t_start, t_end
-        )
+        # Prepare circuit unitaries as JAX arrays
+        initial_unitary_jax, final_unitary_jax = self._prepare_circuit_unitaries()
+        
+        # Convert to QuTiP objects for quantum operations
+        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
 
-        # Compute final probabilities without photon
-        probs_without = self.compute_final_probabilities(
-            solver_without, rho0, theta1, theta2, t_start, t_end
-        )
+        # Compute final state with photon after evolution
+        rho_after_circuit = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
+        evolution_result_with = solver_with.run(rho_after_circuit, [t_start, t_end])
+        rho_evolved_with = evolution_result_with.states[-1]
+        rho_final_with = final_unitary * rho_evolved_with * final_unitary_dag  # type: ignore
+        probs_with = self.measure_all_states(rho_final_with)
 
-        # Use detector to compute detection probabilities
-        detection_with = float(self.detector(probs_with, n_qubits=n_qubits))
-        detection_without = float(self.detector(probs_without, n_qubits=n_qubits))
+        # Compute final state without photon after evolution
+        rho_after_circuit = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
+        evolution_result_without = solver_without.run(rho_after_circuit, [t_start, t_end])
+        rho_evolved_without = evolution_result_without.states[-1]
+        rho_final_without = final_unitary * rho_evolved_without * final_unitary_dag  # type: ignore
+        probs_without = self.measure_all_states(rho_final_without)
 
-        # Compute contrast using detector's method
+        # Use metric to compute detection probabilities
+        n_qubits = self.experimental_params.n_qubits
+        detection_with = float(self.metric(probs_with))
+        detection_without = float(self.metric(probs_without))
+
+        # Compute contrast using metric's method
         contrast = float(
             DetectionFromProbabilities.compute_contrast(detection_with, detection_without)
         )
@@ -1116,17 +807,6 @@ class NQubitExperiment(Experiment):
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
             
-        # Get current rotation angles (need 4 angles for 2 qubits)
-        rotation_angles = self.trainable_params.get_rotation_angles()
-        if len(rotation_angles) < 4:
-            raise ValueError("Need at least 4 rotation angle parameters (2 per qubit)")
-
-        param_names = list(rotation_angles.keys())
-        theta1_q1 = float(rotation_angles[param_names[0]][0])
-        theta2_q1 = float(rotation_angles[param_names[1]][0])
-        theta1_q2 = float(rotation_angles[param_names[2]][0])
-        theta2_q2 = float(rotation_angles[param_names[3]][0])
-
         # Get initial state and solver
         rho0 = self._cached_initial_state
         if rho0 is None:
@@ -1138,9 +818,17 @@ class NQubitExperiment(Experiment):
             else self.get_solver_no_interaction()
         )
 
-        # Apply first rotations
-        rho_current = self.apply_rotation(rho0, theta1_q1, qubit=0)
-        rho_current = self.apply_rotation(rho_current, theta1_q2, qubit=1)
+        # Prepare circuit unitaries as JAX arrays (including daggers)
+        initial_unitary_jax, initial_unitary_dag_jax, final_unitary_jax, final_unitary_dag_jax = self._prepare_circuit_unitaries()
+        
+        # Convert to QuTiP objects for quantum operations
+        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
+        initial_unitary_dag = qt.Qobj(initial_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary_dag = qt.Qobj(final_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
+
+        # Apply initial circuit
+        rho_current = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
 
         # Get number operators for population calculation
         a_dag = self.operators["a_dag"]
@@ -1182,9 +870,8 @@ class NQubitExperiment(Experiment):
                 
                 # Extract data for this segment
                 for i, rho_t in enumerate(result.states):
-                    # Apply second rotations for measurement
-                    rho_meas = self.apply_rotation(rho_t, theta2_q1, qubit=0)
-                    rho_meas = self.apply_rotation(rho_meas, theta2_q2, qubit=1)
+                    # Apply final circuit for measurement
+                    rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
                     
                     # Measure two-qubit probabilities
                     p00 = float(self.prob(rho_meas, qubits=[0, 1], state="00"))
@@ -1208,9 +895,8 @@ class NQubitExperiment(Experiment):
                 if seg_end != t_end:
                     rho_final = result.states[-1]
                     
-                    # Measurement protocol: Ry(-theta2) -> project -> Ry(theta2)
-                    rho_before_proj = self.apply_rotation(rho_final, -theta2_q1, qubit=0)
-                    rho_before_proj = self.apply_rotation(rho_before_proj, -theta2_q2, qubit=1)
+                    # Undo final circuit for projection in computational basis
+                    rho_before_proj = final_unitary_dag * rho_final * final_unitary  # type: ignore
                     
                     # Get probabilities in basis
                     p00_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="00"))
@@ -1235,18 +921,16 @@ class NQubitExperiment(Experiment):
                     # Normalize
                     rho_projected = rho_projected / rho_projected.tr()
                     
-                    # Apply rotations back
-                    rho_current = self.apply_rotation(rho_projected, theta2_q1, qubit=0)
-                    rho_current = self.apply_rotation(rho_current, theta2_q2, qubit=1)
+                    # Apply final circuit back
+                    rho_current = final_unitary * rho_projected * final_unitary_dag  # type: ignore
         else:
             # Continuous evolution without intermediate measurements
             times = np.linspace(t_start, t_end, n_points)
             result = solver.run(rho_current, tlist=times, args=args)
             
             for i, rho_t in enumerate(result.states):
-                # Apply second rotations
-                rho_final = self.apply_rotation(rho_t, theta2_q1, qubit=0)
-                rho_final = self.apply_rotation(rho_final, theta2_q2, qubit=1)
+                # Apply final circuit
+                rho_final = final_unitary * rho_t * final_unitary_dag  # type: ignore
 
                 # Measure two-qubit probabilities
                 p00 = float(self.prob(rho_final, qubits=[0, 1], state="00"))

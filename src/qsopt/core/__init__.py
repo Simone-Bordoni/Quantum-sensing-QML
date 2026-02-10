@@ -7,7 +7,7 @@ quantum sensing experiments.
 """
 
 from .callback import OptimizationCallback
-from .experiment import Experiment, NQubitExperiment
+from .experiment import Experiment
 from .experiment.quantum_utils import (
     apply_single_qubit_rotation,
     create_measurement_projector,

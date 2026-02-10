@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
 
-from .base import Experiment
 from .quantum_utils import (
     apply_qubit_rotation,
     build_qubit_noise_operators,
@@ -42,7 +41,7 @@ from .quantum_utils import (
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
 
 
-class TwoQubitExperiment(Experiment):
+class TwoQubitExperiment:
     """
     Two-qubit quantum sensing experiment.
 

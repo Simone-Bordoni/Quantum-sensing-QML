@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
 
-from .base import Experiment
 from .quantum_utils import (
     build_qubit_noise_operators,
     create_measurement_projector,
@@ -45,7 +44,7 @@ from .quantum_utils import (
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
 
 
-class SingleQubitExperiment(Experiment):
+class SingleQubitExperiment:
     """
     A class representing a single qubit photon detection experiment.
 

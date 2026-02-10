@@ -90,7 +90,7 @@ class TestCoreImports:
     def test_experiment_import(self):
         """Test experiment module imports."""
         try:
-            from qsopt.core.experiment import Experiment, SingleQubitExperiment, TwoQubitExperiment
+            from qsopt.core.experiment import Experiment
         except ImportError as e:
             pytest.fail(f"Failed to import experiment: {e}")
 
