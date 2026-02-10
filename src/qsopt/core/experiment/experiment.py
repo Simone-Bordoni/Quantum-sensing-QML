@@ -32,6 +32,7 @@ import qutip_jax  # pylint: disable=unused-import
 from .quantum_utils import (
     apply_qubit_rotation,
     build_qubit_noise_operators,
+    embed_circuit_unitary,
     generate_initial_state,
     generate_n_qubit_operators,
     gu,
@@ -435,32 +436,6 @@ class Experiment:
         
         return probabilities
 
-    def _embed_circuit_unitary(self, U_circuit: jnp.ndarray) -> jnp.ndarray:
-        """
-        Embed an n-qubit circuit unitary into the full composite Hilbert space using JAX.
-
-        The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
-        The circuit acts only on the qubit subspace (qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn).
-
-        Args:
-            U_circuit: (Σ qubit_levels)x(Σ qubit_levels) unitary matrix for the n-qubit circuit as JAX array
-
-        Returns:
-            Full-space unitary as JAX array: I_field ⊗ I_cavity ⊗ U_circuit
-        """
-        field_levels = self.experimental_params.field_levels
-        cavity_levels = self.experimental_params.cavity_levels
-
-        # Build full operator using JAX Kronecker products
-        # I_field ⊗ I_cavity ⊗ U_circuit
-        I_field = jnp.eye(field_levels, dtype=jnp.complex128)
-        I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
-        
-        # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
-        U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), U_circuit)
-
-        return U_full_jax
-
     def _prepare_circuit_unitaries(self) -> tuple:
         """
         Get embedded unitaries for initial and final circuits with their daggers.
@@ -480,9 +455,11 @@ class Experiment:
         initial_unitary_circuit = self.initial_circuit.get_unitary(qutip=False)
         final_unitary_circuit = self.final_circuit.get_unitary(qutip=False)
         
-        # Embed into full composite space (JAX arrays)
-        initial_unitary_jax = self._embed_circuit_unitary(initial_unitary_circuit)
-        final_unitary_jax = self._embed_circuit_unitary(final_unitary_circuit)
+        # Embed into full composite space (JAX arrays) using utility function
+        field_levels = self.experimental_params.field_levels
+        cavity_levels = self.experimental_params.cavity_levels
+        initial_unitary_jax = embed_circuit_unitary(initial_unitary_circuit, field_levels, cavity_levels)
+        final_unitary_jax = embed_circuit_unitary(final_unitary_circuit, field_levels, cavity_levels)
         
         # Precompute daggers (conjugate transpose) in JAX
         initial_unitary_dag_jax = jnp.conj(initial_unitary_jax.T)
@@ -493,7 +470,7 @@ class Experiment:
         initial_unitary_dag = qt.Qobj(initial_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
         final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
         final_unitary_dag = qt.Qobj(final_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
-        
+
         # Cache for reuse
         self._cached_circuit_unitaries = (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
         
@@ -549,40 +526,28 @@ class Experiment:
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
-            # Convert to concrete float values (times should not be differentiated)
-            t0_float = float(t0)
-            t1_float = float(t1)
-
-            # Apply initial circuit
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
-            print("Rho after initial circuit")
-            print(rho_after_circuit)
-
-            # Evolve
-            evolution_result = solver.run(rho_after_circuit, [t0_float, t1_float], args=args)
+            evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
             rho_evolved = evolution_result.states[-1]
-            print("Rho after time evolution")
-            print(rho_evolved)
-
-            # Apply final circuit
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
-            print("Rho after final circuit")
-            print(rho_final)
 
             # Measure probability of all qubits in ground state |00...0⟩
             P_all0 = self.operators["P_all0"]
-            prob_all_ground = float(jnp.real((P_all0 * rho_final).tr()))
-            print("Probability of all qubits in ground state |00...0⟩:", prob_all_ground)
-
-            # Update cumulative non-detection probability
-            prob_all_no_detect = prob_all_no_detect * prob_all_ground
-
-            # Project onto |00...0⟩ (non-detected state) and renormalize
             rho_projected = P_all0 * rho_final * P_all0  # type: ignore
             trace_val = rho_projected.tr()
+            prob_all_ground = jnp.real(trace_val)
             rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
-            print("Rho after projection onto non-detection state")
-            print(rho_current)
+            
+            # Print matrices with 2 decimal places
+            np.set_printoptions(precision=2, suppress=True)
+            print(np.array(rho_final.full()))
+            print(np.array(rho_current.full()))
+            np.set_printoptions()  # Reset to defaults
+
+            prob_all_no_detect = prob_all_no_detect * prob_all_ground
+
+            
+
 
         # Total detection probability = 1 - P(no detection at any step)
         prob_detection = 1 - prob_all_no_detect
@@ -639,8 +604,6 @@ class Experiment:
 
         for measurement_times in measurement_sequences:
 
-            print("Running simulation with interaction")
-
             # Simulation with photon interaction
             prob_with = self.simulation(
                 solver=solver_with,
@@ -650,8 +613,6 @@ class Experiment:
             )
             prob_with_list.append(prob_with)
 
-
-            print("Running simulation without interaction")
             # Simulation without photon interaction (reference)
             prob_without = self.simulation(
                 solver=solver_without,
@@ -694,8 +655,8 @@ class Experiment:
 
         Returns:
             Dictionary containing:
-                - 'probs_with': Dict with p00...0, p10...0, p01...0, ... , p11...1 (with photon)
-                - 'probs_without': Dict with p00...0, p10...0, p01...0, ... , p11...1 (without photon)
+                - 'probs_with': probability of finding the qubit in excited state with photon interaction
+                - 'probs_without': probability of finding the qubit in excited state without photon interaction
                 - 'detection_with': Detection probability with photon
                 - 'detection_without': Detection probability without photon
                 - 'contrast': Sensing contrast

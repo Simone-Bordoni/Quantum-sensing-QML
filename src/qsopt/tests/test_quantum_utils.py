@@ -13,6 +13,7 @@ import qutip as qt
 from qsopt.core.experiment.quantum_utils import (
     apply_single_qubit_rotation,
     create_measurement_projector,
+    embed_circuit_unitary,
     generate_initial_state,
     generate_n_qubit_operators,
     gu,
@@ -455,3 +456,177 @@ class TestCouplingFunction:
 
         assert results.shape == (3,), "Should handle array of times"
         assert all(float(r) > 0 for r in results), "All couplings should be positive"
+
+
+class TestEmbedCircuitUnitary:
+    """Test circuit unitary embedding function."""
+
+    def test_embed_identity_single_qubit(self):
+        """Test embedding identity operator for single qubit."""
+        import jax.numpy as jnp
+
+        # Single qubit identity (2x2)
+        U_circuit = jnp.eye(2, dtype=jnp.complex128)
+        field_levels = 2
+        cavity_levels = 3
+
+        U_full = embed_circuit_unitary(U_circuit, field_levels, cavity_levels)
+
+        # Full space dimension should be field_levels * cavity_levels * qubit_levels
+        expected_dim = field_levels * cavity_levels * 2
+        assert U_full.shape == (expected_dim, expected_dim), "Full unitary has wrong shape"
+
+        # Should be identity in full space
+        expected_identity = jnp.eye(expected_dim, dtype=jnp.complex128)
+        assert jnp.allclose(U_full, expected_identity), "Embedded identity should be full-space identity"
+
+    def test_embed_identity_two_qubit(self):
+        """Test embedding identity operator for two qubits."""
+        import jax.numpy as jnp
+
+        # Two qubit identity (4x4)
+        U_circuit = jnp.eye(4, dtype=jnp.complex128)
+        field_levels = 2
+        cavity_levels = 2
+
+        U_full = embed_circuit_unitary(U_circuit, field_levels, cavity_levels)
+
+        # Full space dimension
+        expected_dim = field_levels * cavity_levels * 4
+        assert U_full.shape == (expected_dim, expected_dim), "Full unitary has wrong shape"
+
+        # Should be identity
+        expected_identity = jnp.eye(expected_dim, dtype=jnp.complex128)
+        assert jnp.allclose(U_full, expected_identity), "Embedded identity should be full-space identity"
+
+    def test_embed_pauli_x(self):
+        """Test embedding Pauli-X gate."""
+        import jax.numpy as jnp
+
+        # Pauli-X gate
+        U_circuit = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
+        field_levels = 2
+        cavity_levels = 2
+
+        U_full = embed_circuit_unitary(U_circuit, field_levels, cavity_levels)
+
+        # Full space dimension
+        expected_dim = field_levels * cavity_levels * 2
+        assert U_full.shape == (expected_dim, expected_dim)
+
+        # Should be unitary
+        U_full_dag = jnp.conj(U_full.T)
+        product = U_full @ U_full_dag
+        identity = jnp.eye(expected_dim, dtype=jnp.complex128)
+        assert jnp.allclose(product, identity, atol=1e-10), "Embedded unitary should be unitary"
+
+        # Applying twice should give identity (X^2 = I)
+        U_squared = U_full @ U_full
+        assert jnp.allclose(U_squared, identity, atol=1e-10), "Pauli-X squared should be identity"
+
+    def test_embed_acts_on_qubit_subspace_only(self):
+        """Test that embedded unitary acts only on qubit subspace."""
+        import jax.numpy as jnp
+
+        # Pauli-Z gate (diagonal, easy to check)
+        U_circuit = jnp.array([[1, 0], [0, -1]], dtype=jnp.complex128)
+        field_levels = 2
+        cavity_levels = 2
+
+        U_full = embed_circuit_unitary(U_circuit, field_levels, cavity_levels)
+
+        # Create a state with field=0, cavity=0, qubit=0: |0,0,0⟩
+        # This should be unchanged by Pauli-Z (eigenstate with eigenvalue +1)
+        dim = field_levels * cavity_levels * 2
+        state_000 = jnp.zeros(dim, dtype=jnp.complex128)
+        state_000 = state_000.at[0].set(1.0)  # First basis state
+
+        result_000 = U_full @ state_000
+        assert jnp.allclose(result_000, state_000), "|0,0,0⟩ should be unchanged by Z gate"
+
+        # Create state |0,0,1⟩ (field=0, cavity=0, qubit=1)
+        # Index in composite basis: 0*cavity*2 + 0*2 + 1 = 1
+        state_001 = jnp.zeros(dim, dtype=jnp.complex128)
+        state_001 = state_001.at[1].set(1.0)
+
+        result_001 = U_full @ state_001
+        expected_001 = -state_001  # Z|1⟩ = -|1⟩
+        assert jnp.allclose(result_001, expected_001), "|0,0,1⟩ should get phase -1 from Z gate"
+
+    def test_embed_preserves_unitarity(self):
+        """Test that embedding preserves unitarity."""
+        import jax.numpy as jnp
+
+        # Random unitary for single qubit
+        # Use Hadamard gate
+        H = jnp.array([[1, 1], [1, -1]], dtype=jnp.complex128) / jnp.sqrt(2)
+        field_levels = 3
+        cavity_levels = 4
+
+        U_full = embed_circuit_unitary(H, field_levels, cavity_levels)
+
+        # Check unitarity: U†U = I
+        U_dag = jnp.conj(U_full.T)
+        product = U_dag @ U_full
+        dim = field_levels * cavity_levels * 2
+        identity = jnp.eye(dim, dtype=jnp.complex128)
+
+        assert jnp.allclose(product, identity, atol=1e-10), "U†U should be identity"
+
+        # Check UU† = I as well
+        product2 = U_full @ U_dag
+        assert jnp.allclose(product2, identity, atol=1e-10), "UU† should be identity"
+
+    def test_embed_different_system_sizes(self):
+        """Test embedding with different field and cavity dimensions."""
+        import jax.numpy as jnp
+
+        U_circuit = jnp.eye(2, dtype=jnp.complex128)
+
+        # Test various system sizes
+        test_cases = [
+            (2, 2),  # Small system
+            (3, 3),  # Medium system
+            (2, 5),  # Asymmetric
+            (5, 2),  # Asymmetric reverse
+        ]
+
+        for field_levels, cavity_levels in test_cases:
+            U_full = embed_circuit_unitary(U_circuit, field_levels, cavity_levels)
+            expected_dim = field_levels * cavity_levels * 2
+            assert U_full.shape == (expected_dim, expected_dim), \
+                f"Wrong shape for field={field_levels}, cavity={cavity_levels}"
+
+            # Check it's still unitary
+            U_dag = jnp.conj(U_full.T)
+            product = U_dag @ U_full
+            identity = jnp.eye(expected_dim, dtype=jnp.complex128)
+            assert jnp.allclose(product, identity, atol=1e-10), \
+                f"Lost unitarity for field={field_levels}, cavity={cavity_levels}"
+
+    def test_embed_cnot_two_qubit(self):
+        """Test embedding CNOT gate for two qubits."""
+        import jax.numpy as jnp
+
+        # CNOT gate (4x4 for 2 qubits)
+        CNOT = jnp.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 1],
+            [0, 0, 1, 0]
+        ], dtype=jnp.complex128)
+
+        field_levels = 2
+        cavity_levels = 2
+
+        U_full = embed_circuit_unitary(CNOT, field_levels, cavity_levels)
+
+        # Full space dimension
+        expected_dim = field_levels * cavity_levels * 4
+        assert U_full.shape == (expected_dim, expected_dim)
+
+        # Check unitarity
+        U_dag = jnp.conj(U_full.T)
+        product = U_dag @ U_full
+        identity = jnp.eye(expected_dim, dtype=jnp.complex128)
+        assert jnp.allclose(product, identity, atol=1e-10), "Embedded CNOT should be unitary"

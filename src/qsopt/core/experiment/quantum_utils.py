@@ -786,3 +786,39 @@ def measure_qubits_probability(
 
     probability = jnp.real((P * rho * P.dag()).tr())  # type: ignore
     return float(probability)
+
+
+def embed_circuit_unitary(
+    circuit_unitary: jnp.ndarray,
+    field_levels: int,
+    cavity_levels: int
+) -> jnp.ndarray:
+    """
+    Embed an n-qubit circuit unitary into the full composite Hilbert space using JAX.
+
+    The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
+    The circuit acts only on the qubit subspace (qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn).
+
+    Args:
+        circuit_unitary: (Σ qubit_levels)x(Σ qubit_levels) unitary matrix for the n-qubit circuit as JAX array
+        field_levels: Number of levels in the input field subsystem
+        cavity_levels: Number of levels in the resonator cavity subsystem
+
+    Returns:
+        Full-space unitary as JAX array: I_field ⊗ I_cavity ⊗ circuit_unitary
+        
+    Example:
+        >>> # 2-qubit circuit unitary (4x4 for 2-level qubits)
+        >>> U_circuit = jnp.eye(4, dtype=jnp.complex128)
+        >>> U_full = embed_circuit_unitary(U_circuit, field_levels=2, cavity_levels=3)
+        >>> # U_full is now (2*3*4)x(2*3*4) = 24x24
+    """
+    # Build full operator using JAX Kronecker products
+    # I_field ⊗ I_cavity ⊗ U_circuit
+    I_field = jnp.eye(field_levels, dtype=jnp.complex128)
+    I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
+    
+    # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
+    U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), circuit_unitary)
+
+    return U_full_jax

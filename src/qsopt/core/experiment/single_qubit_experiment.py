@@ -35,7 +35,6 @@ from .quantum_utils import (
     build_qubit_noise_operators,
     create_measurement_projector,
     generate_initial_state,
-    generate_single_qubit_operators,
     gu,
     u0,
 )
@@ -474,7 +473,7 @@ class SingleQubitExperiment:
             rho_evolved = evolution_result.states[-1]
 
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
-            prob_ground = jnp.real((projector_0 * rho_final * projector_0).tr())  # type: ignore
+            prob_ground = jnp.real((projector_0 * rho_final).tr())  # type: ignore
             prob_all_ground = prob_all_ground * prob_ground
 
             rho_projected = projector_0 * rho_final * projector_0  # type: ignore  # Always project to |0⟩
