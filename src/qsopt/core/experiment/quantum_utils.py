@@ -17,7 +17,7 @@ import numpy as np
 import qutip as qt
 from jax.scipy.special import erfc
 
-from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType
+from qsopt.core.experimental_parameters import InitialStateType
 
 
 @jax.jit
@@ -428,7 +428,7 @@ def _create_custom_state(
             if not (0 <= cavity < cavity_levels):
                 raise ValueError(f"Cavity index {cavity} out of range [0, {cavity_levels})")
             if not all(0 <= x < y for x,y in zip(list(qubit),q_levels)):
-                raise ValueError(f"At least one of the qubit indexes is out of range [0, qubit levels)")
+                raise ValueError("At least one of the qubit indexes is out of range [0, qubit levels)")
 
             # Compute flat index: field ⊗ cavity ⊗ qubit ordering
             idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
@@ -707,7 +707,7 @@ def measure_qubits_probability(
     n_qubits= len((operators['P1_q']))
 
 
-    if (qubit_indices == 'all'):
+    if qubit_indices == 'all':
         # Joint measurement - only all-ground state supported
         if len(state) != n_qubits:
             raise ValueError(   
@@ -739,9 +739,9 @@ def measure_qubits_probability(
             
             P = qt.tensor([I_field, I_cavity] + qubit_projectors)
     
-    elif (isinstance(qubit_indices, List[int]) or len(qubit_indices) == 1) or (isinstance(qubit_indices, int) & (qubit_indices < n_qubits)):
+    elif (isinstance(qubit_indices, list) and len(qubit_indices) == 1) or (isinstance(qubit_indices, int) and qubit_indices < n_qubits):
         # Single qubit measurement
-        if isinstance(qubit_indices, List[int]):
+        if isinstance(qubit_indices, list):
             qubit_indices = qubit_indices[0]
         projector_key = f"P{state}_q"
         if projector_key not in operators:

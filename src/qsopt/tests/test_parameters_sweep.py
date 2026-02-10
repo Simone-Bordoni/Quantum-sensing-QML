@@ -5,7 +5,7 @@ Test parameter sweep functionality
 import numpy as np
 import pytest
 
-from qsopt.core.experiment import SingleQubitExperiment, TwoQubitExperiment
+from qsopt.core.experiment import Experiment
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     InitialStateConfig,
@@ -15,7 +15,7 @@ from qsopt.core.experimental_parameters import (
     PhysicalConstants,
     SystemDimensions,
 )
-from qsopt.core.trainable_parameters import TrainableParameters
+from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
 from qsopt.utils.parameters_sweep import SweepResults, compute_chi_gamma_sweep
 from qsopt.utils.visualization import plot_sweep_results
 
@@ -42,10 +42,10 @@ def single_qubit_experiment():
         noise_config=noise_config,
     )
 
-    trainable_params = TrainableParameters()
-    trainable_params.add_rotation_angles(names=["theta1", "theta2"], initial_values=[0.0, 0.0])
+    initial_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[0.0])
+    final_circuit = QuantumCircuit(n_qubits=1)
 
-    return SingleQubitExperiment(exp_params, trainable_params)
+    return Experiment(exp_params, initial_circuit=initial_circuit, final_circuit=final_circuit)
 
 
 @pytest.fixture
@@ -72,22 +72,19 @@ def two_qubit_experiment():
         noise_config=noise_config,
     )
 
-    trainable_params = TrainableParameters()
-    trainable_params.add_rotation_angles(
-        names=["theta1_q1", "theta2_q1", "theta1_q2", "theta2_q2"],
-        initial_values=[0.0, 0.0, 0.0, 0.0],
-    )
+    initial_circuit = create_ry_circuit_layer(n_qubits=2, theta_values=[0.0, 0.0])
+    final_circuit = QuantumCircuit(n_qubits=2)
 
-    return TwoQubitExperiment(exp_params, trainable_params)
+    return Experiment(exp_params, initial_circuit=initial_circuit, final_circuit=final_circuit)
 
 
 def test_single_qubit_sweep_method_exists(single_qubit_experiment):
-    """Test that sweep_chi_gamma method exists on SingleQubitExperiment."""
+    """Test that sweep_chi_gamma method exists on Experiment."""
     assert hasattr(single_qubit_experiment, "sweep_chi_gamma")
 
 
 def test_two_qubit_sweep_method_exists(two_qubit_experiment):
-    """Test that sweep_chi_gamma method exists on TwoQubitExperiment."""
+    """Test that sweep_chi_gamma method exists on Experiment."""
     assert hasattr(two_qubit_experiment, "sweep_chi_gamma")
 
 

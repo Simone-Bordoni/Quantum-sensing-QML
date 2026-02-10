@@ -68,6 +68,7 @@ class OptimizationCallback:
         prob_with: float = 0.0,
         prob_without: float = 0.0,
         contrast: float = 0.0,
+        trainable_params: Optional[tuple] = None,  # Backward compatibility
         **kwargs
     ) -> None:
         """
@@ -82,10 +83,15 @@ class OptimizationCallback:
             prob_with: Detection probability with photon interaction
             prob_without: Detection probability without photon interaction
             contrast: Sensing contrast (prob_with - prob_without)
+            trainable_params: (Deprecated) Tuple of (initial, final) params for backward compatibility
             **kwargs: Additional keyword arguments (for backward compatibility)
         """
         self.epoch += 1
 
+        # Handle backward compatibility: if trainable_params tuple is provided, unpack it
+        if trainable_params is not None:
+            trainable_params_initial, trainable_params_final = trainable_params
+        
         # Package parameters as tuple for internal storage
         trainable_params = (trainable_params_initial, trainable_params_final)
 

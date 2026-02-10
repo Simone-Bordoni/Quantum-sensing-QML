@@ -14,8 +14,7 @@ from qsopt.core.experiment.quantum_utils import (
     apply_single_qubit_rotation,
     create_measurement_projector,
     generate_initial_state,
-    generate_single_qubit_operators,
-    generate_two_qubit_operators,
+    generate_n_qubit_operators,
     gu,
 )
 from qsopt.core.experimental_parameters import InitialStateConfig, InitialStateType
@@ -29,8 +28,9 @@ class TestOperatorGeneration:
         field_levels = 2
         cavity_levels = 2
         qubit_levels = 2
+        n_qubits = 1
 
-        operators = generate_single_qubit_operators(field_levels, cavity_levels, qubit_levels)
+        operators = generate_n_qubit_operators(field_levels, cavity_levels, qubit_levels, n_qubits)
 
         # Check all required operators exist
         required_ops = [
@@ -43,28 +43,36 @@ class TestOperatorGeneration:
             "sigma_y",
             "sigma_minus",
             "sigma_plus",
-            "P0",
-            "P1",
+            "P0_q",
+            "P1_q",
+            "P_all0",
             "I_field",
             "I_cavity",
-            "I_qubit",
+            "I_q",
         ]
         for op_name in required_ops:
             assert op_name in operators, f"Operator {op_name} not found"
-            assert isinstance(operators[op_name], qt.Qobj)
+            if op_name in ["sigma_z", "sigma_x", "sigma_y", "sigma_minus", "sigma_plus", "P0_q", "P1_q"]:
+                # These are now lists for n-qubit systems
+                assert isinstance(operators[op_name], list), f"{op_name} should be a list"
+                assert len(operators[op_name]) == n_qubits
+                assert isinstance(operators[op_name][0], qt.Qobj)
+            else:
+                assert isinstance(operators[op_name], (qt.Qobj, list)), f"{op_name} should be Qobj or list"
 
     def test_operator_dimensions(self):
         """Test that operators have correct dimensions."""
         field_levels = 3
         cavity_levels = 4
         qubit_levels = 2
+        n_qubits = 1
 
-        operators = generate_single_qubit_operators(field_levels, cavity_levels, qubit_levels)
+        operators = generate_n_qubit_operators(field_levels, cavity_levels, qubit_levels, n_qubits)
 
         expected_dim = field_levels * cavity_levels * qubit_levels
 
         for op_name, op in operators.items():
-            if not op_name.startswith("I_"):  # Skip individual identity operators
+            if not op_name.startswith("I_") and not isinstance(op, list):  # Skip identity and list operators
                 assert op.dims == [
                     [field_levels, cavity_levels, qubit_levels],
                     [field_levels, cavity_levels, qubit_levels],
@@ -76,16 +84,16 @@ class TestOperatorGeneration:
 
     def test_pauli_operators_hermitian(self):
         """Test that Pauli operators are Hermitian."""
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         pauli_ops = ["sigma_x", "sigma_y", "sigma_z"]
         for op_name in pauli_ops:
-            op = operators[op_name]
+            op = operators[op_name][0]  # Get first qubit's operator
             assert (op - op.dag()).norm() < 1e-10, f"{op_name} is not Hermitian"
 
     def test_ladder_operators(self):
         """Test that ladder operators have correct action."""
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         # Test that a†a has correct eigenvalues (number operator)
         # For 2-level field: eigenvalues should be 0, 1
@@ -97,8 +105,8 @@ class TestOperatorGeneration:
         assert (n_cavity - n_cavity.dag()).norm() < 1e-10, "Cavity number operator not Hermitian"
 
         # For qubit: σ₊σ₋ = (I + σz)/2
-        sigma_plus_minus = operators["sigma_plus"] * operators["sigma_minus"]
-        sigma_z = operators["sigma_z"]
+        sigma_plus_minus = operators["sigma_plus"][0] * operators["sigma_minus"][0]
+        sigma_z = operators["sigma_z"][0]
 
         # This should be Hermitian
         assert (
@@ -107,10 +115,10 @@ class TestOperatorGeneration:
 
     def test_projector_properties(self):
         """Test that projectors are idempotent and orthogonal."""
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
-        P0 = operators["P0"]
-        P1 = operators["P1"]
+        P0 = operators["P0_q"][0]  # First qubit's |0⟩⟨0| projector
+        P1 = operators["P1_q"][0]  # First qubit's |1⟩⟨1| projector
 
         # Idempotency: P² = P
         assert (P0 * P0 - P0).norm() < 1e-10, "P0 not idempotent"
@@ -126,29 +134,27 @@ class TestOperatorGeneration:
 
     def test_two_qubit_operators_implemented(self):
         """Test that two-qubit operators are generated correctly."""
-        ops = generate_two_qubit_operators(2, 2, 2)
+        ops = generate_n_qubit_operators(2, 2, 2, n_qubits=2)
 
         # Check that all expected operators are present
         assert "a_in" in ops
         assert "a" in ops
-        assert "sigma_z1" in ops
-        assert "sigma_z2" in ops
-        assert "sigma_x1" in ops
-        assert "sigma_x2" in ops
-        assert "sigma_y1" in ops
-        assert "sigma_y2" in ops
-        assert "P00" in ops
-        assert "P01" in ops
-        assert "P10" in ops
-        assert "P11" in ops
-        assert "roty_q1" in ops
-        assert "roty_q2" in ops
+        assert "sigma_z" in ops
+        assert "sigma_x" in ops
+        assert "sigma_y" in ops
+        assert "P0_q" in ops
+        assert "P1_q" in ops
+        assert "P_all0" in ops
+        assert "roty_q" in ops
         assert "roty" in ops
 
-        # Check that operators are QuTiP objects
-        for key, op in ops.items():
-            if not key.startswith("I_"):
-                assert isinstance(op, qt.Qobj)
+        # Check lists have 2 elements for 2 qubits
+        list_ops = ["sigma_z", "sigma_x", "sigma_y", "sigma_minus", "sigma_plus", "P0_q", "P1_q", "roty_q"]
+        for op_name in list_ops:
+            assert isinstance(ops[op_name], list), f"{op_name} should be a list"
+            assert len(ops[op_name]) == 2, f"{op_name} should have 2 elements"
+            for op in ops[op_name]:
+                assert isinstance(op, qt.Qobj), f"Elements of {op_name} should be Qobj"
 
 
 class TestInitialStateGeneration:
@@ -157,7 +163,7 @@ class TestInitialStateGeneration:
     def test_vacuum_state(self):
         """Test vacuum state generation."""
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
         # Check it's a density matrix
         assert rho.isherm, "Vacuum state not Hermitian"
@@ -169,7 +175,7 @@ class TestInitialStateGeneration:
     def test_single_photon_state(self):
         """Test single photon state generation."""
         config = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
         assert rho.isherm, "Single photon state not Hermitian"
         assert abs(rho.tr() - 1.0) < 1e-10, "Single photon state not normalized"
@@ -179,7 +185,7 @@ class TestInitialStateGeneration:
         """Test coherent state generation."""
         alpha = 0.5
         config = InitialStateConfig(state_type=InitialStateType.COHERENT, coherent_alpha=alpha)
-        rho = generate_initial_state(config, 3, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 3, 2, 2, n_qubits=1)
 
         assert rho.isherm, "Coherent state not Hermitian"
         assert abs(rho.tr() - 1.0) < 1e-10, "Coherent state not normalized"
@@ -191,7 +197,7 @@ class TestInitialStateGeneration:
         config = InitialStateConfig(state_type=InitialStateType.COHERENT)
 
         with pytest.raises(ValueError, match="coherent_alpha must be specified"):
-            generate_initial_state(config, 2, 2, 2, num_qubits=1)
+            generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
     def test_custom_state_simple(self):
         """Test custom state with simple superposition."""
@@ -203,7 +209,7 @@ class TestInitialStateGeneration:
         config = InitialStateConfig(
             state_type=InitialStateType.CUSTOM, custom_amplitudes=amplitudes
         )
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
         assert rho.isherm, "Custom state not Hermitian"
         assert abs(rho.tr() - 1.0) < 1e-10, "Custom state not normalized"
@@ -214,7 +220,7 @@ class TestInitialStateGeneration:
         config = InitialStateConfig(state_type=InitialStateType.CUSTOM)
 
         with pytest.raises(ValueError, match="custom_amplitudes must be specified"):
-            generate_initial_state(config, 2, 2, 2, num_qubits=1)
+            generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
     def test_custom_state_index_validation(self):
         """Test that custom state validates indices."""
@@ -225,13 +231,13 @@ class TestInitialStateGeneration:
         )
 
         with pytest.raises(ValueError, match="Field index.*out of range"):
-            generate_initial_state(config, 2, 2, 2, num_qubits=1)
+            generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
     def test_two_qubit_states_implemented(self):
         """Test that two-qubit states are generated correctly."""
         # Test single photon state for two qubits
         config = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=2)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=2)
 
         assert rho is not None
         assert rho.isoper, "Should be a density matrix"
@@ -240,7 +246,7 @@ class TestInitialStateGeneration:
 
         # Test vacuum state for two qubits
         config_vac = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho_vac = generate_initial_state(config_vac, 2, 2, 2, num_qubits=2)
+        rho_vac = generate_initial_state(config_vac, 2, 2, 2, n_qubits=2)
 
         assert rho_vac is not None
         assert rho_vac.isherm, "Should be Hermitian"
@@ -254,9 +260,9 @@ class TestQuantumGates:
         """Test Ry(π) rotation flips qubit state."""
         # Start with |0⟩ state
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         # Apply Ry(π) - should flip |0⟩ → |1⟩
         rho_rotated = apply_single_qubit_rotation(
@@ -264,8 +270,8 @@ class TestQuantumGates:
         )
 
         # Check that P0 and P1 probabilities are swapped
-        P0 = operators["P0"]
-        P1 = operators["P1"]
+        P0 = operators["P0_q"][0]
+        P1 = operators["P1_q"][0]
 
         prob0_initial = (P0 * rho * P0.dag()).tr()
         prob1_initial = (P1 * rho * P1.dag()).tr()
@@ -278,9 +284,9 @@ class TestQuantumGates:
     def test_ry_rotation_preserves_normalization(self):
         """Test that Ry rotation preserves trace."""
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         for angle in [0, np.pi / 4, np.pi / 2, np.pi]:
             rho_rotated = apply_single_qubit_rotation(
@@ -293,9 +299,9 @@ class TestQuantumGates:
     def test_rotation_axes(self):
         """Test rotations around different axes."""
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         for axis in ["x", "y", "z"]:
             rho_rotated = apply_single_qubit_rotation(
@@ -309,9 +315,9 @@ class TestQuantumGates:
     def test_invalid_rotation_axis(self):
         """Test that invalid rotation axis raises error."""
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         with pytest.raises(ValueError, match="Invalid rotation axis"):
             apply_single_qubit_rotation(
@@ -351,7 +357,7 @@ class TestMeasurementProjectors:
         """Test projectors on known states."""
         # Vacuum state should have P(0) = 1, P(1) = 0
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
         P0 = create_measurement_projector(0, 2, 2, 2)
         P1 = create_measurement_projector(1, 2, 2, 2)
@@ -374,11 +380,11 @@ class TestIntegration:
     def test_full_workflow(self):
         """Test complete workflow: state prep → rotation → measurement."""
         # Generate operators
-        operators = generate_single_qubit_operators(2, 2, 2)
+        operators = generate_n_qubit_operators(2, 2, 2, n_qubits=1)
 
         # Prepare initial state
         config = InitialStateConfig(state_type=InitialStateType.VACUUM)
-        rho = generate_initial_state(config, 2, 2, 2, num_qubits=1)
+        rho = generate_initial_state(config, 2, 2, 2, n_qubits=1)
 
         # Apply rotation
         rho_rotated = apply_single_qubit_rotation(

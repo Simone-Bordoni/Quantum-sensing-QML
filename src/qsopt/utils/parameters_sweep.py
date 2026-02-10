@@ -149,7 +149,7 @@ def compute_chi_gamma_sweep(
     base_exp_params = experiment.experimental_params
 
     # Determine number of qubits from experiment
-    n_qubits = experiment.n_qubits
+    n_qubits = experiment.experimental_params.n_qubits
     is_two_qubit = (n_qubits == 2)
 
     # For two-qubit experiments, also track individual probabilities

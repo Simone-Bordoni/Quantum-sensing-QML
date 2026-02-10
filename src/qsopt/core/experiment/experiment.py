@@ -471,7 +471,7 @@ class Experiment:
         
         Returns:
             Tuple of (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
-            embedded in composite space as JAX arrays
+            embedded in composite space as QuTiP Qobj objects
         """
         # Update circuits with current trainable parameter values
         self._update_circuits_from_trainable_params()
@@ -480,13 +480,19 @@ class Experiment:
         initial_unitary_circuit = self.initial_circuit.get_unitary(qutip=False)
         final_unitary_circuit = self.final_circuit.get_unitary(qutip=False)
         
-        # Embed into full composite space
-        initial_unitary = self._embed_circuit_unitary(initial_unitary_circuit)
-        final_unitary = self._embed_circuit_unitary(final_unitary_circuit)
+        # Embed into full composite space (JAX arrays)
+        initial_unitary_jax = self._embed_circuit_unitary(initial_unitary_circuit)
+        final_unitary_jax = self._embed_circuit_unitary(final_unitary_circuit)
         
         # Precompute daggers (conjugate transpose) in JAX
-        initial_unitary_dag = jnp.conj(initial_unitary.T)
-        final_unitary_dag = jnp.conj(final_unitary.T)
+        initial_unitary_dag_jax = jnp.conj(initial_unitary_jax.T)
+        final_unitary_dag_jax = jnp.conj(final_unitary_jax.T)
+        
+        # Convert to QuTiP objects once
+        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
+        initial_unitary_dag = qt.Qobj(initial_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
+        final_unitary_dag = qt.Qobj(final_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
         
         # Cache for reuse
         self._cached_circuit_unitaries = (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
@@ -529,16 +535,11 @@ class Experiment:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
 
         # Get circuit unitaries (precomputed or compute from circuits)
+        # precomputed_unitaries are already QuTiP objects for efficiency
         if precomputed_unitaries is None:
-            initial_unitary_jax, initial_unitary_dag_jax, final_unitary_jax, final_unitary_dag_jax = self._prepare_circuit_unitaries()
+            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
         else:
-            initial_unitary_jax, initial_unitary_dag_jax, final_unitary_jax, final_unitary_dag_jax = precomputed_unitaries
-
-        # Convert JAX arrays to QuTiP objects with proper dimensions
-        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
-        initial_unitary_dag = qt.Qobj(initial_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
-        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
-        final_unitary_dag = qt.Qobj(final_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
+            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
         # Initial state
         rho_current = rho
@@ -554,32 +555,34 @@ class Experiment:
 
             # Apply initial circuit
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
+            print("Rho after initial circuit")
+            print(rho_after_circuit)
 
             # Evolve
             evolution_result = solver.run(rho_after_circuit, [t0_float, t1_float], args=args)
             rho_evolved = evolution_result.states[-1]
+            print("Rho after time evolution")
+            print(rho_evolved)
 
             # Apply final circuit
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
+            print("Rho after final circuit")
+            print(rho_final)
 
             # Measure probability of all qubits in ground state |00...0⟩
             P_all0 = self.operators["P_all0"]
             prob_all_ground = float(jnp.real((P_all0 * rho_final).tr()))
-
-            # Detection criterion: 1 - P(all ground)
-            prob_detect_this_step = 1.0 - prob_all_ground
-            prob_no_detect_this_step = prob_all_ground
+            print("Probability of all qubits in ground state |00...0⟩:", prob_all_ground)
 
             # Update cumulative non-detection probability
-            prob_all_no_detect = prob_all_no_detect * prob_no_detect_this_step
+            prob_all_no_detect = prob_all_no_detect * prob_all_ground
 
             # Project onto |00...0⟩ (non-detected state) and renormalize
             rho_projected = P_all0 * rho_final * P_all0  # type: ignore
             trace_val = rho_projected.tr()
             rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
-
-            # Undo final circuit for next iteration
-            rho_current = final_unitary_dag * rho_current * final_unitary  # type: ignore
+            print("Rho after projection onto non-detection state")
+            print(rho_current)
 
         # Total detection probability = 1 - P(no detection at any step)
         prob_detection = 1 - prob_all_no_detect
@@ -635,6 +638,9 @@ class Experiment:
         prob_without_list = []
 
         for measurement_times in measurement_sequences:
+
+            print("Running simulation with interaction")
+
             # Simulation with photon interaction
             prob_with = self.simulation(
                 solver=solver_with,
@@ -644,6 +650,8 @@ class Experiment:
             )
             prob_with_list.append(prob_with)
 
+
+            print("Running simulation without interaction")
             # Simulation without photon interaction (reference)
             prob_without = self.simulation(
                 solver=solver_without,
@@ -705,12 +713,8 @@ class Experiment:
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
 
-        # Prepare circuit unitaries as JAX arrays
-        initial_unitary_jax, final_unitary_jax = self._prepare_circuit_unitaries()
-        
-        # Convert to QuTiP objects for quantum operations
-        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
-        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
+        # Prepare circuit unitaries as QuTiP objects
+        initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
 
         # Compute final state with photon after evolution
         rho_after_circuit = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
@@ -818,14 +822,8 @@ class Experiment:
             else self.get_solver_no_interaction()
         )
 
-        # Prepare circuit unitaries as JAX arrays (including daggers)
-        initial_unitary_jax, initial_unitary_dag_jax, final_unitary_jax, final_unitary_dag_jax = self._prepare_circuit_unitaries()
-        
-        # Convert to QuTiP objects for quantum operations
-        initial_unitary = qt.Qobj(initial_unitary_jax, dims=[self.total_dims, self.total_dims])
-        initial_unitary_dag = qt.Qobj(initial_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
-        final_unitary = qt.Qobj(final_unitary_jax, dims=[self.total_dims, self.total_dims])
-        final_unitary_dag = qt.Qobj(final_unitary_dag_jax, dims=[self.total_dims, self.total_dims])
+        # Prepare circuit unitaries as QuTiP objects (including daggers)
+        initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
 
         # Apply initial circuit
         rho_current = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
@@ -1377,9 +1375,19 @@ class Experiment:
             >>> probs = experiment.measure_all_states(rho)
             >>> print(f"P(00) = {probs['00']:.4f}")
         """
+        from .quantum_utils import measure_qubits_probability
+        
+        field_levels = self.experimental_params.field_levels
+        cavity_levels = self.experimental_params.cavity_levels
+        qubit_levels = self.experimental_params.qubit_levels
+        
         return {
-            "00": self.prob(rho, qubits=[0, 1], state="00"),
-            "01": self.prob(rho, qubits=[0, 1], state="01"),
-            "10": self.prob(rho, qubits=[0, 1], state="10"),
-            "11": self.prob(rho, qubits=[0, 1], state="11"),
+            "00": measure_qubits_probability(rho, [0, 1], self.operators, state="00", 
+                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
+            "01": measure_qubits_probability(rho, [0, 1], self.operators, state="01",
+                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
+            "10": measure_qubits_probability(rho, [0, 1], self.operators, state="10",
+                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
+            "11": measure_qubits_probability(rho, [0, 1], self.operators, state="11",
+                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
         }
