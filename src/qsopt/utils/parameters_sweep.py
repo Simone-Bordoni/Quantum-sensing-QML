@@ -17,7 +17,7 @@ from typing import Dict, Union
 
 import numpy as np
 
-from qsopt.core.experiment import SingleQubitExperiment, TwoQubitExperiment
+from qsopt.core.experiment import Experiment
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     InteractionType,
@@ -28,7 +28,7 @@ from qsopt.utils.results import SweepResults
 
 
 def compute_chi_gamma_sweep(
-    experiment: Union[SingleQubitExperiment, TwoQubitExperiment],
+    experiment: Experiment,
     chi_interval: list = [0.1, 100.0],
     gamma_interval: list = [1.0, 100.0],
     resolution_chi: int = 20,
@@ -76,11 +76,11 @@ def compute_chi_gamma_sweep(
             - 'gamma_scale': Scale type used for gamma axis ('linear' or 'log')
 
     Example:
-        >>> from qsopt.core.experiment import SingleQubitExperiment
+        >>> from qsopt.core.experiment import Experiment
         >>> from qsopt.utils import compute_chi_gamma_sweep
         >>>
         >>> # Create experiment
-        >>> exp = SingleQubitExperiment(exp_params, trainable_params)
+        >>> exp = Experiment(exp_params, initial_circuit, final_circuit)
         >>>
         >>> # Compute sweep
         >>> results = compute_chi_gamma_sweep(
@@ -147,11 +147,10 @@ def compute_chi_gamma_sweep(
 
     # Extract base parameters from experiment
     base_exp_params = experiment.experimental_params
-    trainable_params = experiment.trainable_params
 
-    # Determine if single or two-qubit experiment
-    is_two_qubit = isinstance(experiment, TwoQubitExperiment)
-    n_qubits = 2 if is_two_qubit else 1
+    # Determine number of qubits from experiment
+    n_qubits = experiment.n_qubits
+    is_two_qubit = (n_qubits == 2)
 
     # For two-qubit experiments, also track individual probabilities
     if is_two_qubit:
@@ -179,7 +178,11 @@ def compute_chi_gamma_sweep(
 
             # Create new experiment with updated parameters
             if is_two_qubit:
-                temp_exp = TwoQubitExperiment(new_exp_params, trainable_params)
+                temp_exp = Experiment(
+                    experimental_params=new_exp_params,
+                    initial_circuit=experiment.initial_circuit,
+                    final_circuit=experiment.final_circuit,
+                )
                 # For two-qubit, get full probability information
                 results = temp_exp.run_simulation_with_probabilities()
 
@@ -192,7 +195,11 @@ def compute_chi_gamma_sweep(
                 for key in ["p00", "p01", "p10", "p11"]:
                     prob_maps[key][j, i] = results["probs_with"][key]
             else:
-                temp_exp = SingleQubitExperiment(new_exp_params, trainable_params)
+                temp_exp = Experiment(
+                    experimental_params=new_exp_params,
+                    initial_circuit=experiment.initial_circuit,
+                    final_circuit=experiment.final_circuit,
+                )
                 # Run simulation with batch averaging
                 callback = temp_exp.run_simulation(batch_size=batch_size)
 
@@ -274,7 +281,7 @@ def compute_chi_gamma_sweep(
 
 
 def compute_asymmetry_coupling_sweep(
-    experiment: TwoQubitExperiment,
+    experiment: Experiment,
     asymmetry_interval: list = [-8.0, 8.0],
     coupling_interval: list = [0.0, 10.0],
     resolution_asymmetry: int = 30,
@@ -336,8 +343,8 @@ def compute_asymmetry_coupling_sweep(
         >>> plt.xlabel('Asymmetry Δχ/γ')
         >>> plt.ylabel('Coupling χ₁₂/γ')
     """
-    if not isinstance(experiment, TwoQubitExperiment):
-        raise ValueError("This sweep requires a TwoQubitExperiment")
+    if experiment.n_qubits != 2:
+        raise ValueError("This sweep requires a two-qubit experiment")
 
     if verbose:
         print("Computing asymmetry-coupling parameter sweep...")
@@ -366,7 +373,6 @@ def compute_asymmetry_coupling_sweep(
 
     # Extract base parameters
     base_exp_params = experiment.experimental_params
-    trainable_params = experiment.trainable_params
 
     chi_mean = chi_mean_factor * gamma
 
@@ -400,7 +406,11 @@ def compute_asymmetry_coupling_sweep(
                 }
             )
 
-            temp_exp = TwoQubitExperiment(new_exp_params, trainable_params)
+            temp_exp = Experiment(
+                experimental_params=new_exp_params,
+                initial_circuit=experiment.initial_circuit,
+                final_circuit=experiment.final_circuit,
+            )
             results = temp_exp.run_simulation_with_probabilities()
 
             # Store results (j,i indexing for plotting)
@@ -482,7 +492,7 @@ def compute_asymmetry_coupling_sweep(
 
 
 def compute_asymmetry_gamma_sweep(
-    experiment: TwoQubitExperiment,
+    experiment: Experiment,
     asymmetry_interval: list = [-8.0, 8.0],
     gamma_interval: list = [0.1, 20.0],
     resolution_asymmetry: int = 30,
@@ -528,8 +538,8 @@ def compute_asymmetry_gamma_sweep(
         ...     chi12_factor=10.0  # With coupling
         ... )
     """
-    if not isinstance(experiment, TwoQubitExperiment):
-        raise ValueError("This sweep requires a TwoQubitExperiment")
+    if experiment.n_qubits != 2:
+        raise ValueError("This sweep requires a two-qubit experiment")
 
     if verbose:
         print("Computing asymmetry-gamma parameter sweep...")
@@ -554,7 +564,6 @@ def compute_asymmetry_gamma_sweep(
     detection_without_map = np.zeros((resolution_gamma, resolution_asymmetry))
 
     base_exp_params = experiment.experimental_params
-    trainable_params = experiment.trainable_params
 
     start_time = time.time()
     total_points = resolution_asymmetry * resolution_gamma
@@ -586,7 +595,11 @@ def compute_asymmetry_gamma_sweep(
                 }
             )
 
-            temp_exp = TwoQubitExperiment(new_exp_params, trainable_params)
+            temp_exp = Experiment(
+                experimental_params=new_exp_params,
+                initial_circuit=experiment.initial_circuit,
+                final_circuit=experiment.final_circuit,
+            )
             results = temp_exp.run_simulation_with_probabilities()
 
             contrast_map[j, i] = results["contrast"]

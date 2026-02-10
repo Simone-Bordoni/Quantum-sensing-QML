@@ -9,7 +9,7 @@ Components:
 - quantum_utils: Utility functions for quantum operations
 """
 
-from .n_qubit_experiment import Experiment
+from .experiment import Experiment
 
 __all__ = [
     "Experiment",

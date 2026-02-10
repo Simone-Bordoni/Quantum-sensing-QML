@@ -204,6 +204,124 @@ class TestGateUnitarity:
         np.testing.assert_allclose(identity.full(), qt.qeye([2, 2]).full(), rtol=1e-10, atol=1e-12)
 
 
+# --------------------------------------------------------------------------
+# Additional coverage tests for gates
+# --------------------------------------------------------------------------
+
+class TestAdditionalGateCoverage:
+    """Additional tests to improve gate coverage."""
+
+    def test_gate_parameter_value_update(self):
+        """Test updating gate parameter values multiple times."""
+        rx = RXGate(theta=0.0, target=0)
+        
+        rx.set_parameter(np.pi/4)
+        np.testing.assert_allclose(rx.get_parameter(), np.pi/4, rtol=1e-10)
+        
+        rx.set_parameter(np.pi/2)
+        np.testing.assert_allclose(rx.get_parameter(), np.pi/2, rtol=1e-10)
+
+    def test_jax_array_parameter_input(self):
+        """Test setting parameters with JAX arrays."""
+        rx = RXGate(theta=jnp.array(0.5), target=0)
+        assert isinstance(rx.get_parameter(), jnp.ndarray)
+        
+        rx.set_parameter(jnp.array(1.5))
+        np.testing.assert_allclose(rx.get_parameter(), 1.5, rtol=1e-10)
+
+    def test_gate_dims(self):
+        """Test gate dimensions are correct."""
+        rx = RXGate(theta=0.5, target=0)
+        U = rx.matrix(qutip=True)
+        assert U.dims == [[2], [2]]
+        assert U.shape == (2, 2)
+
+    def test_two_qubit_gate_dims(self):
+        """Test two-qubit gate dimensions."""
+        cnot = CNOTGate(target=(0, 1))
+        U = cnot.matrix(qutip=True)
+        assert U.dims == [[2, 2], [2, 2]]
+        assert U.shape == (4, 4)
+
+    def test_gate_repr_formatting(self):
+        """Test gate string representation formatting."""
+        rx = RXGate(theta=1.2345, target=2)
+        repr_str = repr(rx)
+        assert "RX" in repr_str
+        assert "1.2345" in repr_str
+        assert "[2]" in repr_str
+
+    def test_cnot_gate_targets(self):
+        """Test CNOT gate target tuple."""
+        cnot = CNOTGate(target=(1, 3))
+        assert cnot.target == (1, 3)
+        assert cnot.name == "CNOT"
+
+    def test_cz_gate_matrix_properties(self):
+        """Test CZ gate matrix properties."""
+        cz = CZGate(target=(0, 1))
+        U = cz.matrix(qutip=False)
+        
+        # CZ is diagonal
+        off_diag = U - jnp.diag(jnp.diag(U))
+        np.testing.assert_allclose(off_diag, 0, atol=1e-12)
+        
+        # Check diagonal elements
+        expected_diag = jnp.array([1, 1, 1, -1], dtype=jnp.complex128)
+        np.testing.assert_allclose(jnp.diag(U), expected_diag, rtol=1e-10)
+
+    @pytest.mark.parametrize("theta", [-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
+    def test_rotation_gates_with_negative_angles(self, theta):
+        """Test rotation gates with negative angles."""
+        rx = RXGate(theta=theta, target=0)
+        ry = RYGate(theta=theta, target=0)
+        rz = RZGate(theta=theta, target=0)
+        
+        # All should be unitary
+        for gate in [rx, ry, rz]:
+            U = gate.matrix(qutip=True)
+            identity = U.dag() * U
+            np.testing.assert_allclose(identity.full(), qt.qeye(2).full(), rtol=1e-10, atol=1e-12)
+
+    def test_hadamard_eigenvalues(self):
+        """Test Hadamard gate has correct eigenvalues."""
+        h = HadamardGate(target=0)
+        U = h.matrix(qutip=True)
+        eigenvalues = U.eigenenergies()
+        # H has eigenvalues +1 and -1
+        np.testing.assert_allclose(sorted(eigenvalues), [-1, 1], rtol=1e-10)
+
+    def test_rx_pi_rotation(self):
+        """Test RX(π) is Pauli X."""
+        rx_pi = RXGate(theta=np.pi, target=0)
+        U = rx_pi.matrix(qutip=False)
+        
+        # RX(π) should be -i*σx (up to global phase)
+        # |<0|RX(π)|1>| should be 1
+        np.testing.assert_allclose(abs(U[0, 1]), 1.0, rtol=1e-10)
+        np.testing.assert_allclose(abs(U[1, 0]), 1.0, rtol=1e-10)
+
+    def test_ry_pi_half_rotation(self):
+        """Test RY(π/2) creates superposition."""
+        ry_pi_half = RYGate(theta=np.pi/2, target=0)
+        U = ry_pi_half.matrix(qutip=False)
+        
+        # RY(π/2)|0⟩ = (|0⟩ + |1⟩)/√2
+        state_0 = jnp.array([1, 0], dtype=jnp.complex128)
+        result = U @ state_0
+        np.testing.assert_allclose(abs(result), [1/np.sqrt(2), 1/np.sqrt(2)], rtol=1e-10)
+
+    def test_rz_commutes_with_z_basis(self):
+        """Test RZ doesn't change computational basis states."""
+        rz = RZGate(theta=np.pi/3, target=0)
+        U = rz.matrix(qutip=False)
+        
+        # RZ should be diagonal
+        off_diag = U - jnp.diag(jnp.diag(U))
+        np.testing.assert_allclose(off_diag, 0, atol=1e-12)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 

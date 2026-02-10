@@ -155,7 +155,7 @@ class Experiment:
 
         # Generate n-qubit operators using utility function
         self.operators = generate_n_qubit_operators(
-            field_levels, cavity_levels, qubit_levels, n_qubits, gen_all_proj=True
+            field_levels, cavity_levels, qubit_levels, n_qubits
         )
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
@@ -243,7 +243,7 @@ class Experiment:
             chi = chi_list
         else:
             # Should not reach here due to __init__ validation, but type checker needs this
-            chi = [chi_list]*n_qubits
+            chi = [chi_list] * n_qubits
 
         # Get operators
         a_in = self.operators["a_in"]
@@ -268,7 +268,7 @@ class Experiment:
         # Dispersive qubit-resonator interaction Hamiltonians
         # H_q = -Σᵢ (χᵢ/2) a† a σz_i
 
-        H_dispersive_list = [qt.Qobj(-chi1 / 2 * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
+        H_dispersive_list = [qt.Qobj(-chi[i] / 2 * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
         H_dispersive = sum(H_dispersive_list)
 
         # Qubit-qubit interaction Hamiltonians
