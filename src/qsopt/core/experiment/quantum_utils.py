@@ -9,6 +9,7 @@ This module provides reusable components that can be composed for different expe
 """
 
 from typing import Dict, List, Optional, Tuple, Union
+import math
 
 import jax
 import jax.numpy as jnp
@@ -68,202 +69,8 @@ def u0(t, **kwargs):
     dx = sigma * t
     return jnp.exp(-(dx**2))
 
-
-def generate_single_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: int
-) -> Dict[str, qt.Qobj]:
-    """
-    Generate operators for a single-qubit composite system (field ⊗ cavity ⊗ qubit).
-
-    Creates all necessary operators embedded in the three-subsystem tensor product space:
-    - Field (input cavity) operators: creation/annihilation
-    - Resonator cavity operators: creation/annihilation
-    - Qubit operators: Pauli matrices, ladder operators, projectors
-
-    Args:
-        field_levels: Number of Fock levels for input field mode
-        cavity_levels: Number of Fock levels for resonator cavity mode
-        qubit_levels: Number of levels for qubit (typically 2)
-
-    Returns:
-        Dictionary containing all operators in composite space
-    """
-    # Generate operators with JAX backend for autodiff compatibility
-    with qt.CoreOptions(default_dtype="jax"):
-        # Identity operators for each subsystem
-        I_field = qt.identity(field_levels)
-        I_cavity = qt.identity(cavity_levels)
-        I_qubit = qt.identity(qubit_levels)
-
-        # Individual subsystem operators
-        a_field = qt.destroy(field_levels)  # Field annihilation
-        a_cavity = qt.destroy(cavity_levels)  # Cavity annihilation
-
-        # Qubit operators (for 2-level system)
-        sigma_z = qt.sigmaz()
-        sigma_x = qt.sigmax()
-        sigma_y = qt.sigmay()
-        sigma_minus = qt.destroy(qubit_levels)
-
-        # Qubit measurement projectors
-        P0 = qt.Qobj([[1, 0], [0, 0]])  # Ground state |0⟩⟨0|
-        P1 = qt.Qobj([[0, 0], [0, 1]])  # Excited state |1⟩⟨1|
-
-        # Embed operators in composite space (input_field ⊗ resonator_cavity ⊗ qubit)
-        operators = {
-            # Input field operators
-            "a_in": qt.tensor(a_field, I_cavity, I_qubit),
-            "a_in_dag": qt.tensor(a_field.dag(), I_cavity, I_qubit),
-            # Resonator cavity operators
-            "a": qt.tensor(I_field, a_cavity, I_qubit),
-            "a_dag": qt.tensor(I_field, a_cavity.dag(), I_qubit),
-            # Qubit operators
-            "sigma_z": qt.tensor(I_field, I_cavity, sigma_z),
-            "sigma_x": qt.tensor(I_field, I_cavity, sigma_x),
-            "sigma_y": qt.tensor(I_field, I_cavity, sigma_y),
-            "sigma_minus": qt.tensor(I_field, I_cavity, sigma_minus),
-            "sigma_plus": qt.tensor(I_field, I_cavity, sigma_minus.dag()),
-            # Qubit measurement projectors
-            "P0": qt.tensor(I_field, I_cavity, P0),
-            "P1": qt.tensor(I_field, I_cavity, P1),
-            # Identity operators for reference
-            "I_field": I_field,
-            "I_cavity": I_cavity,
-            "I_qubit": I_qubit,
-        }
-
-        return operators
-
-
-def generate_two_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]]
-) -> Dict[str, qt.Qobj]:
-    """
-    Generate operators for a two-qubit composite system.
-
-    Creates operators for (field ⊗ cavity ⊗ qubit1 ⊗ qubit2) composite space.
-    Each qubit can have different level truncation for flexibility.
-
-    Args:
-        field_levels: Number of Fock levels for input field mode
-        cavity_levels: Number of Fock levels for resonator cavity mode
-        qubit_levels: Number of levels for each qubit. Can be:
-                     - int: Same levels for both qubits (typically 2)
-                     - List[int]: Individual levels [qubit1_levels, qubit2_levels]
-
-    Returns:
-        Dictionary containing all operators in composite space:
-        - Field operators: a_in, a_in_dag
-        - Cavity operators: a, a_dag
-        - Qubit1 operators: sigma_z1, sigma_x1, sigma_y1, sigma_minus1, sigma_plus1
-        - Qubit2 operators: sigma_z2, sigma_x2, sigma_y2, sigma_minus2, sigma_plus2
-        - Measurement projectors: P00, P01, P10, P11 (joint qubit states)
-        - Individual projectors: P0_q1, P1_q1, P0_q2, P1_q2
-        - Rotation operators:
-            * roty_q1: Y-rotation on qubit1 only
-            * roty_q2: Y-rotation on qubit2 only
-            * roty: Simultaneous Y-rotation on both qubits
-
-    Example:
-        >>> ops = generate_two_qubit_operators(2, 2, 2)
-        >>> # Access operators for each qubit
-        >>> sz1 = ops['sigma_z1']
-        >>> sz2 = ops['sigma_z2']
-        >>> # Joint measurement projector |00⟩⟨00|
-        >>> P00 = ops['P00']
-    """
-    # Handle qubit_levels as list or int
-    if isinstance(qubit_levels, int):
-        q1_levels = qubit_levels
-        q2_levels = qubit_levels
-    elif isinstance(qubit_levels, list):
-        if len(qubit_levels) < 2:
-            raise ValueError(
-                f"qubit_levels list must have at least 2 elements, got {len(qubit_levels)}"
-            )
-        q1_levels = qubit_levels[0]
-        q2_levels = qubit_levels[1]
-    else:
-        raise TypeError(f"qubit_levels must be int or list, got {type(qubit_levels)}")
-
-    # Generate operators with JAX backend for autodiff compatibility
-    with qt.CoreOptions(default_dtype="jax"):
-        # Identity operators for each subsystem
-        I_field = qt.identity(field_levels)
-        I_cavity = qt.identity(cavity_levels)
-        I_q1 = qt.identity(q1_levels)
-        I_q2 = qt.identity(q2_levels)
-
-        # Individual subsystem operators
-        a_field = qt.destroy(field_levels)  # Field annihilation
-        a_cavity = qt.destroy(cavity_levels)  # Cavity annihilation
-
-        # Qubit 1 operators
-        sigma_z1 = qt.sigmaz() if q1_levels == 2 else qt.jmat(q1_levels - 1, "z")
-        sigma_x1 = qt.sigmax() if q1_levels == 2 else qt.jmat(q1_levels - 1, "x")
-        sigma_y1 = qt.sigmay() if q1_levels == 2 else qt.jmat(q1_levels - 1, "y")
-        sigma_minus1 = qt.destroy(q1_levels)
-
-        # Qubit 2 operators
-        sigma_z2 = qt.sigmaz() if q2_levels == 2 else qt.jmat(q2_levels - 1, "z")
-        sigma_x2 = qt.sigmax() if q2_levels == 2 else qt.jmat(q2_levels - 1, "x")
-        sigma_y2 = qt.sigmay() if q2_levels == 2 else qt.jmat(q2_levels - 1, "y")
-        sigma_minus2 = qt.destroy(q2_levels)
-
-        # Measurement projectors for 2-level qubits
-        P0 = qt.Qobj([[1, 0], [0, 0]])  # Ground state |0⟩⟨0|
-        P1 = qt.Qobj([[0, 0], [0, 1]])  # Excited state |1⟩⟨1|
-
-        # Rotation operators (Y-rotation by π/2)
-        # Ry(π/2) = [[cos(π/4), -sin(π/4)], [sin(π/4), cos(π/4)]]
-        # = (1/√2)[[1, -1], [1, 1]]
-        rot_single = qt.Qobj([[1, -1], [1, 1]]) / jnp.sqrt(2.0)
-
-        # Embed operators in composite space (input_field ⊗ cavity ⊗ qubit1 ⊗ qubit2)
-        operators = {
-            # Input field operators
-            "a_in": qt.tensor(a_field, I_cavity, I_q1, I_q2),
-            "a_in_dag": qt.tensor(a_field.dag(), I_cavity, I_q1, I_q2),
-            # Resonator cavity operators
-            "a": qt.tensor(I_field, a_cavity, I_q1, I_q2),
-            "a_dag": qt.tensor(I_field, a_cavity.dag(), I_q1, I_q2),
-            # Qubit 1 operators
-            "sigma_z1": qt.tensor(I_field, I_cavity, sigma_z1, I_q2),
-            "sigma_x1": qt.tensor(I_field, I_cavity, sigma_x1, I_q2),
-            "sigma_y1": qt.tensor(I_field, I_cavity, sigma_y1, I_q2),
-            "sigma_minus1": qt.tensor(I_field, I_cavity, sigma_minus1, I_q2),
-            "sigma_plus1": qt.tensor(I_field, I_cavity, sigma_minus1.dag(), I_q2),
-            # Qubit 2 operators
-            "sigma_z2": qt.tensor(I_field, I_cavity, I_q1, sigma_z2),
-            "sigma_x2": qt.tensor(I_field, I_cavity, I_q1, sigma_x2),
-            "sigma_y2": qt.tensor(I_field, I_cavity, I_q1, sigma_y2),
-            "sigma_minus2": qt.tensor(I_field, I_cavity, I_q1, sigma_minus2),
-            "sigma_plus2": qt.tensor(I_field, I_cavity, I_q1, sigma_minus2.dag()),
-            # Joint measurement projectors (for 2-level qubits)
-            "P00": qt.tensor(I_field, I_cavity, P0, P0),  # |00⟩⟨00|
-            "P01": qt.tensor(I_field, I_cavity, P0, P1),  # |01⟩⟨01|
-            "P10": qt.tensor(I_field, I_cavity, P1, P0),  # |10⟩⟨10|
-            "P11": qt.tensor(I_field, I_cavity, P1, P1),  # |11⟩⟨11|
-            # Individual qubit projectors
-            "P0_q1": qt.tensor(I_field, I_cavity, P0, I_q2),  # |0⟩⟨0| ⊗ I for qubit1
-            "P1_q1": qt.tensor(I_field, I_cavity, P1, I_q2),  # |1⟩⟨1| ⊗ I for qubit1
-            "P0_q2": qt.tensor(I_field, I_cavity, I_q1, P0),  # I ⊗ |0⟩⟨0| for qubit2
-            "P1_q2": qt.tensor(I_field, I_cavity, I_q1, P1),  # I ⊗ |1⟩⟨1| for qubit2
-            # Rotation operators (Y-rotation by π/2, can be applied independently)
-            "roty_q1": qt.tensor(I_field, I_cavity, rot_single, I_q2),  # Ry on qubit1 only
-            "roty_q2": qt.tensor(I_field, I_cavity, I_q1, rot_single),  # Ry on qubit2 only
-            "roty": qt.tensor(I_field, I_cavity, rot_single, rot_single),  # Simultaneous Ry on both
-            # Identity operators for reference
-            "I_field": I_field,
-            "I_cavity": I_cavity,
-            "I_q1": I_q1,
-            "I_q2": I_q2,
-        }
-
-        return operators
-
 def generate_n_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int
+    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, gen_all_proj: bool=True
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for an n-qubit composite system.
@@ -327,9 +134,10 @@ def generate_n_qubit_operators(
         sigma_y = [qt.sigmay() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "y") for i in range(n_qubits)]
         sigma_minus = [qt.destroy(q_levels[i]) for i in range(n_qubits)]
 
-        # Measurement projectors for 2-level qubits
-        P0 = qt.Qobj([[1, 0], [0, 0]])  # Ground state |0⟩⟨0|
-        P1 = qt.Qobj([[0, 0], [0, 1]])  # Excited state |1⟩⟨1|
+        temp_cycler = zip([[0]*l for l in q_levels],q_levels)
+        # Lists of measurement projectors for n qubits with q-levels
+        P0 = [qt.Qobj([[1, 0] + x[2:]]+[x]*(l-1)) for x,l in tempCycler]    # Ground state |0⟩⟨0|
+        P1 = [qt.Qobj([x, [0, 1] + x[2:]]+[x]*(l-1)) for x,l in tempCycler] # Excited state |1⟩⟨1|
         
         Pbin[P0,P1]
 
@@ -353,19 +161,21 @@ def generate_n_qubit_operators(
             "sigma_y": [qt.tensor([I_field, I_cavity] + I_q[:i] + sigma_y[i] + I_q[i+1:]) for i in range(n_qubits)],
             "sigma_minus": [qt.tensor([I_field, I_cavity] + I_q[:i] + sigma_minus[i] + I_q[i+1:]) for i in range(n_qubits)],
             "sigma_plus": [qt.tensor([I_field, I_cavity] + I_q[:i] + sigma_minus[i].dag() + I_q[i+1:]) for i in range(n_qubits)],
-            # Dictionary of all 2^n measurement projectors for 2 level qubits: P
-            "P": {bin(i)[2:]: qt.tensor([I_field, I_cavity] + [Pbin[int(bin(i)[2+j])] for j in range(n)]) for i in range(2^n) },
-            # Individual qubit projectors
-            "P0_q": [qt.tensor([I_field, I_cavity] + I_q[:i] +[P0] + I_q[i+1:]) for i in range(n_qubits)],  # |0⟩⟨0| ⊗ I for individual qubits
-            "P1_q": [qt.tensor([I_field, I_cavity] + I_q[:i] +[P1] + I_q[i+1:]) for i in range(n_qubits)],  # |1⟩⟨1| ⊗ I for individual qubits
+            # Individual qubit projectors on |0⟩ and |1⟩
+            "P0_q": [qt.tensor([I_field, I_cavity] + I_q[:i] +[P0[i]] + I_q[i+1:]) for i in range(n_qubits)],  # |0⟩⟨0| ⊗ I for individual qubits
+            "P1_q": [qt.tensor([I_field, I_cavity] + I_q[:i] +[P1[i]] + I_q[i+1:]) for i in range(n_qubits)],  # |1⟩⟨1| ⊗ I for individual qubits
             # Rotation operators (Y-rotation by π/2, can be applied independently)
-            "roty_q": [qt.tensor([I_field, I_cavity] + I_q[:i] + rot_single + I_q[i+1:]) for i in range(n)],  # Ry on only one qubit
+            "roty_q": [qt.tensor([I_field, I_cavity] + I_q[:i] + rot_single + I_q[i+1:]) for i in range(n_qubits)],  # Ry on only one qubit
             "roty": qt.tensor([I_field, I_cavity] + [rot_single]*n ),  # Simultaneous Ry on all qubits
             # Identity operators for reference
             "I_field": I_field,
             "I_cavity": I_cavity,
             "I_q": I_q
         }
+
+        if gen_all_proj == True:
+            # Dictionary of 2^n all-qubit joint measurement projectors
+            operators["P"] = {f'{i:0{n_qubits}b}': qt.tensor([I_field, I_cavity] + [Pbin[int(f'{i:0{n_qubits}b}'[j])] for j in range(n_qubits)]) for i in range(2^n) },
 
         return operators
 
@@ -454,7 +264,7 @@ def generate_initial_state(
     - THERMAL: Thermal state in field
     - CUSTOM: User-defined superposition
 
-    For multi-qubit systems, qubits are initialized in equal superposition (|0⟩+|1⟩)/√2
+    Qubits are initialized in equal superposition (|1⟩+|2⟩+...+|n⟩)/√n
     unless otherwise specified.
 
     Args:
@@ -462,14 +272,12 @@ def generate_initial_state(
         field_levels: Number of Fock levels for input field
         cavity_levels: Number of Fock levels for resonator cavity
         qubit_levels: Number of levels for each qubit (int or list)
-        n_qubits: Number of qubits in the system (1 or 2)
-
+        n_qubits: Number of qubits in the system
     Returns:
         Initial density matrix in composite Hilbert space
 
     Raises:
         ValueError: If required parameters are missing or invalid
-        NotImplementedError: If n_qubits > 2
 
     Example:
         >>> from qsopt.core.experimental_parameters import InitialStateConfig, InitialStateType
@@ -577,7 +385,7 @@ def _create_field_thermal(cavity_levels: int, n_bar: float) -> qt.Qobj:
 
 
 def _create_custom_state(
-    custom_amplitudes: Dict[Tuple[int, int, int], complex],
+    custom_amplitudes: Dict[Tuple[int, int, Union[int, Tuple[int]]], complex],
     field_levels: int,
     cavity_levels: int,
     qubit_levels: Union[int, List[int]],
@@ -596,36 +404,56 @@ def _create_custom_state(
         q_levels = qubit_levels[:n_qubits]
 
     # For now, only support single qubit custom states
-    if n_qubits != 1:
-        raise NotImplementedError("Custom states only supported for single qubit systems")
+    #if n_qubits != 1:
+    #    raise NotImplementedError("Custom states only supported for single qubit systems")
 
     # Initialize zero state vector
-    total_dim = field_levels * cavity_levels * q_levels[0]
+    total_dim = field_levels * cavity_levels * math.prod(q_levels)
     psi_array = np.zeros((total_dim,), dtype=complex)
 
     # Fill in amplitudes from dictionary
-    # Dictionary keys are tuples (field_n, cavity_n, qubit_n)
-    for (n_field, n_cavity, n_qubit), amplitude in custom_amplitudes.items():
-        # Validate indices
-        if not (0 <= n_field < field_levels):
-            raise ValueError(f"Field index {n_field} out of range [0, {field_levels})")
-        if not (0 <= n_cavity < cavity_levels):
-            raise ValueError(f"Cavity index {n_cavity} out of range [0, {cavity_levels})")
-        if not (0 <= n_qubit < q_levels[0]):
-            raise ValueError(f"Qubit index {n_qubit} out of range [0, {q_levels[0]})")
+    # Dictionary keys are tuples (field, cavity, qubit)
 
-        # Compute flat index: field ⊗ cavity ⊗ qubit ordering
-        idx = n_field * (cavity_levels * q_levels[0]) + n_cavity * q_levels[0] + n_qubit
-        psi_array[idx] = amplitude
+    if all(isinstance(z, int) for (x,y,z),e in custom_amplitudes.items()):
+        for (field, cavity, qubit), amplitude in custom_amplitudes.items():
+
+            # Validate indices
+            if not (0 <= field < field_levels):
+                raise ValueError(f"Field index {field} out of range [0, {field_levels})")
+            if not (0 <= cavity < cavity_levels):
+                raise ValueError(f"Cavity index {cavity} out of range [0, {cavity_levels})")
+            qubit = [qubit]*len(q_levels)
+            if not all(0 <= x < y for x,y in zip(qubit,q_levels)):
+                raise ValueError(f"Qubit index {qubit[0]} is out of range [0, {min(q_levels)})")
+
+            # Compute flat index: field ⊗ cavity ⊗ qubit1 ⊗ ... ⊗ qubitn ordering
+            idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
+            psi_array[idx] = amplitude
+            
+    elif all(isinstance(z, tuple) for (x,y,z),e in custom_amplitudes.items()):
+        for (field, cavity, qubit), amplitude in custom_amplitudes.items():
+
+            # Validate indices
+            if not (0 <= field < field_levels):
+                raise ValueError(f"Field index {field} out of range [0, {field_levels})")
+            if not (0 <= cavity < cavity_levels):
+                raise ValueError(f"Cavity index {cavity} out of range [0, {cavity_levels})")
+            if not all(0 <= x < y for x,y in zip(list(qubit),q_levels)):
+                raise ValueError(f"At least one of the qubit indexes is out of range [0, qubit levels)")
+
+            # Compute flat index: field ⊗ cavity ⊗ qubit ordering
+            idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
+            psi_array[idx] = amplitude
+    
 
     # Normalize the state
     norm = np.linalg.norm(psi_array)
     if norm < 1e-10:
-        raise ValueError("Custom state has zero norm")
+        raise ValueError("Custom state has zero norm (<1e-10)")
     psi_array = psi_array / norm
 
     # Create QuTiP state
-    psi = qt.Qobj(psi_array, dims=[[field_levels, cavity_levels, q_levels[0]], [1, 1, 1]])
+    psi = qt.Qobj(psi_array, dims=[[field_levels, cavity_levels] + q_levels, [1, 1] + [1]*len(q_levels)])
     return psi * psi.dag()  # type: ignore
 
 
@@ -856,60 +684,94 @@ def apply_qubit_rotation(
 
 
 def measure_qubits_probability(
-    rho: qt.Qobj, qubit_indices: List[int], operators: Dict[str, qt.Qobj], state: str = "0"
+    rho: qt.Qobj, qubit_indices: Union[int, str, List[int]], operators: Dict[str, qt.Qobj], state: str = "0",\
+    field_levels: Optional[int] = None, cavity_levels: Optional[int] = None, q_levels: Optional[List[int]] = None
 ) -> float:
     """
     Measure probability for specific qubits in multi-qubit system.
 
     Generic measurement function supporting:
-    - Single qubit measurement: qubit_indices=[0] measures qubit 0
-    - Multi-qubit measurement: qubit_indices=[0,1] measures both qubits
+    - Single qubit measurement: qubit_indices=i measures qubit i
+    - Full multi-qubit measurement: qubit_indices='all' measures all qubits jointly
+    - Partial multi-qubit measurement: qubit_indices=list[i,j,...,k] measures qubits i,j,...,k jointly
 
     Args:
         rho: Density matrix in composite space
         qubit_indices: List of qubit indices to measure (0-based)
         operators: Dictionary of operators from generate_*_operators()
-        state: State string to project onto
-               - For single qubit: '0' or '1'
-               - For multiple qubits: '00', '01', '10', '11', etc.
+        state: State to measure:
+                - For single qubit: '0' or '1'
+                - For multiple qubits: '00...0', '10...0', '01...0', ... , '11...1'
 
     Returns:
         Measurement probability ∈ [0,1]
 
     Example:
         >>> # Measure qubit 0 only
-        >>> p0 = measure_qubits_probability(rho, [0], ops, state='0')
+        >>> p0_q0 = measure_qubits_probability(rho, 0, ops, state='0')
         >>>
-        >>> # Measure both qubits jointly
-        >>> p00 = measure_qubits_probability(rho, [0, 1], ops, state='00')
+        >>> # Measure multiple qubits jointly
+        >>> p000 = measure_qubits_probability(rho, 'all', ops, state='000')
     """
     import jax.numpy as jnp
+    
+    n_qubits= len((operators['P1_q']))
 
-    # Determine if single or multi-qubit system
-    if "I_q1" in operators:
-        # Multi-qubit system
-        if len(qubit_indices) == 1:
-            # Single qubit measurement
-            qubit_idx = qubit_indices[0]
-            projector_key = f"P{state}_q{qubit_idx + 1}"
-            if projector_key not in operators:
-                raise ValueError(f"Projector {projector_key} not found in operators")
-            P = operators[projector_key]
-        else:
-            # Joint measurement
-            if len(state) != len(qubit_indices):
-                raise ValueError(
-                    f"State string length ({len(state)}) must match number of qubits ({len(qubit_indices)})"
-                )
-            projector_key = f"P{state}"
-            if projector_key not in operators:
-                raise ValueError(f"Joint projector {projector_key} not found in operators")
-            P = operators[projector_key]
+
+    if (qubit_indices == 'all'):
+        # Joint measurement
+        if 'P' not in operators:
+            raise ValueError(f"qubit_idices='all' but experiment was generated with gen_all_proj=False")
+        if len(state) != n_qubits:
+            raise ValueError(   
+                f"State string length ({len(state)}) must match the total number of qubits in the system {n_qubits}"
+            )
+        P = operators['P'][state]
+    
+    elif (isinstance(qubit_indices, List[int]) or len(qubit_indices) == 1) or (isinstance(qubit_indices, int) & (qubit_indices < n_qubits)):
+        # Single qubit measurement
+        if isinstance(qubit_indices, List[int]):
+            qubit_indices = qubit_indices[0]
+        projector_key = f"P{state}_q"
+        if projector_key not in operators:
+            raise ValueError(f"Projector {projector_key} not found in operators")
+        if len(state) != 1:
+            raise ValueError(f"In single qubit projections the state {state} must be either 0 or 1")
+        P = operators[projector_key][qubit_indices]
+    
+    elif (len(qubit_indices) <= n_qubits): 
+        # Joint measurement
+        if (field_levels is None) or (cavity_levels is None):
+            raise ValueError("Non cached measurement of non fixed number of qubits require both the field_levels and cavity_levels")
+        if len(state) != len(qubit_indices):
+            raise ValueError(f"Lenght of state string ({len(state)}) must match lenght of qubit_indices ({len(qubit_indices)})")
+        I_field = qt.identity(field_levels)
+        I_cavity = qt.identity(cavity_levels)
+        if q_levels is None:
+            q_levels = [2]*n_qubits
+        elif isinstance(q_levels, int):
+            q_levels = [q_levels] * n_qubits
+        elif len(q_levels) != n_qubits:
+            raise ValueError(f"q_levels were passed, but the lenght is different than the number of qubits ({n_qubits})")
+            
+            #Generate the projector: (l is the number of qubit levels of a qubit)
+            # IF qubit is in the indices -> generates the matrix lxl that projects on the state at the same index
+            # ELSE -> generates the identity lxl
+        qubit_projector = [ \
+            qt.Qobj([[1 - int(state[qubit_indices.index(i)]), 0] + [0]*(l-2)] +\
+                [[0, 0 + int(state[qubit_indices.index(i)])] + [0]*(l-2)] +\
+                [[0]*l]*(l-2)) \
+            if i in qubit_indices \
+            else qt.identity(l) \
+            for i,l in enumerate(q_levels) \
+                ]
+        P = qt.tensor([I_field, I_cavity] + qubit_projector)
+    
     else:
-        # Single qubit system
-        if len(qubit_indices) != 1 or qubit_indices[0] != 0:
-            raise ValueError("Single-qubit system only supports qubit_indices=[0]")
-        P = operators[f"P{state}"]
+        raise ValueError(f'qubit indices must either be:\n \
+        - int or list of int with lenght 1 ->   single qubit measurement in the interval [0,{n_qubits})\n\
+        - a string = "all" ->                   joint measurement on all qubits\n \
+        - a list of lenght between [2,{n_qubits}] ->     non cached measurement of non fixed number of qubits')
 
     probability = jnp.real((P * rho * P.dag()).tr())  # type: ignore
     return float(probability)

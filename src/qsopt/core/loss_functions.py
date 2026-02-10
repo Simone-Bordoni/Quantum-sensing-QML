@@ -16,23 +16,24 @@ class DetectionFromProbabilities:
     Define custom detection probability criteria from measurement outcome probabilities.
 
     This class allows flexible definition of what constitutes a "photon detected" event
-    based on the final state probabilities of a two-qubit measurement. Common examples:
-    - 1 - P(00): Any outcome except |00⟩
-    - P(11): Only the |11⟩ outcome
-    - P(01) + P(11): Qubit 2 in state |1⟩
-    - P(10) + P(11): Qubit 1 in state |1⟩
+    based on the final state probabilities of an n-qubit measurement. Common examples:
+    - 1 - P(00...0): Any outcome except |00...0⟩
+    - P(11...1): Only the |11...1⟩ outcome
+    - P(00..1...0) + P(10...1...0) + ... + P(11...1...1): Specific qubit in state |1⟩
 
     All operations are JAX-compatible for gradient-based optimization.
 
     Parameters
     ----------
     detection_fn : Callable[[Dict[str, float]], float], optional
-        Custom function that takes a dictionary with keys 'p00', 'p01', 'p10', 'p11'
+        Custom function that takes a dictionary with keys 'p00...0', 'p10...0', 'p01...0', ... , 'p11...1'
         and returns the detection probability. If None, defaults to 1 - P(00).
     name : str, optional
         Name describing the detection criterion (for logging/plotting).
+    n_qubits : int, optional
+        Number of qubits, default to 2
 
-    Examples
+    Examples (for 2 qubits)
     --------
     >>> # Default: detect anything except |00⟩
     >>> detector = DetectionFromProbabilities()
@@ -56,14 +57,15 @@ class DetectionFromProbabilities:
     """
 
     def __init__(
-        self, detection_fn: Callable[[Dict[str, float]], float] = None, name: str = "1-P(00)"
+        self, detection_fn: Callable[[Dict[str, float]], float] = None, name: str = "1-P(00)", n_qubits: int=2,
     ):
         """Initialize the detection probability calculator."""
+        self.n_qubits = n_qubits
         if detection_fn is None:
-            # Default: detect anything except |00⟩
+            # Default: detect anything except |00...0⟩
             @jit
             def default_detection(probs):
-                return 1.0 - probs["p00"]
+                return 1.0 - probs[f"p{0:0{n_qubits}b}"]
 
             self.detection_fn = default_detection
         else:
@@ -78,7 +80,7 @@ class DetectionFromProbabilities:
         Parameters
         ----------
         probabilities : Dict[str, float]
-            Dictionary containing 'p00', 'p01', 'p10', 'p11' keys with
+            Dictionary containing 'p00...0', 'p10...0', 'p01...0', ... , 'p11...1' keys with
             the respective measurement outcome probabilities.
 
         Returns

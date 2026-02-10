@@ -7,13 +7,12 @@ quantum sensing experiments.
 """
 
 from .callback import OptimizationCallback
-from .experiment import Experiment, SingleQubitExperiment, TwoQubitExperiment
+from .experiment import Experiment, NQubitExperiment
 from .experiment.quantum_utils import (
     apply_single_qubit_rotation,
     create_measurement_projector,
     generate_initial_state,
-    generate_single_qubit_operators,
-    generate_two_qubit_operators,
+    generate_n_qubit_operators,
     measure_qubit_probability,
     project_and_measure,
 )
