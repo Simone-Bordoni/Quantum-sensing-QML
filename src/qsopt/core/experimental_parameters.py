@@ -181,7 +181,7 @@ class SystemDimensions:
     - Resonator cavity mode (cavity_levels)
     - Qubit(s) (qubit_levels per qubit)
 
-    Total Hilbert space dimension = field_levels × cavity_levels × (qubit_levels)^n_qubits
+    Total Hilbert space dimension = field_levels × cavity_levels × q1_levels × ... × qn_levels
 
     Attributes:
         cavity_levels: Number of levels for cavity modes

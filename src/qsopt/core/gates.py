@@ -26,7 +26,7 @@ Example:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 import jax
 import jax.numpy as jnp
@@ -74,17 +74,31 @@ class Gate(ABC):
     matrix representation. Parametrized gates can have at most one parameter.
     """
 
-    def __init__(self, name: str, target: Union[int, Tuple[int, ...]]):
+    def __init__(self, name: str, target: Union[int, Tuple[int, ...]], levels: Optional[Union[int, List[int]]]):
         """
         Initialize gate.
 
         Args:
             name: Gate name (RX, RY, RZ, H, CNOT, CZ)
             target: Target qubit(s) - int for single-qubit, tuple for multi-qubit gates
+            levels: Levels of target qubit(s) - int for single-qubit, both int and list for multi-qubit gates
+                                               in multi-qubit gates an int will be used for all qubits                                               
         """
         self.name = name
         self.target: Union[int, Tuple[int, ...]] = target
         self._parameter: Optional[GateParameter] = None
+        if isinstance(target, Tuple[int, ...]):
+            if isinstance(levels, int):
+                levels = [levels]*len(target)
+            elif len(target) != len(levels):
+                raise ValueError(f"lenght of target ({len(target)}) is not the same as lenght of levels ({len(levels)})")
+            self.levels=levels
+        elif isinstance(levels, List[int]):
+            if len(levels)==1: 
+                self.levels = levels[0]
+            else: raise ValueError("Gate is single-qubit (target is int) but levels is a list")
+
+
 
     @abstractmethod
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
@@ -113,6 +127,7 @@ class Gate(ABC):
         if self._parameter is None:
             raise ValueError(f"Gate {self.name} has no parameters")
         return self._parameter.get()
+
 
     def set_parameter(self, value: Union[float, jnp.ndarray]) -> None:
         """
@@ -149,16 +164,17 @@ class RXGate(Gate):
         >>> rx.set_parameter(jnp.pi/2)
     """
 
-    def __init__(self, theta: Union[float, jnp.ndarray], target: int, trainable: bool = True):
+    def __init__(self, theta: Union[float, jnp.ndarray], target: int, levels: int = 2, trainable: bool = True):
         """
         Initialize RX gate.
 
         Args:
             theta: Rotation angle in radians
             target: Target qubit index
+            levels: Target qubit's levels
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RX", target=target)
+        super().__init__("RX", target=target, levels=levels)
         self._parameter = GateParameter(
             value=jnp.asarray(theta, dtype=float), trainable=trainable
         )
@@ -170,12 +186,14 @@ class RXGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         theta = self.get_parameter()
+        l = self.levels
+        pad = [0]*l
         # Get Pauli X matrix as JAX array
-        sx_data = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
+        sx_data = jnp.array([[0, 1] + pad[2:], [1, 0] + pad[2:]] + [pad]*(l-2), dtype=jnp.complex128)
         # Compute rotation: exp(-i theta sx / 2)
         matrix_data = jax.scipy.linalg.expm(-1j * theta * sx_data / 2)
         # Return JAX array or wrap in Qobj
-        return qt.Qobj(matrix_data, dims=[[2], [2]]) if qutip else matrix_data
+        return qt.Qobj(matrix_data, dims=[[l],[l]]) if qutip else matrix_data
 
 
 class RYGate(Gate):
@@ -189,16 +207,17 @@ class RYGate(Gate):
         >>> matrix = ry.matrix()
     """
 
-    def __init__(self, theta: Union[float, jnp.ndarray], target: int, trainable: bool = True):
+    def __init__(self, theta: Union[float, jnp.ndarray], target: int, levels: int = 2, trainable: bool = True):
         """
         Initialize RY gate.
 
         Args:
             theta: Rotation angle in radians
             target: Target qubit index
+            levels: Target qubit's levels
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RY", target=target)
+        super().__init__("RY", target=target, levels=levels)
         self._parameter = GateParameter(
             value=jnp.asarray(theta, dtype=float), trainable=trainable
         )
@@ -210,12 +229,14 @@ class RYGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         theta = self.get_parameter()
+        l = self.levels
+        pad = [0]*l
         # Get Pauli Y matrix as JAX array
-        sy_data = jnp.array([[0, -1j], [1j, 0]], dtype=jnp.complex128)
+        sy_data = jnp.array([[0, -1j] + pad[2:], [1j, 0] + pad[2:]] + [pad]*(l-2), dtype=jnp.complex128)
         # Compute rotation: exp(-i theta sy / 2)
         matrix_data = jax.scipy.linalg.expm(-1j * theta * sy_data / 2)
         # Return JAX array or wrap in Qobj
-        return qt.Qobj(matrix_data, dims=[[2], [2]]) if qutip else matrix_data
+        return qt.Qobj(matrix_data, dims=[[l],[l]]) if qutip else matrix_data
 
 
 class RZGate(Gate):
@@ -229,16 +250,17 @@ class RZGate(Gate):
         >>> matrix = rz.matrix()
     """
 
-    def __init__(self, theta: Union[float, jnp.ndarray], target: int, trainable: bool = True):
+    def __init__(self, theta: Union[float, jnp.ndarray], target: int, levels: int = 2, trainable: bool = True):
         """
         Initialize RZ gate.
 
         Args:
             theta: Rotation angle in radians
             target: Target qubit index
+            levels: Target qubit's levels
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RZ", target=target)
+        super().__init__("RZ", target=target, levels=levels)
         self._parameter = GateParameter(
             value=jnp.asarray(theta, dtype=float), trainable=trainable
         )
@@ -250,12 +272,14 @@ class RZGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         theta = self.get_parameter()
+        l = self.levels
+        pad = [0]*l
         # Get Pauli Z matrix as JAX array
-        sz_data = jnp.array([[1, 0], [0, -1]], dtype=jnp.complex128)
+        sz_data = jnp.array([[1, 0] + pad[2:], [0, -1] + pad[2:]] + [pad]*(l-2), dtype=jnp.complex128)
         # Compute rotation: exp(-i theta sz / 2)
         matrix_data = jax.scipy.linalg.expm(-1j * theta * sz_data / 2)
         # Return JAX array or wrap in Qobj
-        return qt.Qobj(matrix_data, dims=[[2], [2]]) if qutip else matrix_data
+        return qt.Qobj(matrix_data, dims=[[l],[l]]) if qutip else matrix_data
 
 
 # ============================================================================
@@ -274,11 +298,12 @@ class HadamardGate(Gate):
         >>> matrix = h.matrix()
     """
 
-    def __init__(self, target: int):
+    def __init__(self, target: int, levels: int = 2):
         """Initialize Hadamard gate.
         
         Args:
             target: Target qubit index
+            levels: Qubit levels
         """
         super().__init__("H", target=target)
 
@@ -289,8 +314,10 @@ class HadamardGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         # H = (1/√2) * [[1, 1], [1, -1]]
-        h_data = jnp.array([[1, 1], [1, -1]], dtype=jnp.complex128) / jnp.sqrt(2)
-        return qt.Qobj(h_data, dims=[[2], [2]]) if qutip else h_data
+        l = self.levels
+        pad = [0]*l
+        h_data = jnp.array([[1, 1] + pad[2:], [1, -1]+ pad[2:]] + [pad]*(l-2), dtype=jnp.complex128) / jnp.sqrt(2)
+        return qt.Qobj(h_data, dims=[[l],[l]]) if qutip else h_data
 
 
 class CNOTGate(Gate):
@@ -310,13 +337,14 @@ class CNOTGate(Gate):
         >>> matrix = cnot.matrix()
     """
 
-    def __init__(self, target: Tuple[int, int]):
+    def __init__(self, target: Tuple[int, int], levels: Union[Tuple[int, int], int] = [2,2]):
         """Initialize CNOT gate.
         
         Args:
             target: Tuple of (control, target) qubit indices
+            levels: Qubit levels
         """
-        super().__init__("CNOT", target=target)
+        super().__init__("CNOT", target=target, levels=levels)
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return CNOT gate matrix.
@@ -328,10 +356,13 @@ class CNOTGate(Gate):
         #         [0, 1, 0, 0],
         #         [0, 0, 0, 1],
         #         [0, 0, 1, 0]]
+        l = self.levels
+        sum_l = sum(l)
+        pad = [0]*sum_l
         cnot_data = jnp.array(
-            [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=jnp.complex128
+            [[1, 0, 0, 0] + pad[4:], [0, 1, 0, 0] + pad[4:], [0, 0, 0, 1] + pad[4:], [0, 0, 1, 0] + pad[4:]] + [pad]*sum_l, dtype=jnp.complex128
         )
-        return qt.Qobj(cnot_data, dims=[[2, 2], [2, 2]]) if qutip else cnot_data
+        return qt.Qobj(cnot_data, dims=[l,l]) if qutip else cnot_data
 
 
 class CZGate(Gate):
@@ -350,13 +381,14 @@ class CZGate(Gate):
         >>> matrix = cz.matrix()
     """
 
-    def __init__(self, target: Tuple[int, int]):
+    def __init__(self, target: Tuple[int, int], levels: Union[Tuple[int, int], int] = [2,2]):
         """Initialize CZ gate.
         
         Args:
             target: Tuple of (control, target) qubit indices
+            levels: Qubit levels
         """
-        super().__init__("CZ", target=target)
+        super().__init__("CZ", target=target, levels=levels)
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return CZ gate matrix.
@@ -365,7 +397,10 @@ class CZGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         # CZ = diag(1, 1, 1, -1)
+        l = self.levels
+        sum_l = sum(l)
+        pad = [0]*sum_l
         cz_data = jnp.array(
-            [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, -1]], dtype=jnp.complex128
+            [[1, 0, 0, 0] + pad[4:], [0, 1, 0, 0] + pad[4:], [0, 0, 1, 0] + pad[4:], [0, 0, 0, -1] + pad[4:]] + [pad]*sum_l, dtype=jnp.complex128
         )
-        return qt.Qobj(cz_data, dims=[[2, 2], [2, 2]]) if qutip else cz_data
+        return qt.Qobj(cz_data, dims=[l,l]) if qutip else cz_data

@@ -11,7 +11,7 @@ Example:
     >>> from qsopt.core.gates import RXGate, RYGate, CNOTGate
     >>>
     >>> # Create 2-qubit circuit
-    >>> circuit = QuantumCircuit(num_qubits=2)
+    >>> circuit = QuantumCircuit(n_qubits=2)
     >>> rx = RXGate(theta=jnp.pi/4)
     >>> rx.target = 0
     >>> circuit.add_gate(rx)
@@ -33,6 +33,7 @@ from typing import List, Union
 import jax.numpy as jnp
 import qutip as qt
 from .gates import Gate
+import math
 
 
 class QuantumCircuit:
@@ -43,18 +44,23 @@ class QuantumCircuit:
     tracks trainable parameters, and computes circuit unitaries.
     """
 
-    def __init__(self, num_qubits: int):
+    def __init__(self, n_qubits: int, levels: Union[int, List[int]]):
         """
         Initialize quantum circuit.
 
         Args:
-            num_qubits: Number of qubits in the circuit
+            n_qubits: Number of qubits in the circuit
         """
-        if num_qubits < 1:
+        if n_qubits < 1:
             raise ValueError("Number of qubits must be at least 1")
 
-        self.num_qubits = num_qubits
+        self.n_qubits = n_qubits
         self._gates: List[Gate] = []
+        if isinstance(levels, int):
+            levels = [levels]*n_qubits
+        elif len(levels) != n_qubits:
+            raise ValueError(f"lenght of list levels ({len(levels)}) must be equal to n_qubits ({n_qubits})")
+        self.levels = levels
 
     def add_gate(self, gate: Gate) -> None:
         """
@@ -72,10 +78,10 @@ class QuantumCircuit:
         
         # Validate all target qubits are in range
         for qubit in target_tuple:
-            if qubit < 0 or qubit >= self.num_qubits:
+            if qubit < 0 or qubit >= self.n_qubits:
                 raise ValueError(
                     f"Target qubit {qubit} is out of range. "
-                    f"Circuit has {self.num_qubits} qubits (0-{self.num_qubits-1})"
+                    f"Circuit has {self.n_qubits} qubits (0-{self.n_qubits-1})"
                 )
         
         self._gates.append(gate)
@@ -135,13 +141,13 @@ class QuantumCircuit:
         """
         if len(self._gates) == 0:
             # Identity for empty circuit
-            identity = jnp.eye(2**self.num_qubits, dtype=jnp.complex128)
+            identity = jnp.eye(math.prod(self.levels), dtype=jnp.complex128)
             if qutip:
-                return qt.Qobj(identity, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
+                return qt.Qobj(identity, dims=[self.levels, self.levels])
             return identity
 
         # Build unitary by applying gates in sequence
-        dim = 2**self.num_qubits
+        dim = math.prod(self.levels)
         U_jax = jnp.eye(dim, dtype=jnp.complex128)
 
         for gate in self._gates:
@@ -149,7 +155,7 @@ class QuantumCircuit:
             gate_jax = gate.matrix(qutip=False)
 
             # Expand to full Hilbert space using JAX operations
-            if self.num_qubits == 1:
+            if self.n_qubits == 1:
                 # Single qubit circuit
                 expanded_jax = gate_jax
             else:
@@ -162,7 +168,7 @@ class QuantumCircuit:
 
         # Return JAX array or wrap in Qobj
         if qutip:
-            return qt.Qobj(U_jax, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
+            return qt.Qobj(U_jax, dims=[[2] * self.n_qubits, [2] * self.n_qubits])
         return U_jax
 
     def __call__(self, state: Union[jnp.ndarray, qt.Qobj, None] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
@@ -181,7 +187,7 @@ class QuantumCircuit:
             Final quantum state after circuit application
 
         Example:
-            >>> circuit = QuantumCircuit(num_qubits=2)
+            >>> circuit = QuantumCircuit(n_qubits=2)
             >>> circuit.add_gate(HadamardGate(target=0))
             >>> # Use ground state by default
             >>> rho_final = circuit()
@@ -195,7 +201,7 @@ class QuantumCircuit:
         # If no state provided, use ground state |0...0⟩
         if state is None:
             # Create ground state as density matrix |0...0⟩⟨0...0|
-            dim = 2 ** self.num_qubits
+            dim = 2 ** self.n_qubits
             rho = jnp.zeros((dim, dim), dtype=jnp.complex128)
             rho = rho.at[0, 0].set(1.0)
         else:
@@ -222,7 +228,7 @@ class QuantumCircuit:
 
         # Return in requested format
         if qutip:
-            return qt.Qobj(rho_final, dims=[[2] * self.num_qubits, [2] * self.num_qubits])
+            return qt.Qobj(rho_final, dims=[[2] * self.n_qubits, [2] * self.n_qubits])
         return rho_final
     
     def _expand_gate_jax(self, gate_matrix: jnp.ndarray, targets: tuple) -> jnp.ndarray:
@@ -243,11 +249,11 @@ class QuantumCircuit:
             # Single-qubit gate
             target = targets[0]
             matrices = []
-            for i in range(self.num_qubits):
+            for i in range(self.n_qubits):
                 if i == target:
                     matrices.append(gate_matrix)
                 else:
-                    matrices.append(jnp.eye(2, dtype=jnp.complex128))
+                    matrices.append(jnp.eye(self.levels[i], dtype=jnp.complex128))
             
             # Build full operator using Kronecker products
             result = matrices[0]
@@ -255,7 +261,7 @@ class QuantumCircuit:
                 result = jnp.kron(result, mat)
             return result
         
-        elif len(targets) == 2:
+        elif len(targets) == 2:     ############finire di generalizzare questa parte a qudit con num. livelli arbitrari
             # Two-qubit gate (e.g., CNOT)
             # Build the full operator by expanding the 4x4 gate matrix to the full Hilbert space
             # while preserving the control-target relationship
@@ -263,7 +269,7 @@ class QuantumCircuit:
             q0, q1 = targets  # Qubits as specified in gate (e.g., control, target for CNOT)
             
             # Create full operator matrix
-            dim = 2 ** self.num_qubits
+            dim = math.prod(self.levels)
             full_matrix = jnp.zeros((dim, dim), dtype=jnp.complex128)
             
             # Iterate over all basis states
@@ -271,13 +277,13 @@ class QuantumCircuit:
                 for j in range(dim):
                     # Convert i and j to binary representations (basis states)
                     # QuTiP uses big-endian ordering: |q_{n-1}...q_1 q_0⟩
-                    # So qubit k's bit is at position (num_qubits - 1 - k)
-                    i_bits = [(i >> (self.num_qubits - 1 - k)) & 1 for k in range(self.num_qubits)]
-                    j_bits = [(j >> (self.num_qubits - 1 - k)) & 1 for k in range(self.num_qubits)]
+                    # So qubit k's bit is at position (n_qubits - 1 - k)
+                    i_bits = [(i >> (self.n_qubits - 1 - k)) & 1 for k in range(self.n_qubits)]
+                    j_bits = [(j >> (self.n_qubits - 1 - k)) & 1 for k in range(self.n_qubits)]
                     
                     # Check if all other qubits (not q0, q1) are the same
                     other_qubits_match = all(
-                        i_bits[k] == j_bits[k] for k in range(self.num_qubits) if k != q0 and k != q1
+                        i_bits[k] == j_bits[k] for k in range(self.n_qubits) if k != q0 and k != q1
                     )
                     
                     if other_qubits_match:
@@ -294,7 +300,7 @@ class QuantumCircuit:
         
     def __repr__(self) -> str:
         """String representation of circuit."""
-        header = f"QuantumCircuit({self.num_qubits} qubits, {len(self._gates)} gates)"
+        header = f"QuantumCircuit({self.n_qubits} qubits, {len(self._gates)} gates)"
         if len(self._gates) == 0:
             return header
 
@@ -312,6 +318,7 @@ def create_layer(
     gate_type: type,
     parameters: List[float],
     qubits: List[int] = None,
+    levels: Union[int,List[int]] = 2,
     trainable: bool = True,
 ) -> None:
     """
@@ -322,10 +329,11 @@ def create_layer(
         gate_type: Gate class (e.g., RXGate, RYGate)
         parameters: List of parameters for each qubit
         qubits: List of target qubits (None = all qubits)
+        levels: List of levels of each qubit (int for the same levels on each qubit)
         trainable: Whether parameters should be trainable
     """
     if qubits is None:
-        qubits = list(range(circuit.num_qubits))
+        qubits = list(range(circuit.n_qubits))
 
     if len(parameters) != len(qubits):
         raise ValueError(
@@ -333,13 +341,21 @@ def create_layer(
             f"number of qubits ({len(qubits)})"
         )
 
-    for qubit, param in zip(qubits, parameters):
-        gate = gate_type(theta=param, target=qubit, trainable=trainable)
+    if isinstance(levels, int):
+        levels = [levels]*len(qubits)
+    elif len(levels) != len(qubits):
+        raise ValueError(
+            f"Number of levels ({len(levels)}) must match "
+            f"number of qubits ({len(qubits)})"
+        )
+
+    for qubit, param, level in zip(qubits, parameters, levels):
+        gate = gate_type(theta=param, target=qubit, levels=level, trainable=trainable)
         circuit.add_gate(gate)
 
 
 def create_entangling_layer(
-    circuit: QuantumCircuit, gate_type: type, pattern: str = "linear"
+    circuit: QuantumCircuit, gate_type: type, levels: Union[List[int],int]=2, pattern: str = "linear"
 ) -> None:
     """
     Add a layer of two-qubit entangling gates.
@@ -347,31 +363,43 @@ def create_entangling_layer(
     Args:
         circuit: QuantumCircuit to add gates to
         gate_type: Two-qubit gate class (e.g., CNOTGate, CZGate)
+        levels: List of levels of each qubit (int for the same levels on each qubit)
         pattern: Connectivity pattern - "linear" or "circular"
     """
-    if circuit.num_qubits < 2:
+
+    n_qubits = circuit.n_qubits
+    if n_qubits < 2:
         raise ValueError("Need at least 2 qubits for entangling layer")
+
+    if isinstance(levels, int):
+        levels = [levels]*len(n_qubits)
+    elif len(levels) != len(n_qubits):
+        raise ValueError(
+            f"Number of levels ({len(levels)}) must match "
+            f"number of qubits ({len(n_qubits)})"
+        )    
 
     if pattern == "linear":
         # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
-        for i in range(circuit.num_qubits - 1):
-            gate = gate_type(target=(i, i + 1))
+        for i in range(n_qubits - 1):
+            gate = gate_type(target=(i, i + 1), levels=levels[i]+levels[i+1])
             circuit.add_gate(gate)
     elif pattern == "circular":
         # Linear + connect last to first
-        for i in range(circuit.num_qubits - 1):
-            gate = gate_type(target=(i, i + 1))
+        for i in range(n_qubits - 1):
+            gate = gate_type(target=(i, i + 1), levels=levels[i]+levels[i+1])
             circuit.add_gate(gate)
         # Wrap around
-        gate = gate_type(target=(circuit.num_qubits - 1, 0))
+        gate = gate_type(target=(n_qubits - 1, 0), levels=levels[n_qubits-1]+levels[0])
         circuit.add_gate(gate)
     else:
         raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
 
 
 def create_ry_circuit_layer(
-    num_qubits: int,
-    theta_values: List[float] = None,
+    n_qubits: int,
+    theta_values: Union[List[float],float] = None,
+    levels: Union[int,List[int]] = 2,
     trainable: bool = True,
 ) -> QuantumCircuit:
     """
@@ -381,9 +409,10 @@ def create_ry_circuit_layer(
     commonly used in quantum sensing and variational quantum algorithms.
 
     Args:
-        num_qubits: Number of qubits in the circuit
-        theta_values: List of rotation angles (one per qubit). If None,
-                     initializes all to π/2.
+        n_qubits: Number of qubits in the circuit
+        theta_values: Rotation angle value applied to all qubits or a list (one per qubit). 
+                      If None initializes all to π/2
+        levels: Number of levels for all the qubits, or a list (one per qubit) 
         trainable: Whether the rotation parameters should be trainable
 
     Returns:
@@ -391,27 +420,37 @@ def create_ry_circuit_layer(
 
     Example:
         >>> # Create 2-qubit circuit with trainable RY gates
-        >>> circuit = create_ry_circuit_layer(num_qubits=2, theta_values=[np.pi/4, -np.pi/4])
+        >>> circuit = create_ry_circuit_layer(n_qubits=2, theta_values=[np.pi/4, -np.pi/4])
         >>>
         >>> # Default initialization (all π/2)
-        >>> circuit = create_ry_circuit_layer(num_qubits=3)
+        >>> circuit = create_ry_circuit_layer(n_qubits=3)
     """
     from .gates import RYGate
     import numpy as np
 
     if theta_values is None:
-        theta_values = [np.pi / 2] * num_qubits
+        theta_values = [np.pi / 2] * n_qubits
+    elif isinstance(theta_values,float):
+        theta_values = [theta_values] * n_qubits
 
-    if len(theta_values) != num_qubits:
+    if len(theta_values) != n_qubits:
         raise ValueError(
-            f"Number of theta values ({len(theta_values)}) must match "
-            f"number of qubits ({num_qubits})"
+            f"Lenght of the list theta values ({len(theta_values)}) must match "
+            f"number of qubits ({n_qubits}), or it must be a float"
         )
 
-    circuit = QuantumCircuit(num_qubits=num_qubits)
+    if isinstance(levels,int):
+        levels = [levels] * n_qubits
+    elif len(levels) != n_qubits:
+        raise ValueError(
+            f"Lenght of the list levels ({len(levels)}) must match "
+            f"number of qubits ({n_qubits}), or it must be an int"
+        )
+
+    circuit = QuantumCircuit(n_qubits=n_qubits, levels=levels)
 
     for qubit_idx, theta in enumerate(theta_values):
-        gate = RYGate(theta=theta, target=qubit_idx, trainable=trainable)
+        gate = RYGate(theta=theta, target=qubit_idx, levels=levels[qubit_idx], trainable=trainable)
         circuit.add_gate(gate)
 
     return circuit
