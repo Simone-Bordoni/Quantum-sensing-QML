@@ -268,7 +268,6 @@ class Experiment:
 
         # Dispersive qubit-resonator interaction Hamiltonians
         # H_q = -Σᵢ (χᵢ/2) a† a σz_i
-
         H_dispersive_list = [qt.Qobj(-chi[i] / 2 * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
         H_dispersive = sum(H_dispersive_list)
 
@@ -719,7 +718,7 @@ class Experiment:
         Compute time evolution of n-qubit probabilities.
 
         Simulates the quantum system evolution over time using the measurement protocol times.
-        Returns probability distributions for all two-qubit states (|00...0⟩, |10...0⟩, |01...0⟩, ... , |11...1⟩).
+        Returns probability distributions for all n-qubit states (|0...0⟩, |0...1⟩, ..., |1...1⟩).
         The system starts in superposition (after first rotations), evolves under
         the Hamiltonian, and probabilities are measured after the second rotations.
 
@@ -733,13 +732,13 @@ class Experiment:
         Returns:
             TimeEvolutionResults object containing:
                 - times: Array of time points, shape (n_points,)
-                - probabilities: Dict with states '00...0', '10...0', '01...0', ... , '11...1' as keys and probabilities as items
+                - probabilities: Dict with states as keys (e.g., '0', '1' for 1 qubit, '00', '01', '10', '11' for 2 qubits)
                 - pulse_shape: Pulse envelope u(t), shape (n_points,)
                 - measurement_times: Measurement time points
                 - cavity_population: Cavity population <a†a>, shape (n_points,)
                 - field_population: External field population <a_in†a_in>, shape (n_points,)
 
-        Example: (for n_qubit=2)
+        Example: (for n_qubits=2)
             >>> # Get time evolution data using default measurement protocol
             >>> evolution = experiment.time_evolution(n_points=200)
             >>>
@@ -790,15 +789,15 @@ class Experiment:
         rho_current = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
 
         # Get number operators for population calculation
-        a_dag = self.operators["a_dag"]
-        a = self.operators["a"]
-        n_cavity = a_dag * a  # Cavity number operator a†a
-        
-        a_in_dag = self.operators["a_in_dag"]
-        a_in = self.operators["a_in"]
-        n_field = a_in_dag * a_in  # Field number operator a_in†a_in
+        n_cavity = self.operators["n_cavity"]
+        n_field = self.operators["n_field"]
         
         args = {"sigma": self.experimental_params.inverse_pulse_width}
+        
+        # Get number of qubits and generate all possible states
+        n_qubits = self.experimental_params.n_qubits
+        all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
+        qubit_indices = list(range(1, n_qubits + 1))
         
         # Check if we need to perform intermediate measurements
         intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
@@ -806,10 +805,7 @@ class Experiment:
         
         # Storage for results
         all_times = []
-        prob_00_list = []
-        prob_01_list = []
-        prob_10_list = []
-        prob_11_list = []
+        state_prob_lists = {state: [] for state in all_states}
         cavity_population_list = []
         field_population_list = []
         
@@ -832,17 +828,12 @@ class Experiment:
                     # Apply final circuit for measurement
                     rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
                     
-                    # Measure two-qubit probabilities
-                    p00 = float(self.prob(rho_meas, qubits=[0, 1], state="00"))
-                    p01 = float(self.prob(rho_meas, qubits=[0, 1], state="01"))
-                    p10 = float(self.prob(rho_meas, qubits=[0, 1], state="10"))
-                    p11 = float(self.prob(rho_meas, qubits=[0, 1], state="11"))
+                    # Measure all qubit state probabilities
+                    for state in all_states:
+                        prob = float(self.prob(rho_meas, qubits=qubit_indices, state=state))
+                        state_prob_lists[state].append(prob)
                     
                     all_times.append(seg_times[i])
-                    prob_00_list.append(p00)
-                    prob_01_list.append(p01)
-                    prob_10_list.append(p10)
-                    prob_11_list.append(p11)
                     
                     # Calculate populations (take real part since expectation values should be real)
                     cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
@@ -857,25 +848,32 @@ class Experiment:
                     # Undo final circuit for projection in computational basis
                     rho_before_proj = final_unitary_dag * rho_final * final_unitary  # type: ignore
                     
-                    # Get probabilities in basis
-                    p00_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="00"))
-                    p01_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="01"))
-                    p10_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="10"))
-                    p11_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="11"))
+                    # Get probabilities in basis for all states
+                    state_probs_basis = {}
+                    for state in all_states:
+                        state_probs_basis[state] = float(
+                            self.prob(rho_before_proj, qubits=qubit_indices, state=state)
+                        )
                     
                     # Stochastic projection (weighted by probabilities)
                     # For deterministic visualization, use weighted mixture
-                    proj_00 = self.get_qubit_projector(1, "0") * self.get_qubit_projector(2, "0")
-                    proj_01 = self.get_qubit_projector(1, "0") * self.get_qubit_projector(2, "1")
-                    proj_10 = self.get_qubit_projector(1, "1") * self.get_qubit_projector(2, "0")
-                    proj_11 = self.get_qubit_projector(1, "1") * self.get_qubit_projector(2, "1")
-                    
-                    rho_projected = (
-                        p00_basis * (proj_00 * rho_before_proj * proj_00) +
-                        p01_basis * (proj_01 * rho_before_proj * proj_01) +
-                        p10_basis * (proj_10 * rho_before_proj * proj_10) +
-                        p11_basis * (proj_11 * rho_before_proj * proj_11)
-                    )  # type: ignore
+                    rho_projected = None
+                    for state, prob_val in state_probs_basis.items():
+                        # Build projector for this state
+                        projector = None
+                        for q_idx, bit in enumerate(state, start=1):
+                            q_proj = self.get_qubit_projector(q_idx, bit)
+                            if projector is None:
+                                projector = q_proj
+                            else:
+                                projector = projector * q_proj
+                        
+                        # Add weighted projection
+                        projected_component = projector * rho_before_proj * projector  # type: ignore
+                        if rho_projected is None:
+                            rho_projected = prob_val * projected_component
+                        else:
+                            rho_projected = rho_projected + prob_val * projected_component  # type: ignore
                     
                     # Normalize
                     rho_projected = rho_projected / rho_projected.tr()
@@ -891,17 +889,12 @@ class Experiment:
                 # Apply final circuit
                 rho_final = final_unitary * rho_t * final_unitary_dag  # type: ignore
 
-                # Measure two-qubit probabilities
-                p00 = float(self.prob(rho_final, qubits=[0, 1], state="00"))
-                p01 = float(self.prob(rho_final, qubits=[0, 1], state="01"))
-                p10 = float(self.prob(rho_final, qubits=[0, 1], state="10"))
-                p11 = float(self.prob(rho_final, qubits=[0, 1], state="11"))
+                # Measure all qubit state probabilities
+                for state in all_states:
+                    prob = float(self.prob(rho_final, qubits=qubit_indices, state=state))
+                    state_prob_lists[state].append(prob)
 
                 all_times.append(times[i])
-                prob_00_list.append(p00)
-                prob_01_list.append(p01)
-                prob_10_list.append(p10)
-                prob_11_list.append(p11)
 
                 # Calculate populations (take real part since expectation values should be real)
                 cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
@@ -913,17 +906,15 @@ class Experiment:
         # Compute pulse shape u(t) = exp(-t^2)
         pulse_shape = np.exp(-(times**2))
 
+        # Build probabilities dictionary
+        probabilities = {f"prob_{state}": np.array(state_prob_lists[state]) for state in all_states}
+
         # Import at runtime to avoid circular dependency
         from qsopt.utils.results import TimeEvolutionResults
 
         return TimeEvolutionResults(
             times=times,
-            probabilities={
-                "prob_00": np.array(prob_00_list),
-                "prob_01": np.array(prob_01_list),
-                "prob_10": np.array(prob_10_list),
-                "prob_11": np.array(prob_11_list),
-            },
+            probabilities=probabilities,
             pulse_shape=pulse_shape,
             measurement_times=measurement_times,
             cavity_population=np.array(cavity_population_list),
@@ -932,7 +923,7 @@ class Experiment:
                 "chi": self.experimental_params.chi,
                 "gamma": self.experimental_params.photon_cavity_coupling,
                 "with_interaction": with_interaction,
-                "n_qubits": 2,
+                "n_qubits": n_qubits,
             },
         )
 
