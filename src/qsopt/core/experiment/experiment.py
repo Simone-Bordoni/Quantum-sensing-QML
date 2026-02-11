@@ -38,6 +38,7 @@ from .quantum_utils import (
     generate_n_qubit_operators,
     gu,
     measure_qubits_probability,
+    u0,
 )
 
 # Suppress Diffrax complex dtype warning
@@ -88,10 +89,10 @@ class Experiment:
 
         # Create default circuits if not provided (2-qubit RY gates)
         if initial_circuit is None:
-            initial_circuit = create_ry_circuit_layer(experimental_params.n_qubits, levels=experimental_params.qubit_levels, theta_values=np.pi/2)
+            initial_circuit = create_ry_circuit_layer(experimental_params.n_qubits, theta_values=np.pi/2)
         
         if final_circuit is None:
-            final_circuit = create_ry_circuit_layer(experimental_params.n_qubits, levels=experimental_params.qubit_levels, theta_values=-np.pi/2)
+            final_circuit = create_ry_circuit_layer(experimental_params.n_qubits, theta_values=-np.pi/2)
         
         self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
@@ -118,17 +119,11 @@ class Experiment:
         self._cached_solvers: Dict[str, qt.MESolver] = {}
         self._cached_circuit_unitaries: Optional[tuple] = None
 
+        # Callback
+        self.callback = OptimizationCallback(save_every=1, save_best=True)
+
         # Initialize quantum objects
         self.__post_init__()
-
-    def _update_circuits_from_trainable_params(self):
-        """
-        Update circuit parameters from current trainable parameter values.
-        
-        This synchronizes the circuits with their trainable parameters after optimization steps.
-        """
-        self.initial_circuit.set_trainable_parameters(self.trainable_params_initial)
-        self.final_circuit.set_trainable_parameters(self.trainable_params_final)
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
@@ -218,6 +213,7 @@ class Experiment:
 
         return H_interaction
 
+
     def _generate_hamiltonian(self) -> None:
         """
         Generate Hamiltonian for n-qubit system.
@@ -268,8 +264,8 @@ class Experiment:
         H_coupling = qt.Qobj(coupling_coeff * (a_in_dag * a - a_in * a_dag))  # type: ignore
 
         # Dispersive qubit-resonator interaction Hamiltonians
-        # H_q = -Σᵢ (χᵢ/2) a† a σz_i
-        H_dispersive_list = [qt.Qobj(-chi[i] / 2 * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
+        # H_q = -Σᵢ χᵢ a†a σz_i
+        H_dispersive_list = [qt.Qobj(-chi[i] * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
         H_dispersive = sum(H_dispersive_list)
 
         # Qubit-qubit interaction Hamiltonians
@@ -441,16 +437,12 @@ class Experiment:
         Get embedded unitaries for initial and final circuits with their daggers.
         
         Computes and caches the full-space unitaries for both circuits and their
-        conjugate transposes (daggers). Updates circuits from trainable parameters
-        before computing.
+        conjugate transposes (daggers).
         
         Returns:
             Tuple of (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
             embedded in composite space as QuTiP Qobj objects
         """
-        # Update circuits with current trainable parameter values
-        self._update_circuits_from_trainable_params()
-        
         # Get unitaries from circuits (as JAX arrays or QuTiP objects)
         initial_unitary_circuit = self.initial_circuit.get_unitary(qutip=False)
         final_unitary_circuit = self.final_circuit.get_unitary(qutip=False)
@@ -537,12 +529,6 @@ class Experiment:
             trace_val = rho_projected.tr()
             prob_all_ground = jnp.real(trace_val)
             rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
-            
-            # Print matrices with 2 decimal places
-            np.set_printoptions(precision=2, suppress=True)
-            print(np.array(rho_final.full()))
-            print(np.array(rho_current.full()))
-            np.set_printoptions()  # Reset to defaults
 
             prob_all_no_detect = prob_all_no_detect * prob_all_ground
 
@@ -767,7 +753,6 @@ class Experiment:
         
         # Get measurement times from protocol
         measurement_times = np.array(measurement_protocol.measurement_times)
-        print(measurement_times)
         # Use measurement times for start and end
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
@@ -904,8 +889,8 @@ class Experiment:
                 field_population_list.append(field_pop)
         
         times = np.array(all_times)
-        # Compute pulse shape u(t) = exp(-t^2)
-        pulse_shape = np.exp(-(times**2))
+        # Compute pulse shape using the same u0 function as visualization
+        pulse_shape = np.array([float(u0(t, sigma=args["sigma"])) for t in times])
 
         # Build probabilities dictionary
         probabilities = {f"prob_{state}": np.array(state_prob_lists[state]) for state in all_states}
@@ -938,12 +923,13 @@ class Experiment:
         callback: Optional[OptimizationCallback] = None,
         theta_init: Optional[List[float]] = None,
         loss_function: Optional["DetectionFromProbabilities"] = None,
+        optimizer = None,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize sensing contrast.
 
-        This method performs JAX-based gradient descent over four rotation angles
-        (two per qubit) using the sequential measurement protocol. The detection
+        This method performs JAX-based gradient descent over rotation angles
+        using the sequential measurement protocol. The detection
         criterion can be customized using the loss_function parameter.
 
         Args:
@@ -954,10 +940,12 @@ class Experiment:
             verbose_step: Step interval for printing progress (default: 10)
             callback: Optional callback to track optimization progress.
                      If None, uses the experiment's default callback.
-            theta_init: Optional initial rotation angles [θ1_q1, θ2_q1, θ1_q2, θ2_q2] in radians.
-                       If None, uses values from trainable_params.
+            theta_init: Optional initial rotation angles as list in radians.
+                       If None, uses current values from circuits.
             loss_function: Optional custom detection criterion (DetectionFromProbabilities).
                          If None, uses default 1-P(00) detection.
+            optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
+                      If None, uses SGD with learning rate 0.5.
 
         Returns:
             OptimizationCallback with full optimization history
@@ -983,63 +971,35 @@ class Experiment:
 
         # Reset callback at start of new optimization
         callback.reset()
-
-        # Get rotation angles (must have at least 4 for two qubits)
-        rotation_angles = self.trainable_params.get_rotation_angles()
-        if len(rotation_angles) < 4:
-            raise ValueError(
-                f"Two-qubit experiment requires at least 4 rotation parameters, "
-                f"got {len(rotation_angles)}"
-            )
-
-        # Get parameter names for the four rotation angles
-        rotation_names = list(rotation_angles.keys())
-        theta1_q1_name = rotation_names[0]
-        theta2_q1_name = rotation_names[1]
-        theta1_q2_name = rotation_names[2]
-        theta2_q2_name = rotation_names[3]
-
-        # Find indices for rotation parameters
-        param_indices = []
-        param_names = []
-        for name in [theta1_q1_name, theta2_q1_name, theta1_q2_name, theta2_q2_name]:
-            idx = -1
-            for param in self.trainable_params.parameters:
-                if param.name == name:
-                    idx = param.index
-                    break
-            if idx == -1:
-                raise ValueError(f"Could not find rotation parameter {name}")
-            param_indices.append(idx)
-            param_names.append(name)
+        
+        # Count total trainable parameters from both circuits
+        n_initial = self.initial_circuit.count_trainable_parameters()
+        n_final = self.final_circuit.count_trainable_parameters()
+        n_total = n_initial + n_final
+        
+        if n_total == 0:
+            raise ValueError("No trainable parameters found in circuits")
 
         # Initialize parameter vector
         if theta_init is not None:
-            if len(theta_init) != 4:
+            if len(theta_init) != n_total:
                 raise ValueError(
-                    "theta_init must contain exactly 4 angles [θ1_q1, θ2_q1, θ1_q2, θ2_q2]"
+                    f"theta_init must contain exactly {n_total} angles, got {len(theta_init)}"
                 )
             initial_values = theta_init
+            self.initial_circuit.set_trainable_parameters(theta_init[:n_initial])
+            self.final_circuit.set_trainable_parameters(theta_init[n_initial:])
         else:
-            initial_values = [
-                rotation_angles[theta1_q1_name][0],
-                rotation_angles[theta2_q1_name][0],
-                rotation_angles[theta1_q2_name][0],
-                rotation_angles[theta2_q2_name][0],
-            ]
+            # Get current values from circuits
+            initial_params = self.initial_circuit.get_trainable_parameters()
+            final_params = self.final_circuit.get_trainable_parameters()
+            initial_values = [float(p) for p in initial_params] + [float(p) for p in final_params]
 
         params = jnp.array(initial_values, dtype=float)
 
-        # Update trainable_params with initial values
-        for idx, val in zip(param_indices, initial_values):
-            self.trainable_params.parameters[idx].value = float(val)
-
-        trainable_mask = jnp.array(
-            [self.trainable_params.parameters[idx].trainable for idx in param_indices]
-        )
-
-        # Use optimizer from first trainable rotation parameter
-        optimizer = self.trainable_params.rotation_optimizer
+        # Create optimizer (default to SGD with lr=0.5 if not provided)
+        if optimizer is None:
+            optimizer = optax.sgd(learning_rate=0.5)
         opt_state = optimizer.init(params)
 
         # Get initial state and solvers
@@ -1053,101 +1013,58 @@ class Experiment:
         # Define objective function
         def objective_function(opt_params):
             """Negative sensing contrast for minimization with batch averaging."""
-            # Extract parameters and apply trainability mask
-            theta1_q1_raw, theta2_q1_raw, theta1_q2_raw, theta2_q2_raw = opt_params
-            theta1_q1 = theta1_q1_raw if trainable_mask[0] else jax.lax.stop_gradient(theta1_q1_raw)
-            theta2_q1 = theta2_q1_raw if trainable_mask[1] else jax.lax.stop_gradient(theta2_q1_raw)
-            theta1_q2 = theta1_q2_raw if trainable_mask[2] else jax.lax.stop_gradient(theta1_q2_raw)
-            theta2_q2 = theta2_q2_raw if trainable_mask[3] else jax.lax.stop_gradient(theta2_q2_raw)
 
-            # Precompute rotation gates once
-            rotation_gates = self._prepare_rotation_gates(
-                theta1_q1, theta2_q1, theta1_q2, theta2_q2
+            self.initial_circuit.set_trainable_parameters(opt_params[:n_initial])
+            self.final_circuit.set_trainable_parameters(opt_params[n_initial:])
+
+            # Compute circuit unitaries
+            circuit_unitaries = self._prepare_circuit_unitaries()
+
+            # Get measurement times batch
+            measurement_times_batch = (
+                self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
             )
+            
+            # Handle both single and multiple realizations uniformly
+            if measurement_times_batch.ndim == 1:
+                measurement_times_batch = measurement_times_batch[jnp.newaxis, :]
+            
+            prob_with_batch = jnp.zeros(batch_size)
+            prob_without_batch = jnp.zeros(batch_size)
 
-            if batch_size == 1:
-                # Single realization
-                measurement_times_batch = (
-                    self.experimental_params.get_measurement_times_with_uncertainty()
-                )
+            for i in range(batch_size):
+                measurement_times = measurement_times_batch[i]
 
-                # Simulate with photon
-                prob_with = self.simulation(
-                    solver_with,
-                    rho0,
-                    theta1_q1,
-                    theta2_q1,
-                    theta1_q2,
-                    theta2_q2,
-                    measurement_times_batch,
-                    precomputed_rotations=rotation_gates,
-                    loss_function=loss_function,
-                )
-
-                # Simulate without photon
-                prob_without = self.simulation(
-                    solver_without,
-                    rho0,
-                    theta1_q1,
-                    theta2_q1,
-                    theta1_q2,
-                    theta2_q2,
-                    measurement_times_batch,
-                    precomputed_rotations=rotation_gates,
-                    loss_function=loss_function,
-                )
-
-                contrast = prob_with - prob_without
-
-            else:
-                # Multiple realizations
-                measurement_times_batch = (
-                    self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
-                )
-                prob_with_batch = jnp.zeros(batch_size)
-                prob_without_batch = jnp.zeros(batch_size)
-
-                for i in range(batch_size):
-                    measurement_times = measurement_times_batch[i]
-
-                    prob_with_batch = prob_with_batch.at[i].set(
-                        self.simulation(
-                            solver_with,
-                            rho0,
-                            theta1_q1,
-                            theta2_q1,
-                            theta1_q2,
-                            theta2_q2,
-                            measurement_times,
-                            precomputed_rotations=rotation_gates,
-                            loss_function=loss_function,
-                        )
+                prob_with_batch = prob_with_batch.at[i].set(
+                    self.simulation(
+                        solver_with,
+                        rho0,
+                        measurement_times,
+                        precomputed_unitaries=circuit_unitaries,
+                        loss_function=loss_function,
                     )
+                )
 
-                    prob_without_batch = prob_without_batch.at[i].set(
-                        self.simulation(
-                            solver_without,
-                            rho0,
-                            theta1_q1,
-                            theta2_q1,
-                            theta1_q2,
-                            theta2_q2,
-                            measurement_times,
-                            precomputed_rotations=rotation_gates,
-                            loss_function=loss_function,
-                        )
+                prob_without_batch = prob_without_batch.at[i].set(
+                    self.simulation(
+                        solver_without,
+                        rho0,
+                        measurement_times,
+                        precomputed_unitaries=circuit_unitaries,
+                        loss_function=loss_function,
                     )
+                )
 
-                # Average over batch
-                prob_with = jnp.mean(prob_with_batch)
-                prob_without = jnp.mean(prob_without_batch)
-                contrast = prob_with - prob_without
+            # Average over batch
+            prob_with = jnp.mean(prob_with_batch)
+            prob_without = jnp.mean(prob_without_batch)
+            contrast = prob_with - prob_without
 
             # Return negative for minimization
             return -contrast, (prob_with, prob_without, contrast)
 
         # Get detection description for verbose output
-        detection_desc = "1 - P(00)" if loss_function is None else "custom"
+        detection_desc = "1 - P(0)" if loss_function is None else "custom"
 
         if verbose:
             theta_initial_vals = np.asarray(params, dtype=float)
@@ -1156,10 +1073,11 @@ class Experiment:
             print(f"    Batch size: {batch_size}")
             print(f"    Convergence tolerance: {tolerance:.2e}")
             print(f"    Detection criterion: {detection_desc}")
-            print(f"    Initial rotation parameters:")
-            for i, name in enumerate(param_names):
-                status = " [FIXED]" if not trainable_mask[i] else ""
-                print(f"        {name}={theta_initial_vals[i]:.3f} rad{status}")
+            print(f"    Trainable parameters: {n_total} ({n_initial} initial circuit + {n_final} final circuit)")
+            print(f"    Initial parameter values:")
+            for i, val in enumerate(theta_initial_vals):
+                circuit_type = "initial" if i < n_initial else "final"
+                print(f"        {circuit_type}_param_{i}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
 
             uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:
@@ -1168,10 +1086,16 @@ class Experiment:
                 print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
 
             print("=" * 70)
-            print(
-                f"{'Step':<6}{param_names[0]:<12}{param_names[1]:<12}"
-                f"{param_names[2]:<12}{param_names[3]:<12}{'Contrast':<12}{'Grad Norm'}"
-            )
+            # Build header based on number of parameters (up to 4 each)
+            header_parts = [f"{'Step':<6}"]
+            n_init_show = min(n_initial, 4)
+            n_final_show = min(n_final, 4)
+            for i in range(n_init_show):
+                header_parts.append(f"init_{i:<9}")
+            for i in range(n_final_show):
+                header_parts.append(f"final_{i:<8}")
+            header_parts.extend([f"{'Contrast':<12}", "Grad Norm"])
+            print("".join(header_parts))
             print("-" * 70)
 
         best_contrast = -np.inf
@@ -1194,22 +1118,29 @@ class Experiment:
 
             # Call callback to track progress
             callback(
-                trainable_params=self.trainable_params,
+                trainable_params_initial=self.initial_circuit.get_trainable_parameters(),
+                trainable_params_final=self.final_circuit.get_trainable_parameters(),
                 prob_with=float(prob_with),
                 prob_without=float(prob_without),
                 contrast=float(sensing_contrast),
             )
 
             grad_norm = float(jnp.linalg.norm(grads))
-            theta_values = np.asarray(params, dtype=float)
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
-                print(
-                    f"{step:<6}{theta_values[0]:<12.6f}{theta_values[1]:<12.6f}"
-                    f"{theta_values[2]:<12.6f}{theta_values[3]:<12.6f}"
-                    f"{float(sensing_contrast):<12.6f}{grad_norm:<12.2e}"
-                )
+                # Build parameter display (up to 4 each)
+                n_init_show = min(n_initial, 4)
+                n_final_show = min(n_final, 4)
+                param_vals = np.asarray(params, dtype=float)
+                
+                output_parts = [f"{step:<6}"]
+                for i in range(n_init_show):
+                    output_parts.append(f"{param_vals[i]:<12.6f}")
+                for i in range(n_final_show):
+                    output_parts.append(f"{param_vals[n_initial + i]:<12.6f}")
+                output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}"])
+                print("".join(output_parts))
 
             # Convergence check
             if grad_norm < tolerance:
@@ -1219,28 +1150,21 @@ class Experiment:
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
 
-            # Update trainable parameters continuously
-            for idx, val in zip(param_indices, theta_values):
-                self.trainable_params.parameters[idx].value = float(val)
-
         # Ensure best parameters are set at the end
         best_values = np.asarray(best_params, dtype=float)
-        for idx, val in zip(param_indices, best_values):
-            self.trainable_params.parameters[idx].value = float(val)
-
-        # Apply constraints at the end
-        final_values = np.array([p.value for p in self.trainable_params.parameters])
-        constrained_values = self.trainable_params.apply_constraints(final_values)
-        for i, val in enumerate(constrained_values):
-            self.trainable_params.parameters[i].value = float(val)
+        best_initial = [best_values[i] for i in range(n_initial)]
+        best_final = [best_values[i] for i in range(n_initial, n_total)]
+        self.initial_circuit.set_trainable_parameters(best_initial)
+        self.final_circuit.set_trainable_parameters(best_final)
 
         if verbose:
             print("=" * 70)
             print(f"Final gradient norm: {grad_norm:.2e}")
             print(f"Best sensing contrast: {best_contrast:.6f}")
             print(f"Best parameters:")
-            for i, name in enumerate(param_names):
-                print(f"    {name}={best_values[i]:.3f} rad ({np.rad2deg(best_values[i]):.1f}°)")
+            for i, val in enumerate(best_values):
+                circuit_type = "initial" if i < n_initial else "final"
+                print(f"    {circuit_type}_param_{i}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
 
         # Set convergence information in callback
         callback.set_convergence_info(

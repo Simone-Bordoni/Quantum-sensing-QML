@@ -288,12 +288,16 @@ class OptimizationCallback:
             # Show initial circuit parameters
             lines.append("     Initial circuit:")
             for i, value in enumerate(initial_params):
-                lines.append(f"        param_{i}: {float(value):.6f} rad ({np.rad2deg(float(value)):.2f}°)")
+                # Convert to numpy to handle both regular floats and JAX arrays
+                val_float = float(np.asarray(value))
+                lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
             
             # Show final circuit parameters
             lines.append("     Final circuit:")
             for i, value in enumerate(final_params):
-                lines.append(f"        param_{i}: {float(value):.6f} rad ({np.rad2deg(float(value)):.2f}°)")
+                # Convert to numpy to handle both regular floats and JAX arrays
+                val_float = float(np.asarray(value))
+                lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
 
         # Show metrics (best for optimization, current for simulation)
         if self.best_metrics is not None:

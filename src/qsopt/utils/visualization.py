@@ -25,9 +25,8 @@ def plot_optimization_dashboard(
     show_contrast: bool = True,
     show_gradients: bool = True,
     show_parameters: bool = True,
-    show_trajectory: bool = True,
     show_probabilities: bool = True,
-    figsize: Tuple[int, int] = (16, 18),
+    figsize: Tuple[int, int] = (16, 14),
     save_path: Optional[str] = None,
     dpi: int = 300,
 ) -> Figure:
@@ -37,8 +36,7 @@ def plot_optimization_dashboard(
     This function generates a multi-panel visualization showing:
     - Sensing contrast evolution (with optional reference benchmark)
     - Gradient magnitude evolution (log scale)
-    - Parameter evolution over epochs
-    - Optimization trajectory in parameter space
+    - Parameter evolution over epochs (initial and final circuit parameters)
     - Detection probabilities (with and without photon)
 
     Args:
@@ -49,7 +47,6 @@ def plot_optimization_dashboard(
         show_contrast: Display sensing contrast evolution plot when True
         show_gradients: Display gradient magnitude evolution plot when True
         show_parameters: Display parameter evolution plot when True
-        show_trajectory: Display optimization trajectory in parameter space
         show_probabilities: Display detection probabilities plot
         figsize: Figure size as ``(width, height)`` in inches
         save_path: Optional path to save the figure (e.g., ``'dashboard.pdf'``)
@@ -61,26 +58,25 @@ def plot_optimization_dashboard(
 
     Example:
         >>> # Basic usage with optimization only
-    >>> history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
+        >>> history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
         >>> fig = plot_optimization_dashboard(history)
         >>>
         >>> # With reference comparison
         >>> results = experiment.run_simulation()
-    >>> history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
+        >>> history = experiment.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
         >>> fig = plot_optimization_dashboard(history, reference_callback=results,
         ...                                   save_path='opt_dashboard.pdf')
         >>>
         >>> # Selective plotting
         >>> fig = plot_optimization_dashboard(history,
         ...                                   show_gradients=False,
-        ...                                   show_trajectory=False)
+        ...                                   show_probabilities=False)
     """
     # Count active plots to determine layout
     active_plots = [
         show_contrast,
         show_gradients,
         show_parameters,
-        show_trajectory,
         show_probabilities,
     ]
     n_plots = sum(active_plots)
@@ -106,23 +102,18 @@ def plot_optimization_dashboard(
     # Extract parameter arrays from tuple structure
     param_arrays = []
     param_names = []
+    n_initial_params = 0
+    n_final_params = 0
+    
     if history["trainable_params"]:
         # trainable_params is now tuple[list, list] of (initial_params, final_params)
         first_params_tuple = history["trainable_params"][0]
         initial_params, final_params = first_params_tuple
-        n_initial = len(initial_params)
-        n_final = len(final_params)
+        n_initial_params = len(initial_params)
+        n_final_params = len(final_params)
         
-        # Generate parameter names based on structure
-        if n_initial == 1 and n_final == 1:
-            # Single qubit: theta1, theta2
-            param_names = ["theta1", "theta2"]
-        elif n_initial == 2 and n_final == 2:
-            # Two qubits: theta1_q1, theta1_q2, theta2_q1, theta2_q2
-            param_names = ["theta1_q1", "theta1_q2", "theta2_q1", "theta2_q2"]
-        else:
-            # Generic names
-            param_names = [f"initial_{i}" for i in range(n_initial)] + [f"final_{i}" for i in range(n_final)]
+        # Generate generic parameter names
+        param_names = [f"init_{i}" for i in range(n_initial_params)] + [f"final_{i}" for i in range(n_final_params)]
 
         # Extract all parameter values (flatten tuple to list)
         for initial_params, final_params in history["trainable_params"]:
@@ -130,6 +121,7 @@ def plot_optimization_dashboard(
             param_arrays.append(flat_params)
 
     param_arrays = np.array(param_arrays)
+    n_total_params = len(param_names)
 
     # Calculate gradients (approximate from contrast differences)
     gradients = np.zeros_like(param_arrays)
@@ -208,111 +200,34 @@ def plot_optimization_dashboard(
         axes.append(ax)
         plot_idx += 1
 
-        colors = ["r", "b", "g", "orange", "purple", "brown"]
+        # Use different color schemes for initial vs final circuit parameters
+        colors_init = plt.cm.Blues(np.linspace(0.4, 0.9, max(1, n_initial_params)))
+        colors_final = plt.cm.Oranges(np.linspace(0.4, 0.9, max(1, n_final_params)))
 
         for i, name in enumerate(param_names):
-            color = colors[i % len(colors)]
+            # Choose color based on whether it's initial or final circuit parameter
+            if i < n_initial_params:
+                color = colors_init[i] if n_initial_params > 1 else colors_init[0]
+                linestyle = '-'
+            else:
+                color = colors_final[i - n_initial_params] if n_final_params > 1 else colors_final[0]
+                linestyle = '--'
+            
             params_deg = param_arrays[:, i] * 180 / np.pi
-            ax.plot(epochs, params_deg, "-", linewidth=2, label=name, color=color, alpha=0.8)
+            ax.plot(epochs, params_deg, linestyle, linewidth=2, label=name, color=color, alpha=0.8)
 
             # Add reference line if available
-            if reference_params is not None:
+            if reference_params is not None and i < len(reference_params):
                 ref_deg = reference_params[i] * 180 / np.pi
-                ax.axhline(y=ref_deg, color=color, linestyle="--", alpha=0.5, linewidth=1.5)
+                ax.axhline(y=ref_deg, color=color, linestyle=":", alpha=0.5, linewidth=1.5)
 
         ax.set_xlabel("Epoch", fontsize=12)
         ax.set_ylabel("Rotation Angle (degrees)", fontsize=12)
-        ax.set_title("Parameter Evolution", fontsize=14)
-        ax.legend(fontsize=10)
+        ax.set_title(f"Parameter Evolution ({n_total_params} params: {n_initial_params} init, {n_final_params} final)", fontsize=14)
+        ax.legend(fontsize=9 if n_total_params > 4 else 10, ncol=2 if n_total_params > 6 else 1)
         ax.grid(True, alpha=0.3)
 
-    # Plot 4: Optimization Trajectory in Parameter Space
-    if show_trajectory and len(param_arrays) > 0 and len(param_names) >= 2:
-        ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
-        axes.append(ax)
-        plot_idx += 1
-
-        # Check if this is a two-qubit system (4 parameters: theta1_q1, theta2_q1, theta1_q2, theta2_q2)
-        if len(param_names) >= 4:
-            # Two-qubit trajectory: plot both qubits' angle evolution
-            theta1_q1_deg = param_arrays[:, 0] * 180 / np.pi
-            theta2_q1_deg = param_arrays[:, 1] * 180 / np.pi
-            theta1_q2_deg = param_arrays[:, 2] * 180 / np.pi
-            theta2_q2_deg = param_arrays[:, 3] * 180 / np.pi
-
-            # Plot trajectory for qubit 1
-            ax.plot(theta1_q1_deg, theta2_q1_deg, 'o-', linewidth=2, alpha=0.7,
-                   label='Qubit 1', color='tab:blue', markersize=4)
-            # Mark start and end for qubit 1
-            ax.plot(theta1_q1_deg[0], theta2_q1_deg[0], 'o', markersize=10,
-                   color='tab:blue', markeredgecolor='black', markeredgewidth=1.5)
-            ax.plot(theta1_q1_deg[-1], theta2_q1_deg[-1], 's', markersize=10,
-                   color='tab:blue', markeredgecolor='black', markeredgewidth=1.5)
-
-            # Plot trajectory for qubit 2
-            ax.plot(theta1_q2_deg, theta2_q2_deg, 'o-', linewidth=2, alpha=0.7,
-                   label='Qubit 2', color='tab:orange', markersize=4)
-            # Mark start and end for qubit 2
-            ax.plot(theta1_q2_deg[0], theta2_q2_deg[0], 'o', markersize=10,
-                   color='tab:orange', markeredgecolor='black', markeredgewidth=1.5)
-            ax.plot(theta1_q2_deg[-1], theta2_q2_deg[-1], 's', markersize=10,
-                   color='tab:orange', markeredgecolor='black', markeredgewidth=1.5)
-
-            ax.set_xlabel("θ₁ (degrees)", fontsize=12)
-            ax.set_ylabel("θ₂ (degrees)", fontsize=12)
-            ax.set_title("Optimization Trajectory (Both Qubits)", fontsize=14)
-            ax.legend(fontsize=10)
-            ax.grid(True, alpha=0.3)
-        else:
-            # Single-qubit trajectory: use first two parameters
-            theta1_deg = param_arrays[:, 0] * 180 / np.pi
-            theta2_deg = param_arrays[:, 1] * 180 / np.pi
-
-            # Plot trajectory with color gradient
-            scatter = ax.scatter(
-                theta1_deg,
-                theta2_deg,
-                c=epochs,
-                cmap="viridis",
-                s=30,
-                alpha=0.7,
-                edgecolors="black",
-                linewidth=0.5,
-            )
-            ax.plot(theta1_deg, theta2_deg, "k-", alpha=0.3, linewidth=1)
-
-            # Mark start and end points
-            ax.plot(
-                theta1_deg[0], theta2_deg[0], "ro", markersize=8, label="Start", markeredgecolor="black"
-            )
-            ax.plot(
-                theta1_deg[-1], theta2_deg[-1], "gs", markersize=8, label="End", markeredgecolor="black"
-            )
-
-            # Mark reference point if available
-            if reference_params is not None:
-                ref_theta1_deg = reference_params[0] * 180 / np.pi
-                ref_theta2_deg = reference_params[1] * 180 / np.pi
-                ax.plot(
-                    ref_theta1_deg,
-                    ref_theta2_deg,
-                    "b^",
-                    markersize=10,
-                    label="Reference",
-                    markeredgecolor="black",
-                )
-
-            ax.set_xlabel(f"{param_names[0]} (degrees)", fontsize=12)
-            ax.set_ylabel(f"{param_names[1]} (degrees)", fontsize=12)
-            ax.set_title("Optimization Trajectory", fontsize=14)
-            ax.legend(fontsize=10)
-            ax.grid(True, alpha=0.3)
-
-            # Add colorbar
-            cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
-            cbar.set_label("Epoch", fontsize=10)
-
-    # Plot 5: Detection Probabilities Evolution
+    # Plot 4: Detection Probabilities Evolution
     if show_probabilities:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
@@ -467,16 +382,8 @@ def plot_parameter_trajectory(
         n_initial = len(initial_params)
         n_final = len(final_params)
         
-        # Generate parameter names based on structure
-        if n_initial == 1 and n_final == 1:
-            # Single qubit: theta1, theta2
-            param_names = ["theta1", "theta2"]
-        elif n_initial == 2 and n_final == 2:
-            # Two qubits: theta1_q1, theta1_q2, theta2_q1, theta2_q2
-            param_names = ["theta1_q1", "theta1_q2", "theta2_q1", "theta2_q2"]
-        else:
-            # Generic names
-            param_names = [f"initial_{i}" for i in range(n_initial)] + [f"final_{i}" for i in range(n_final)]
+        # Generate generic parameter names
+        param_names = [f"init_{i}" for i in range(n_initial)] + [f"final_{i}" for i in range(n_final)]
 
         # Extract all parameter values (flatten tuple to list)
         for initial_params, final_params in history["trainable_params"]:
