@@ -396,9 +396,13 @@ class ExperimentalParameters:
         Otherwise, compute from initial_time, final_time, and time_interval.
         """
         if self.measurement.measurement_times is not None:
+            print("sono nell'IF")
             self._measurement_times_list = [float(t) for t in self.measurement.measurement_times]
+            self.measurement.measurement_times = self._measurement_times_list
         else:
+            print("sono nell'Else")
             self._measurement_times_list = self._compute_measurement_times_from_interval()
+            self.measurement.measurement_times = self._measurement_times_list
 
     def _resolve_initial_time_uncertainty(self) -> float:
         """Resolve the initial time uncertainty specification to a numeric value."""

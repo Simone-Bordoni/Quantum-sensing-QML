@@ -232,6 +232,8 @@ def build_qubit_noise_operators(
     # Relaxation noise: energy decay |1⟩ → |0⟩
     if relaxation_rate != 0.0:
         noise_operators.append(np.sqrt(relaxation_rate) * sigma_minus)
+    
+    print(noise_operators)
 
     return noise_operators
 

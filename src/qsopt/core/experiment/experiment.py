@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Union
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
+import math
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
@@ -766,7 +767,7 @@ class Experiment:
         
         # Get measurement times from protocol
         measurement_times = np.array(measurement_protocol.measurement_times)
-        
+        print(measurement_times)
         # Use measurement times for start and end
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
@@ -789,15 +790,15 @@ class Experiment:
         rho_current = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
 
         # Get number operators for population calculation
-        n_cavity = self.operators["n_cavity"]
-        n_field = self.operators["n_field"]
+        n_cavity = self.operators["a_dag"] * self.operators["a"]
+        n_field = self.operators["a_in_dag"] * self.operators["a_in"]
         
         args = {"sigma": self.experimental_params.inverse_pulse_width}
         
         # Get number of qubits and generate all possible states
         n_qubits = self.experimental_params.n_qubits
-        all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
-        qubit_indices = list(range(1, n_qubits + 1))
+        all_states = [format(0, f'0{n_qubits}b')] #[format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
+        qubit_indices = list(range(0, n_qubits))
         
         # Check if we need to perform intermediate measurements
         intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
@@ -830,7 +831,7 @@ class Experiment:
                     
                     # Measure all qubit state probabilities
                     for state in all_states:
-                        prob = float(self.prob(rho_meas, qubits=qubit_indices, state=state))
+                        prob = float(self.prob(rho_meas, qubits=qubit_indices))
                         state_prob_lists[state].append(prob)
                     
                     all_times.append(seg_times[i])
@@ -852,7 +853,7 @@ class Experiment:
                     state_probs_basis = {}
                     for state in all_states:
                         state_probs_basis[state] = float(
-                            self.prob(rho_before_proj, qubits=qubit_indices, state=state)
+                            self.prob(rho_before_proj, qubits=qubit_indices)
                         )
                     
                     # Stochastic projection (weighted by probabilities)
@@ -891,7 +892,7 @@ class Experiment:
 
                 # Measure all qubit state probabilities
                 for state in all_states:
-                    prob = float(self.prob(rho_final, qubits=qubit_indices, state=state))
+                    prob = float(math.prod(self.prob(rho_final, qubits=qubit_indices)))
                     state_prob_lists[state].append(prob)
 
                 all_times.append(times[i])
