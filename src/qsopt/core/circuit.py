@@ -167,7 +167,7 @@ class QuantumCircuit:
             return qt.Qobj(U_jax, dims=[[2]*self.n_qubits, [2]*self.n_qubits])
         return U_jax
 
-    def __call__(self, state: Union[jnp.ndarray, qt.Qobj, None] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
+    def __call__(self, state: Optional[Union[jnp.ndarray, qt.Qobj]] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
         """
         Apply the circuit to a quantum state.
 
@@ -313,7 +313,7 @@ def create_layer(
     circuit: QuantumCircuit,
     gate_type: type,
     parameters: List[float],
-    qubits: List[int] = None,
+    qubits: Optional[List[int]] = None,
     trainable: bool = True,
 ) -> None:
     """
@@ -375,7 +375,7 @@ def create_entangling_layer(
 
 def create_ry_circuit_layer(
     n_qubits: int,
-    theta_values: Union[List[float],float] = None,
+    theta_values: Optional[Union[List[float],float]] = None,
     trainable: bool = True,
 ) -> QuantumCircuit:
     """

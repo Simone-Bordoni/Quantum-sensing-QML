@@ -22,7 +22,7 @@ from qsopt.core.experimental_parameters import (
     QubitInteraction,
     MeasurementProtocol
 )
-from qsopt.core.loss_functions import DetectionFromProbabilities
+from qsopt.core.loss_functions import DetectionMetric
 
 if TYPE_CHECKING:
     from qsopt.utils.results import TimeEvolutionResults
@@ -73,7 +73,7 @@ class Experiment:
         experimental_params: ExperimentalParameters,
         initial_circuit: Optional[QuantumCircuit] = None,
         final_circuit: Optional[QuantumCircuit] = None,
-        metric: Optional[DetectionFromProbabilities] = None,
+        detection_metric: Optional[DetectionMetric] = None,
     ):
         """
         Initialize n-qubit experiment.
@@ -97,7 +97,7 @@ class Experiment:
         self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
-        self.metric = metric if metric is not None else DetectionFromProbabilities()
+        self.detection_metric = detection_metric if detection_metric is not None else DetectionMetric(n_qubits=experimental_params.n_qubits)
 
         # Normalize qubit_levels to always be a list
         if isinstance(self.experimental_params.qubit_levels, int):
@@ -149,10 +149,11 @@ class Experiment:
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         n_qubits = self.experimental_params.n_qubits
+        required_states = self.detection_metric.required_states
 
         # Generate n-qubit operators using utility function
         self.operators = generate_n_qubit_operators(
-            field_levels, cavity_levels, qubit_levels, n_qubits
+            field_levels, cavity_levels, qubit_levels, n_qubits, required_states
         )
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
@@ -475,7 +476,7 @@ class Experiment:
         measurements: Union[List[float], np.ndarray],
         args: Optional[Dict] = None,
         precomputed_unitaries: Optional[tuple] = None,
-        loss_function: Optional[DetectionFromProbabilities] = None,
+        loss_function: Optional[DetectionMetric] = None,
     ) -> jnp.ndarray:
         """
         JAX-compatible simulation for n-qubit system with customizable detection.
@@ -487,7 +488,7 @@ class Experiment:
             args: System parameters (optional)
             precomputed_unitaries: Optional tuple (U_initial, U_initial_dag, U_final, U_final_dag)
                                   to avoid recomputation
-            loss_function: Optional DetectionFromProbabilities instance. If None, uses 1-P(00).
+            loss_function: Optional DetectionMetric instance. If None, uses 1-P(00).
 
         Returns:
             Detection probability as JAX array
@@ -497,7 +498,7 @@ class Experiment:
 
         # Default to 1-P(0) detection
         if loss_function is None:
-            loss_function = DetectionFromProbabilities()
+            loss_function = self.detection_metric
 
         measurement_array = np.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
@@ -679,12 +680,12 @@ class Experiment:
 
         # Use metric to compute detection probabilities
         n_qubits = self.experimental_params.n_qubits
-        detection_with = float(self.metric(probs_with))
-        detection_without = float(self.metric(probs_without))
+        detection_with = float(self.detection_metric(probs_with))
+        detection_without = float(self.detection_metric(probs_without))
 
         # Compute contrast using metric's method
         contrast = float(
-            DetectionFromProbabilities.compute_contrast(detection_with, detection_without)
+            DetectionMetric.compute_contrast(detection_with, detection_without)
         )
 
         return {
@@ -782,7 +783,7 @@ class Experiment:
         
         # Get number of qubits and generate all possible states
         n_qubits = self.experimental_params.n_qubits
-        all_states = [format(0, f'0{n_qubits}b')] #[format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
+        all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
         qubit_indices = list(range(0, n_qubits))
         
         # Check if we need to perform intermediate measurements
@@ -922,7 +923,7 @@ class Experiment:
         verbose_step: int = 10,
         callback: Optional[OptimizationCallback] = None,
         theta_init: Optional[List[float]] = None,
-        loss_function: Optional["DetectionFromProbabilities"] = None,
+        loss_function: Optional["DetectionMetric"] = None,
         optimizer = None,
     ) -> OptimizationCallback:
         """
@@ -942,7 +943,7 @@ class Experiment:
                      If None, uses the experiment's default callback.
             theta_init: Optional initial rotation angles as list in radians.
                        If None, uses current values from circuits.
-            loss_function: Optional custom detection criterion (DetectionFromProbabilities).
+            loss_function: Optional custom detection criterion (DetectionMetric).
                          If None, uses default 1-P(00) detection.
             optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
                       If None, uses SGD with learning rate 0.5.
@@ -955,8 +956,8 @@ class Experiment:
             >>> callback = experiment.optimize_rotations(num_steps=200, batch_size=10)
             >>>
             >>> # With custom detection criterion
-            >>> from qsopt.utils.loss_functions import DetectionFromProbabilities
-            >>> loss = DetectionFromProbabilities(lambda p: p['p11'])  # Detect |11⟩
+            >>> from qsopt.utils.loss_functions import DetectionMetric
+            >>> loss = DetectionMetric(lambda p: p['p11'])  # Detect |11⟩
             >>> callback = experiment.optimize_rotations(
             ...     num_steps=100,
             ...     loss_function=loss
@@ -1220,6 +1221,7 @@ class Experiment:
 
         Note:
             Chi is assumed equal for both qubits (χ₁ = χ₂).
+        
         """
         from qsopt.utils.parameters_sweep import compute_chi_gamma_sweep
 

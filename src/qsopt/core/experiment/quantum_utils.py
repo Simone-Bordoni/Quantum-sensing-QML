@@ -70,7 +70,7 @@ def u0(t, **kwargs):
     return jnp.exp(-(dx**2))
 
 def generate_n_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int
+    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, required_states: Optional[List[str]] = None
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for an n-qubit composite system.
@@ -166,6 +166,10 @@ def generate_n_qubit_operators(
             "I_cavity": I_cavity,
             "I_q": I_q
         }
+        if required_states is not None:
+            Pbin = [P0,P1]
+            operators["P"] = { state: qt.tensor([I_field, I_cavity] + [Pbin[i] for i in list(map(int,state))]) for state in required_states}
+
         return operators
 
 

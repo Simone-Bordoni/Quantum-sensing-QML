@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import jax
 
 class OptimizationCallback:
     """
@@ -289,6 +290,7 @@ class OptimizationCallback:
             lines.append("     Initial circuit:")
             for i, value in enumerate(initial_params):
                 # Convert to numpy to handle both regular floats and JAX arrays
+                print(f"Debug in OptimizationCallback: {type(value)}")
                 val_float = float(np.asarray(value))
                 lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
             
@@ -296,7 +298,7 @@ class OptimizationCallback:
             lines.append("     Final circuit:")
             for i, value in enumerate(final_params):
                 # Convert to numpy to handle both regular floats and JAX arrays
-                val_float = float(np.asarray(value))
+                val_float = np.asarray(value)
                 lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
 
         # Show metrics (best for optimization, current for simulation)
