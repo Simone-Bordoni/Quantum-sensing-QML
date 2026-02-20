@@ -290,7 +290,6 @@ class OptimizationCallback:
             lines.append("     Initial circuit:")
             for i, value in enumerate(initial_params):
                 # Convert to numpy to handle both regular floats and JAX arrays
-                print(f"Debug in OptimizationCallback: {type(value)}")
                 val_float = float(np.asarray(value))
                 lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
             

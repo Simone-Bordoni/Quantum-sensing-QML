@@ -624,6 +624,7 @@ class Experiment:
             contrast=float(contrast),
         )
 
+
         return callback
 
     def run_simulation_with_probabilities(
@@ -1065,7 +1066,7 @@ class Experiment:
             return -contrast, (prob_with, prob_without, contrast)
 
         # Get detection description for verbose output
-        detection_desc = "1 - P(0)" if loss_function is None else "custom"
+        detection_desc = "1 - P(0)" if loss_function is None else loss_function.name
 
         if verbose:
             theta_initial_vals = np.asarray(params, dtype=float)
@@ -1119,8 +1120,8 @@ class Experiment:
 
             # Call callback to track progress
             callback(
-                trainable_params_initial=self.initial_circuit.get_trainable_parameters(),
-                trainable_params_final=self.final_circuit.get_trainable_parameters(),
+                trainable_params_initial=params[:n_initial], #self.initial_circuit.get_trainable_parameters(),
+                trainable_params_final=params[n_initial:], #self.final_circuit.get_trainable_parameters(),
                 prob_with=float(prob_with),
                 prob_without=float(prob_without),
                 contrast=float(sensing_contrast),
@@ -1171,6 +1172,7 @@ class Experiment:
         callback.set_convergence_info(
             converged=float(grad_norm) < tolerance, final_grad_norm=float(grad_norm)
         )
+    
 
         return callback
 
