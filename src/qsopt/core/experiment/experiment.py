@@ -941,7 +941,7 @@ class Experiment:
         initial_values: Optional[List[float]] = None,
         loss_function: Optional[DetectionMetric] = None,
         optimizer = None,
-        renormalize_grad: Optional[float] = 1,
+        renormalize_grad: Optional[float] = False,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize sensing contrast.
