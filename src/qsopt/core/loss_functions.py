@@ -25,13 +25,31 @@ class DetectionMetric:
 
     Parameters
     ----------
-    detection_fn : Callable[[Dict[str, float]], float], optional
+    metric : Callable[float, float], optional
         Custom function that takes a dictionary with keys 'p00...0', 'p10...0', 'p01...0', ... , 'p11...1'
-        and returns the detection probability. If None, defaults to 1 - P(00).
-    name : str, optional
-        Name describing the detection criterion (for logging/plotting).
+        and returns the detection probability. If None, defaults to lambda x: 1-x
     n_qubits : int, optional
-        Number of qubits, default to 2
+        Number of qubits, defaults to 2
+    detection_criterion : str, optional
+        Critirion of detection, each criterion uses differently detection_param:        
+
+            - "any excited" (default): detects if there is any excitation.
+                Doesn't take any parameter, detection_param default None
+
+            - "set excitations": detects if there are more than a set number of excitations.
+                Takes int number of excitation as parameter, detection_param default 2
+
+            - "qubit list": detects if one or more of the qubits in a list are excited
+                Takes List[int] list of qubit indexes, detection_param default [0]
+
+            - "state list": detects states that belong to a list of states
+                Takes List[str] list of state keys, detection_param default ['00...0']
+
+    detection_param : Union[int, List[str], List[int]], optional
+        Parameter for the detection criterion, defaults to None
+    name : str, optional
+        Name used for logging/plotting, defaults to "1 - P_all0"
+
 
     Examples (for 2 qubits)
     --------
@@ -57,12 +75,14 @@ class DetectionMetric:
     """
 
     def __init__(
-        self, metric: Optional[Callable[float, float]] = None, name: str = "any excited", \
-            n_qubits: int=2, detection_param: Optional[Union[int, List[str], List[int]]] = None
+        self, metric: Optional[Callable[float, float]] = None, n_qubits: int=2, \
+            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None, \
+            name: str = "1 - P_all0"
     ):
         """Initialize the detection probability calculator."""
 
-        self.detection, self.required_states = self.std_detection(name, n_qubits, detection_param)
+        self.name = name
+        self.detection, self.required_states = self.std_detection(detection_criterion, detection_param, n_qubits)
         
         if metric is None:
             self.metric = self.std_metric
@@ -87,31 +107,37 @@ class DetectionMetric:
         """
         return self.metric(self.detection(probabilities))
     
-    def std_metric(x: float)-> float:
-        return x
+    def std_metric(self, x: float)-> float:
+        return 1-x
 
-    def std_detection(self, name, n_qubits, detection_param):
-        """Predefined detection criterias for common use cases:
+    def std_detection(self, criterion, detection_param, n_qubits):
+        """Predefined detection criterion for common use cases:
         
-            - any excited: detects if there is any excitation
+            - any excited: detects if there is any excitation.
+                detection_param: None
 
             - set excitations: detects if there are more than a set number of excitations
+                detection_param: int, number of excitations
 
             - qubit list: detects if one or more of the qubits in a list are excited
+                detection_param: List[int], list of qubit indexes
             
             - state list: detects states that belong to a list of states
+                detection_param: List[str], list of state keys
         """
-        if name == 'any excited':
+        if criterion == 'any excited':
             
-            all_0_state = 'P_all0'
+            all_0_state = format(0, f'0{n_qubits}b')
             @jit
             def any_excited(probs: Dict[str, float]) -> float:
                 """Detect any outcome except the ground state |00...0⟩: 1 - P(0)."""
                 return 1.0 - probs[all_0_state]
-            return any_excited, []
+            return any_excited, [all_0_state]
 
-        elif name == 'set excitations':
+        elif criterion == 'set excitations':
             
+            if detection_param is None:
+                detection_param = 1
             if detection_param < n_qubits//2:
                 states = [format(i, f'0{n_qubits}b') \
                     for i in range(2**n_qubits) \
@@ -129,12 +155,14 @@ class DetectionMetric:
                 def set_excitations(probs: Dict[str, float]) -> float:
                     """Detect a set number of excitations or more."""
                     return sum([probs[state] for state in states])
-        
+            
             return set_excitations, states
 
-        elif name == 'qubit list':
-
-            if not all([isinstance(state, int) for state in states]):
+        elif criterion == 'qubit list':
+            
+            if detection_param is None:
+                detection_param = [0]
+            elif not all([isinstance(qubit, int) for qubit in detection_param]):
                 raise ValueError(f"Qubit list detection expects detection_param to be a list of int qubit indexes")
 
             states = [format(i, f'0{n_qubits}b') \
@@ -148,9 +176,10 @@ class DetectionMetric:
 
             return set_qubits, states
 
-        elif name == 'state list':
-
-            if not all([isinstance(state, str) for state in detection_param]):
+        elif criterion == 'state list':
+            if detection_param is None:
+                detection_param = [format(0, f'0{n_qubits}b')]
+            elif not all([isinstance(state, str) for state in detection_param]):
                 raise ValueError(f"State list detection expects detection_param to be a list of string states")
 
             states = detection_param

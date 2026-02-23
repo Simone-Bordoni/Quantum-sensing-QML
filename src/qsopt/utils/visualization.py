@@ -25,6 +25,7 @@ def plot_optimization_dashboard(
     show_contrast: bool = True,
     show_gradients: bool = True,
     show_parameters: bool = True,
+    show_trajectory: bool = True,
     show_probabilities: bool = True,
     figsize: Tuple[int, int] = (16, 14),
     save_path: Optional[str] = None,
@@ -76,6 +77,7 @@ def plot_optimization_dashboard(
     active_plots = [
         show_contrast,
         show_gradients,
+        show_trajectory,
         show_parameters,
         show_probabilities,
     ]
@@ -263,6 +265,15 @@ def plot_optimization_dashboard(
         ax.set_title("Detection Probabilities Evolution", fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
+    
+    if show_trajectory:
+        plot_parameter_trajectory(
+            optimization_callback = optimization_callback,
+            param_indices = (0,1),
+            figsize = (10, 8),
+            dpi = 300,
+        )
+
 
     # Overall title
     plt.suptitle("Optimization Dashboard", fontsize=18)

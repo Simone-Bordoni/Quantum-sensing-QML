@@ -45,6 +45,7 @@ class GateParameter:
 
     value: jnp.ndarray
     trainable: bool = True
+    name: Optional[str] = '[nome]'
 
     def get(self) -> jnp.ndarray:
         """Get parameter value with appropriate gradient handling."""
@@ -163,7 +164,7 @@ class RXGate(Gate):
         """
         super().__init__("RX", target=target)
         self._parameter = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable
+            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'theta_x_qb{target}'
         )
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
@@ -203,7 +204,7 @@ class RYGate(Gate):
         """
         super().__init__("RY", target=target)
         self._parameter = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable
+            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'theta_y_qb{target}'
         )
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
@@ -243,7 +244,7 @@ class RZGate(Gate):
         """
         super().__init__("RZ", target=target)
         self._parameter = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable
+            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'theta_z_qb{target}'
         )
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:

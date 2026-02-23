@@ -44,7 +44,7 @@ class QuantumCircuit:
     tracks trainable parameters, and computes circuit unitaries.
     """
 
-    def __init__(self, n_qubits: int):
+    def __init__(self, n_qubits: int = 2):
         """
         Initialize quantum circuit.
 
@@ -93,6 +93,12 @@ class QuantumCircuit:
             if gate.has_parameter() and gate._parameter.trainable:
                 params.append(gate.get_parameter())
         return params
+
+        #params = {}
+        #for gate in self._gates:
+        #    if gate.has_parameter() and gate._parameter.trainable:
+        #        params[gate._parameter.name] = gate.get_parameter())
+        #return params
 
     def count_trainable_parameters(self) -> int:
         """

@@ -70,7 +70,7 @@ def u0(t, **kwargs):
     return jnp.exp(-(dx**2))
 
 def generate_n_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, required_states: Optional[List[str]] = None
+    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, required_states: Optional[Union[str,List[str]]] = 'all'
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for an n-qubit composite system.
@@ -166,9 +166,12 @@ def generate_n_qubit_operators(
             "I_cavity": I_cavity,
             "I_q": I_q
         }
+
+        if required_states == 'all':
+            required_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
         if required_states is not None:
             Pbin = [P0,P1]
-            operators["P"] = { state: qt.tensor([I_field, I_cavity] + [Pbin[i] for i in list(map(int,state))]) for state in required_states}
+            operators["P"] = { state: qt.tensor([I_field, I_cavity] + [Pbin[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in required_states}
 
         return operators
 
@@ -236,8 +239,6 @@ def build_qubit_noise_operators(
     # Relaxation noise: energy decay |1⟩ → |0⟩
     if relaxation_rate != 0.0:
         noise_operators.append(np.sqrt(relaxation_rate) * sigma_minus)
-    
-    print(noise_operators)
 
     return noise_operators
 

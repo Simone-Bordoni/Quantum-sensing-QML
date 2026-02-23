@@ -149,7 +149,8 @@ class Experiment:
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         n_qubits = self.experimental_params.n_qubits
-        required_states = self.detection_metric.required_states
+        #required_states = self.detection_metric.required_states
+        required_states = 'all'
 
         # Generate n-qubit operators using utility function
         self.operators = generate_n_qubit_operators(
@@ -196,16 +197,16 @@ class Experiment:
             # Get appropriate Pauli operators based on interaction type
             if interaction_type == InteractionType.ZZ:
                 # σz ⊗ σz interaction
-                sigma1 = self.operators[f"sigma_z"[idx1]]
-                sigma2 = self.operators[f"sigma_z"[idx2]]
+                sigma1 = self.operators["sigma_z"][idx1]
+                sigma2 = self.operators["sigma_z"][idx2]
             elif interaction_type == InteractionType.XX:
                 # σx ⊗ σx interaction
-                sigma1 = self.operators[f"sigma_x"[idx1]]
-                sigma2 = self.operators[f"sigma_x"[idx2]]
+                sigma1 = self.operators[f"sigma_x"][idx1]
+                sigma2 = self.operators[f"sigma_x"][idx2]
             elif interaction_type == InteractionType.YY:
                 # σy ⊗ σy interaction
-                sigma1 = self.operators[f"sigma_y"[idx1]]
-                sigma2 = self.operators[f"sigma_y"[idx2]]
+                sigma1 = self.operators[f"sigma_y"][idx1]
+                sigma2 = self.operators[f"sigma_y"][idx2]
             else:
                 raise ValueError(f"Unknown interaction type: {interaction_type}")
 
@@ -488,7 +489,7 @@ class Experiment:
             args: System parameters (optional)
             precomputed_unitaries: Optional tuple (U_initial, U_initial_dag, U_final, U_final_dag)
                                   to avoid recomputation
-            loss_function: Optional DetectionMetric instance. If None, uses 1-P(00).
+            loss_function: Optional DetectionMetric instance. If None, uses 1-P(0).
 
         Returns:
             Detection probability as JAX array
@@ -515,7 +516,7 @@ class Experiment:
         rho_current = rho
 
         # Track cumulative probability of non-detection
-        prob_all_no_detect = jnp.array(1.0)
+        loss = jnp.array(1.0)
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
@@ -524,21 +525,29 @@ class Experiment:
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
-            # Measure probability of all qubits in ground state |00...0⟩
-            P_all0 = self.operators["P_all0"]
-            rho_projected = P_all0 * rho_final * P_all0  # type: ignore
-            trace_val = rho_projected.tr()
-            prob_all_ground = jnp.real(trace_val)
-            rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
+            #print(F'DEBUG SIMULATION, rho_final.tr(): {rho_final.tr()}')
+            #print(f'DEBUG SIMULATION, rho_final:\n{rho_final}')
 
-            prob_all_no_detect = prob_all_no_detect * prob_all_ground
+            # Measure probabilities for all possible states
+            Proj_dict = self.operators["P"]
+            rho_current = 0
+            prob_dict={}
 
-            
+            for state, proj in Proj_dict.items():
+                rho_projected = proj * rho_final * proj  # type: ignore
+                rho_current += rho_projected
+                prob_dict[state] = jnp.real(rho_projected.tr())
 
+            #print(F'DEBUG SIMULATION, rho_current.tr(): {rho_current.tr()}')
+            #print(f'DEBUG SIMULATION, rho_current:\n{rho_current}')
 
-        # Total detection probability = 1 - P(no detection at any step)
-        prob_detection = 1 - prob_all_no_detect
-        return prob_detection
+            #Renormalize, it shouldn't be needed but the trace does slightly diminish over time
+            #trace_val = rho_current.tr()
+            #rho_current = rho_current if trace_val == 0 else rho_projected / trace_val
+
+            loss = loss * loss_function(prob_dict)        
+
+        return 1-loss
 
     def run_simulation(self, batch_size: int = 1, measure_qubit: Optional[Union[int,List[int]]] = None) -> OptimizationCallback:
         """
@@ -720,34 +729,40 @@ class Experiment:
 
         Returns:
             TimeEvolutionResults object containing:
+
                 - times: Array of time points, shape (n_points,)
+
                 - probabilities: Dict with states as keys (e.g., '0', '1' for 1 qubit, '00', '01', '10', '11' for 2 qubits)
+
                 - pulse_shape: Pulse envelope u(t), shape (n_points,)
+
                 - measurement_times: Measurement time points
+
                 - cavity_population: Cavity population <a†a>, shape (n_points,)
+
                 - field_population: External field population <a_in†a_in>, shape (n_points,)
 
         Example: (for n_qubits=2)
-            >>> # Get time evolution data using default measurement protocol
-            >>> evolution = experiment.time_evolution(n_points=200)
-            >>>
-            >>> # Plot with matplotlib
-            >>> import matplotlib.pyplot as plt
-            >>> labels = ['P₀₀', 'P₀₁', 'P₁₀', 'P₁₁']
-            >>> linestyles = ['-', '--', '-.', ':']
-            >>> for k, state in enumerate(['00', '01', '10', '11']):
-            ...     plt.plot(evolution['times'], evolution[f'prob_{state}'],
-            ...              label=labels[k], linestyle=linestyles[k])
-            >>> plt.fill_between(evolution['times'], 0, evolution['pulse_shape'], alpha=0.2)
-            >>> plt.legend()
-            >>> plt.show()
-            >>>
-            >>> # Or use the visualization utility
-            >>> from qsopt.utils import plot_time_evolution
-            >>> # With cavity population displayed on secondary y-axis
-            >>> fig = plot_time_evolution(evolution, show_cavity_population=True)
-            >>> # Without cavity population (default)
-            >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
+        >>> # Get time evolution data using default measurement protocol
+        >>> evolution = experiment.time_evolution(n_points=200)
+        >>>
+        >>> # Plot with matplotlib
+        >>> import matplotlib.pyplot as plt
+        >>> labels = ['P₀₀', 'P₀₁', 'P₁₀', 'P₁₁']
+        >>> linestyles = ['-', '--', '-.', ':']
+        >>> for k, state in enumerate(['00', '01', '10', '11']):
+        ...     plt.plot(evolution['times'], evolution[f'prob_{state}'],
+        ...              label=labels[k], linestyle=linestyles[k])
+        >>> plt.fill_between(evolution['times'], 0, evolution['pulse_shape'], alpha=0.2)
+        >>> plt.legend()
+        >>> plt.show()
+        >>>
+        >>> # Or use the visualization utility
+        >>> from qsopt.utils import plot_time_evolution
+        >>> # With cavity population displayed on secondary y-axis
+        >>> fig = plot_time_evolution(evolution, show_cavity_population=True)
+        >>> # Without cavity population (default)
+        >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
@@ -923,9 +938,10 @@ class Experiment:
         verbose: bool = True,
         verbose_step: int = 10,
         callback: Optional[OptimizationCallback] = None,
-        theta_init: Optional[List[float]] = None,
-        loss_function: Optional["DetectionMetric"] = None,
+        initial_values: Optional[List[float]] = None,
+        loss_function: Optional[DetectionMetric] = None,
         optimizer = None,
+        renormalize_grad: Optional[float] = 1,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize sensing contrast.
@@ -941,28 +957,30 @@ class Experiment:
             verbose: Print progress information (default: True)
             verbose_step: Step interval for printing progress (default: 10)
             callback: Optional callback to track optimization progress.
-                     If None, uses the experiment's default callback.
-            theta_init: Optional initial rotation angles as list in radians.
-                       If None, uses current values from circuits.
+                    If None, uses the experiment's default callback.
+            initial_values: Optional initial circuit parameters as list of floats.
+                    If None, uses current values from circuits.
             loss_function: Optional custom detection criterion (DetectionMetric).
-                         If None, uses default 1-P(00) detection.
+                    If None, uses default 1-P(00) detection.
             optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
-                      If None, uses SGD with learning rate 0.5.
+                    If None, uses SGD with learning rate 0.5.
+            renormalize_grad: Radious of the sphere inside which the gradients are renormalized. (default: 1)
+                    If False (0), does not renormalize the gradients.
 
         Returns:
             OptimizationCallback with full optimization history
 
         Example:
-            >>> # Optimize with default 1-P(00) detection
-            >>> callback = experiment.optimize_rotations(num_steps=200, batch_size=10)
-            >>>
-            >>> # With custom detection criterion
-            >>> from qsopt.utils.loss_functions import DetectionMetric
-            >>> loss = DetectionMetric(lambda p: p['p11'])  # Detect |11⟩
-            >>> callback = experiment.optimize_rotations(
-            ...     num_steps=100,
-            ...     loss_function=loss
-            ... )
+        >>> # Optimize with default 1-P(00) detection
+        >>> callback = experiment.optimize_rotations(num_steps=200, batch_size=10)
+        >>>
+        >>> # With custom detection criterion
+        >>> from qsopt.utils.loss_functions import DetectionMetric
+        >>> loss = DetectionMetric(metric=(lambda x: x), name='state list', detection_param=['11'])  # Detect |11⟩
+        >>> callback = experiment.optimize_rotations(
+        ...     num_steps=100,
+        ...     loss_function=loss
+        ... )
         """
         import jax
         import optax
@@ -983,14 +1001,13 @@ class Experiment:
             raise ValueError("No trainable parameters found in circuits")
 
         # Initialize parameter vector
-        if theta_init is not None:
-            if len(theta_init) != n_total:
+        if initial_values is not None:
+            if len(initial_values) != n_total:
                 raise ValueError(
-                    f"theta_init must contain exactly {n_total} angles, got {len(theta_init)}"
+                    f"initial_values must contain exactly {n_total} angles, got {len(initial_values)}"
                 )
-            initial_values = theta_init
-            self.initial_circuit.set_trainable_parameters(theta_init[:n_initial])
-            self.final_circuit.set_trainable_parameters(theta_init[n_initial:])
+            self.initial_circuit.set_trainable_parameters(initial_values[:n_initial])
+            self.final_circuit.set_trainable_parameters(initial_values[n_initial:])
         else:
             # Get current values from circuits
             initial_params = self.initial_circuit.get_trainable_parameters()
@@ -1031,13 +1048,13 @@ class Experiment:
             if measurement_times_batch.ndim == 1:
                 measurement_times_batch = measurement_times_batch[jnp.newaxis, :]
             
-            prob_with_batch = jnp.zeros(batch_size)
-            prob_without_batch = jnp.zeros(batch_size)
+            detect_with_batch = jnp.zeros(batch_size)
+            detect_without_batch = jnp.zeros(batch_size)
 
             for i in range(batch_size):
                 measurement_times = measurement_times_batch[i]
 
-                prob_with_batch = prob_with_batch.at[i].set(
+                detect_with_batch = detect_with_batch.at[i].set(
                     self.simulation(
                         solver_with,
                         rho0,
@@ -1047,7 +1064,7 @@ class Experiment:
                     )
                 )
 
-                prob_without_batch = prob_without_batch.at[i].set(
+                detect_without_batch = detect_without_batch.at[i].set(
                     self.simulation(
                         solver_without,
                         rho0,
@@ -1058,18 +1075,17 @@ class Experiment:
                 )
 
             # Average over batch
-            prob_with = jnp.mean(prob_with_batch)
-            prob_without = jnp.mean(prob_without_batch)
-            contrast = prob_with - prob_without
+            detect_with = jnp.mean(detect_with_batch)
+            detect_without = jnp.mean(detect_without_batch)
+            contrast = detect_with - detect_without
 
             # Return negative for minimization
-            return -contrast, (prob_with, prob_without, contrast)
+            return -contrast, (detect_with, detect_without, contrast)
 
         # Get detection description for verbose output
         detection_desc = "1 - P(0)" if loss_function is None else loss_function.name
 
         if verbose:
-            theta_initial_vals = np.asarray(params, dtype=float)
             print(f"Configuration:")
             print(f"    Max iterations: {num_steps}")
             print(f"    Batch size: {batch_size}")
@@ -1077,9 +1093,11 @@ class Experiment:
             print(f"    Detection criterion: {detection_desc}")
             print(f"    Trainable parameters: {n_total} ({n_initial} initial circuit + {n_final} final circuit)")
             print(f"    Initial parameter values:")
-            for i, val in enumerate(theta_initial_vals):
-                circuit_type = "initial" if i < n_initial else "final"
-                print(f"        {circuit_type}_param_{i}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+
+            initial_vals = np.asarray(params, dtype=float)
+            for i, val in enumerate(initial_vals):
+                circuit_type = "setup" if i < n_initial else "reset"
+                print(f"        param{i}. {circuit_type}_={val:.3f} rad ({np.rad2deg(val):.1f}°)")
 
             uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:
@@ -1087,18 +1105,18 @@ class Experiment:
                 extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
                 print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
 
-            print("=" * 70)
+            print("=" * 75)
             # Build header based on number of parameters (up to 4 each)
             header_parts = [f"{'Step':<6}"]
             n_init_show = min(n_initial, 4)
             n_final_show = min(n_final, 4)
             for i in range(n_init_show):
-                header_parts.append(f"init_{i:<9}")
+                header_parts.append(f"setup_{i:<6}")
             for i in range(n_final_show):
-                header_parts.append(f"final_{i:<8}")
+                header_parts.append(f"reset_{i:<6}")
             header_parts.extend([f"{'Contrast':<12}", "Grad Norm"])
             print("".join(header_parts))
-            print("-" * 70)
+            print("-" * 75)
 
         best_contrast = -np.inf
         best_params = jnp.array(params)
@@ -1127,7 +1145,12 @@ class Experiment:
                 contrast=float(sensing_contrast),
             )
 
-            grad_norm = float(jnp.linalg.norm(grads))
+            #Renormalize gradient to be between [-1,+1]
+            grad_norm = float(jnp.linalg.norm(grads))   
+            if renormalize_grad != False:
+                new_norm = jnp.tanh(grad_norm/renormalize_grad) * renormalize_grad
+                grads = grads * new_norm/grad_norm
+                grad_norm = new_norm
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
@@ -1160,13 +1183,13 @@ class Experiment:
         self.final_circuit.set_trainable_parameters(best_final)
 
         if verbose:
-            print("=" * 70)
+            print("=" * 75)
             print(f"Final gradient norm: {grad_norm:.2e}")
             print(f"Best sensing contrast: {best_contrast:.6f}")
             print(f"Best parameters:")
             for i, val in enumerate(best_values):
-                circuit_type = "initial" if i < n_initial else "final"
-                print(f"    {circuit_type}_param_{i}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                circuit_type = "setup" if i < n_initial else "reset"
+                print(f"    param{i}. {circuit_type}_[name]={val:.3f} rad ({np.rad2deg(val):.1f}°)")
 
         # Set convergence information in callback
         callback.set_convergence_info(
