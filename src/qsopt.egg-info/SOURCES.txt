@@ -13,15 +13,13 @@ src/qsopt/core/circuit.py
 src/qsopt/core/experimental_parameters.py
 src/qsopt/core/gates.py
 src/qsopt/core/loss_functions.py
-src/qsopt/core/trainable_parameters.py
 src/qsopt/core/experiment/__init__.py
-src/qsopt/core/experiment/base.py
+src/qsopt/core/experiment/experiment.py
 src/qsopt/core/experiment/quantum_utils.py
 src/qsopt/core/experiment/single_qubit_experiment.py
 src/qsopt/core/experiment/two_qubit_experiment.py
 src/qsopt/tests/__init__.py
 src/qsopt/tests/conftest.py
-src/qsopt/tests/test_base_experiment.py
 src/qsopt/tests/test_callback.py
 src/qsopt/tests/test_circuit.py
 src/qsopt/tests/test_experiment.py
@@ -38,6 +36,7 @@ src/qsopt/tests/test_quantum_utils.py
 src/qsopt/tests/test_qubit_interactions.py
 src/qsopt/tests/test_results.py
 src/qsopt/tests/test_trainable_parameters.py
+src/qsopt/tests/test_two_qubit_circuit_refactoring.py
 src/qsopt/tests/test_two_qubit_experiment.py
 src/qsopt/tests/test_visualization.py
 src/qsopt/utils/__init__.py

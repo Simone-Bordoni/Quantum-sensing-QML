@@ -25,24 +25,24 @@ class DetectionMetric:
 
     Parameters
     ----------
-    metric : Callable[float, float], optional
-        Custom function that takes a dictionary with keys 'p00...0', 'p10...0', 'p01...0', ... , 'p11...1'
-        and returns the detection probability. If None, defaults to lambda x: 1-x
+    metric : Callable[[float,float], float], optional
+        Custom function that takes probabilities of detection with and without photon and derives a loss. 
+        If None, defaults to lambda x,y: -(x-y)
     n_qubits : int, optional
         Number of qubits, defaults to 2
     detection_criterion : str, optional
         Critirion of detection, each criterion uses differently detection_param:        
 
-            - "any excited" (default): detects if there is any excitation.
+            - "any excited" (default): detects if there is any excitation. Corresponds to
                 Doesn't take any parameter, detection_param default None
 
-            - "set excitations": detects if there are more than a set number of excitations.
+            - "min excited": detects if there are more than a set number of excitations.
                 Takes int number of excitation as parameter, detection_param default 2
 
-            - "qubit list": detects if one or more of the qubits in a list are excited
+            - "excited qubits": detects if one or more of the qubits in a list are excited
                 Takes List[int] list of qubit indexes, detection_param default [0]
 
-            - "state list": detects states that belong to a list of states
+            - "custom states": detects states that belong to a list of states
                 Takes List[str] list of state keys, detection_param default ['00...0']
 
     detection_param : Union[int, List[str], List[int]], optional
@@ -75,24 +75,25 @@ class DetectionMetric:
     """
 
     def __init__(
-        self, metric: Optional[Callable[float, float]] = None, n_qubits: int=2, \
-            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None, \
-            name: str = "1 - P_all0"
+        self, metric: Optional[Callable[[float,float], float]] = None, n_qubits: int=2, \
+            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None,
+            metric_name: Optional[str] = 'custom metric'
     ):
         """Initialize the detection probability calculator."""
 
-        self.name = name
-        self.detection, self.required_states = self.std_detection(detection_criterion, detection_param, n_qubits)
+        self.detection_states, self.detection_name = self.std_detection(detection_criterion, detection_param, n_qubits)
         
         if metric is None:
-            self.metric = self.std_metric
+            self.metric = std_metric
+            metric_name = 'contrast'
         else:
             self.metric = jit(metric)
+        self.metric_name = metric_name
 
 
-    def __call__(self, probabilities: Dict[str, float]) -> float:
+    def __call__(self, p_with_photon: float, p_without_photon: float) -> float:
         """
-        Compute detection probability from measurement outcome probabilities.
+        Compute loss from detection probability.
 
         Parameters
         ----------
@@ -105,10 +106,7 @@ class DetectionMetric:
         float
             Detection probability according to the defined criterion.
         """
-        return self.metric(self.detection(probabilities))
-    
-    def std_metric(self, x: float)-> float:
-        return 1-x
+        return self.metric(p_with_photon,p_without_photon)
 
     def std_detection(self, criterion, detection_param, n_qubits):
         """Predefined detection criterion for common use cases:
@@ -116,111 +114,83 @@ class DetectionMetric:
             - any excited: detects if there is any excitation.
                 detection_param: None
 
-            - set excitations: detects if there are more than a set number of excitations
+            - min excited: detects if there are more than a set number of excitations
                 detection_param: int, number of excitations
 
-            - qubit list: detects if one or more of the qubits in a list are excited
+            - excited qubits: detects if one or more of the qubits in a list are excited
                 detection_param: List[int], list of qubit indexes
             
-            - state list: detects states that belong to a list of states
+            - custom states: detects states that belong to a list of states
                 detection_param: List[str], list of state keys
         """
-        if criterion == 'any excited':
+        if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
             
-            all_0_state = format(0, f'0{n_qubits}b')
-            @jit
-            def any_excited(probs: Dict[str, float]) -> float:
-                """Detect any outcome except the ground state |00...0⟩: 1 - P(0)."""
-                return 1.0 - probs[all_0_state]
-            return any_excited, [all_0_state]
+            non_0_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)]
+            return non_0_states, criterion
 
-        elif criterion == 'set excitations':
+        elif criterion == 'min excited':
             
             if detection_param is None:
                 detection_param = 1
-            if detection_param < n_qubits//2:
-                states = [format(i, f'0{n_qubits}b') \
-                    for i in range(2**n_qubits) \
-                    if sum(list(map(int,format(i, f'0{n_qubits}b')))) < detection_param]
-                @jit
-                def set_excitations(probs: Dict[str, float]) -> float:
-                    """Detect a set number of excitations or more."""
-                    return 1-sum([probs[state] for state in states])
+            elif (not isinstance(detection_param,int) and (0 < detection_param < n_qubits)):
+                raise ValueError(f"min excited detection expects detection_param to be an int between 1 and {n_qubits-1}.\n\
+                                   Value given: {detection_param}\n\
+                                   Type given: {type(detection_param)}")
 
-            elif detection_param >= n_qubits//2:
-                states = [format(i, f'0{n_qubits}b') \
-                    for i in range(2**n_qubits) \
-                    if sum(list(map(int,format(i, f'0{n_qubits}b')))) >= detection_param]
-                @jit
-                def set_excitations(probs: Dict[str, float]) -> float:
-                    """Detect a set number of excitations or more."""
-                    return sum([probs[state] for state in states])
-            
-            return set_excitations, states
+            states = [format(i, f'0{n_qubits}b') \
+                for i in range(2**n_qubits) \
+                if sum(list(map(int,format(i, f'0{n_qubits}b')))) >= detection_param]
 
-        elif criterion == 'qubit list':
+            name = f'min {detection_param} excited'
+
+            return states, name
+
+        elif criterion == 'excited qubits':
             
             if detection_param is None:
                 detection_param = [0]
-            elif not all([isinstance(qubit, int) for qubit in detection_param]):
-                raise ValueError(f"Qubit list detection expects detection_param to be a list of int qubit indexes")
+            elif not isinstance(detection_param,list):
+                raise ValueError("excited qubits detection expects detection_param to be a list")
+            elif not all((0 <= qubit < n_qubits) if isinstance(qubit, int) else False for qubit in detection_param):
+                raise ValueError(f"excited qubits detection expects elements of detection_param to be int qubit indexes between 0 and {n_qubits-1}.\n   \
+                                   The following elements were given: {detection_param}\n\
+                                   There are elements of types: {set([type(i) for i in detection_param])}")
 
             states = [format(i, f'0{n_qubits}b') \
                     for i in range(2**n_qubits) \
                     if any([list(map(int,format(i, f'0{n_qubits}b')))[j]==1 for j in detection_param]) \
                     ]
-            @jit
-            def set_qubit(probs: Dict[str, float]) -> float:
-                f"""Detect any excitation of the following qubits: {detection_param}"""
-                return sum([probs[state] for state in states])
 
-            return set_qubits, states
+            name = f'excited qubits: {detection_param}'
 
-        elif criterion == 'state list':
+            return states, name
+
+        elif criterion == 'custom states':
             if detection_param is None:
                 detection_param = [format(0, f'0{n_qubits}b')]
             elif not all([isinstance(state, str) for state in detection_param]):
-                raise ValueError(f"State list detection expects detection_param to be a list of string states")
+                raise ValueError(f"custom states detection expects detection_param to be a list of string states")
+
+            all_possible_states = set([format(i, f'0{n_qubits}b') for i in range(n_qubits)])
+            invalid_states = set(detection_param) - all_possible_states
+            if len(invalid_states) != 0:
+                raise ValueError(f"{len(invalid_states)} invalid states given: {invalid_states}")
 
             states = detection_param
-            @jit
-            def set_states(probs: Dict[str, float]) -> float:
-                f"""Detect any of the following states: {detection_param}"""
-                return sum([probs[state] for state in states])
 
-            return set_states, states
+            name = criterion
 
-
-    @staticmethod
-    @jit
-    def compute_contrast(p_with_photon: float, p_without_photon: float) -> float:
-        """
-        Compute sensing contrast from detection probabilities.
-
-        The contrast quantifies how well we can distinguish between the presence
-        and absence of a photon in the input cavity.
-
-        Parameters
-        ----------
-        p_with_photon : float
-            Detection probability when input photon is present.
-        p_without_photon : float
-            Detection probability when input photon is absent.
-
-        Returns
-        -------
-        float
-            Contrast value, defined as |P(detect|with) - P(detect|without)|.
-
-        Notes
-        -----
-        The contrast ranges from 0 (no distinguishability) to 1 (perfect distinguishability).
-        """
-        return jnp.abs(p_with_photon - p_without_photon)
+            return states, name
 
     def __repr__(self) -> str:
         """String representation of the detector."""
-        return f"DetectionFromProbabilities(criterion='{self.name}')"
+        return f"DetectionMetric:\n\
+        criterion='{self.detection_name}'\n\
+        metric='{self.metric_name}'"
 
-
+@staticmethod
+@jit
+def std_metric(p_with_photon: float, p_without_photon: float)-> float:
+    contrast = p_with_photon - p_without_photon
+    return -contrast 
 

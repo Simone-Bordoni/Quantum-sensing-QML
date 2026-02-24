@@ -70,7 +70,7 @@ def u0(t, **kwargs):
     return jnp.exp(-(dx**2))
 
 def generate_n_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, required_states: Optional[Union[str,List[str]]] = 'all'
+    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, detection_states: Optional[[List[str]]] = None
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for an n-qubit composite system.
@@ -125,14 +125,35 @@ def generate_n_qubit_operators(
         sigma_y = [qt.sigmay() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "y") for i in range(n_qubits)]
         sigma_minus = [qt.destroy(q_levels[i]) for i in range(n_qubits)]
 
-        # Lists of measurement projectors for n qubits with q-levels
-        P0 = [qt.Qobj([[1, 0] + [0]*(l-2)] + [[0]*l]*(l-1)) for l in q_levels]    # Ground state |0⟩⟨0|
-        P1 = [qt.Qobj([[0]*l] + [[0, 1] + [0]*(l-2)] + [[0]*l]*(l-2)) for l in q_levels] # Excited state |1⟩⟨1|
-
         # Rotation operator (Y-rotation by π/2)
         # Ry(π/2) = [[cos(π/4), -sin(π/4)], [sin(π/4), cos(π/4)]]
         # = (1/√2)[[1, -1], [1, 1]]
         rot_single = qt.Qobj([[1, -1], [1, 1]]) / jnp.sqrt(2.0)
+
+        # Lists of measurement projectors for n qubits with q-levels
+        P0 = [qt.Qobj([[1, 0] + [0]*(l-2)] + [[0]*l]*(l-1)) for l in q_levels]    # Ground state |0⟩⟨0|
+        P1 = [qt.Qobj([[0]*l] + [[0, 1] + [0]*(l-2)] + [[0]*l]*(l-2)) for l in q_levels] # Excited state |1⟩⟨1|
+
+        # Detection and non-detection projectors using the detection states:
+            # Default detection states are all the non zero states
+        if detection_states is None:
+            detection_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)] 
+        
+        Ptemp = [P0,P1]
+
+        P_detection = sum([ \
+            qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) \
+            for state in detection_states])
+        P_no_detection = sum([ \
+            qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] \
+                for qb,q_state in enumerate(list(map(int,format(i, f'0{n_qubits}b'))))]) \
+            for i in range(2**n_qubits) if not any(state == format(i, f'0{n_qubits}b') for state in detection_states)])
+
+        #Reset Operators
+        P0 = [qt.Qobj([[1, 0] + [0]*(l-2)] + [[0]*l]*(l-1)) for l in q_levels]
+        qubit_reset_op = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
+        measure_reset = qt.tensor([I_field, I_cavity] + qubit_reset_op)*P_no_detection
+        measure_reset_dag = measure_reset.dag()
 
         # Helper function to embed single-qubit operator in composite space
         def embed_qubit_op(op, qubit_idx):
@@ -157,21 +178,21 @@ def generate_n_qubit_operators(
             # Individual qubit projectors on |0⟩ and |1⟩
             "P0_q": [embed_qubit_op(P0[i], i) for i in range(n_qubits)],
             "P1_q": [embed_qubit_op(P1[i], i) for i in range(n_qubits)],
+            # Global qubit projectors
             "P_all0": qt.tensor([I_field, I_cavity] + P0),  # Joint projector onto |00...0⟩
+            "P_detect": P_detection,
+            "P_no_detect": P_no_detection,
             # Rotation operators (Y-rotation by π/2, can be applied independently)
             "roty_q": [embed_qubit_op(rot_single, i) for i in range(n_qubits)],
             "roty": qt.tensor([I_field, I_cavity] + [rot_single]*n_qubits),  # Simultaneous Ry on all qubits
             # Identity operators for reference
             "I_field": I_field,
             "I_cavity": I_cavity,
-            "I_q": I_q
+            "I_q": I_q,
+            # Measure reset operators
+            "measure_reset": measure_reset,
+            "measure_reset_dag": measure_reset_dag
         }
-
-        if required_states == 'all':
-            required_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
-        if required_states is not None:
-            Pbin = [P0,P1]
-            operators["P"] = { state: qt.tensor([I_field, I_cavity] + [Pbin[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in required_states}
 
         return operators
 

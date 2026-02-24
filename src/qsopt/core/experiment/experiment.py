@@ -80,11 +80,12 @@ class Experiment:
 
         Args:
             experimental_params: Physical and measurement parameters
-            initial_circuit: QuantumCircuit to apply before evolution. If None, creates
-                           default 2-qubit RY circuit with trainable parameters.
-            final_circuit: QuantumCircuit to apply after evolution. If None, creates
-                          default 2-qubit RY circuit with trainable parameters.
-            metric: Custom detection probability calculator. If None, uses default 1-P(0).
+            initial_circuit: QuantumCircuit to apply before evolution. If None, creates 
+                            default 2-qubit RY circuit with trainable parameters.
+            final_circuit: QuantumCircuit to apply after evolution. If None, creates 
+                            default 2-qubit RY circuit with trainable parameters.
+            detection_metric: Custom detection definition and loss metric for optimization. 
+                            If None, uses default detection: 1-P(0).
         """
 
         # Create default circuits if not provided (2-qubit RY gates)
@@ -149,12 +150,11 @@ class Experiment:
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         n_qubits = self.experimental_params.n_qubits
-        #required_states = self.detection_metric.required_states
-        required_states = 'all'
+        detection_states = self.detection_metric.detection_states
 
         # Generate n-qubit operators using utility function
         self.operators = generate_n_qubit_operators(
-            field_levels, cavity_levels, qubit_levels, n_qubits, required_states
+            field_levels, cavity_levels, qubit_levels, n_qubits, detection_states
         )
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
@@ -477,7 +477,6 @@ class Experiment:
         measurements: Union[List[float], np.ndarray],
         args: Optional[Dict] = None,
         precomputed_unitaries: Optional[tuple] = None,
-        loss_function: Optional[DetectionMetric] = None,
     ) -> jnp.ndarray:
         """
         JAX-compatible simulation for n-qubit system with customizable detection.
@@ -489,7 +488,6 @@ class Experiment:
             args: System parameters (optional)
             precomputed_unitaries: Optional tuple (U_initial, U_initial_dag, U_final, U_final_dag)
                                   to avoid recomputation
-            loss_function: Optional DetectionMetric instance. If None, uses 1-P(0).
 
         Returns:
             Detection probability as JAX array
@@ -497,9 +495,8 @@ class Experiment:
         if args is None:
             args = {"sigma": self.experimental_params.inverse_pulse_width}
 
-        # Default to 1-P(0) detection
-        if loss_function is None:
-            loss_function = self.detection_metric
+        # Get detection metric 
+        detection_metric = self.detection_metric
 
         measurement_array = np.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
@@ -516,7 +513,7 @@ class Experiment:
         rho_current = rho
 
         # Track cumulative probability of non-detection
-        loss = jnp.array(1.0)
+        prob = jnp.array(1.0)
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
@@ -528,26 +525,20 @@ class Experiment:
             #print(F'DEBUG SIMULATION, rho_final.tr(): {rho_final.tr()}')
             #print(f'DEBUG SIMULATION, rho_final:\n{rho_final}')
 
-            # Measure probabilities for all possible states
-            Proj_dict = self.operators["P"]
-            rho_current = 0
-            prob_dict={}
+            # Measure probability of non detection and reset the qubit
+            measure_reset = self.operators["measure_reset"]
+            measure_reset_dag = self.operators["measure_reset_dag"]
 
-            for state, proj in Proj_dict.items():
-                rho_projected = proj * rho_final * proj  # type: ignore
-                rho_current += rho_projected
-                prob_dict[state] = jnp.real(rho_projected.tr())
+            rho_reset = measure_reset * rho_final * measure_reset_dag
+            prob_no_detect = jnp.real(rho_reset.tr())
+            rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
 
             #print(F'DEBUG SIMULATION, rho_current.tr(): {rho_current.tr()}')
             #print(f'DEBUG SIMULATION, rho_current:\n{rho_current}')
 
-            #Renormalize, it shouldn't be needed but the trace does slightly diminish over time
-            #trace_val = rho_current.tr()
-            #rho_current = rho_current if trace_val == 0 else rho_projected / trace_val
+            prob = prob * prob_no_detect     
 
-            loss = loss * loss_function(prob_dict)        
-
-        return 1-loss
+        return 1-prob
 
     def run_simulation(self, batch_size: int = 1, measure_qubit: Optional[Union[int,List[int]]] = None) -> OptimizationCallback:
         """
@@ -694,9 +685,7 @@ class Experiment:
         detection_without = float(self.detection_metric(probs_without))
 
         # Compute contrast using metric's method
-        contrast = float(
-            DetectionMetric.compute_contrast(detection_with, detection_without)
-        )
+        contrast = float(detection_with - detection_without)
 
         return {
             "probs_with": probs_with,
@@ -833,7 +822,7 @@ class Experiment:
                     
                     # Measure all qubit state probabilities
                     for state in all_states:
-                        prob = float(self.prob(rho_meas, qubits=qubit_indices))
+                        prob = self.prob(rho_meas, qubits=qubit_indices)
                         state_prob_lists[state].append(prob)
                     
                     all_times.append(seg_times[i])
@@ -854,9 +843,7 @@ class Experiment:
                     # Get probabilities in basis for all states
                     state_probs_basis = {}
                     for state in all_states:
-                        state_probs_basis[state] = float(
-                            self.prob(rho_before_proj, qubits=qubit_indices)
-                        )
+                        state_probs_basis[state] = self.prob(rho_before_proj, qubits=qubit_indices)
                     
                     # Stochastic projection (weighted by probabilities)
                     # For deterministic visualization, use weighted mixture
@@ -939,16 +926,15 @@ class Experiment:
         verbose_step: int = 10,
         callback: Optional[OptimizationCallback] = None,
         initial_values: Optional[List[float]] = None,
-        loss_function: Optional[DetectionMetric] = None,
         optimizer = None,
-        renormalize_grad: Optional[float] = False,
+        learning_rate: float = 0.5,
+        renormalize_grad: Optional[Union[bool,float]] = False,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize sensing contrast.
 
         This method performs JAX-based gradient descent over rotation angles
-        using the sequential measurement protocol. The detection
-        criterion can be customized using the loss_function parameter.
+        using the sequential measurement protocol.
 
         Args:
             num_steps: Maximum number of optimization steps (default: 100)
@@ -960,10 +946,10 @@ class Experiment:
                     If None, uses the experiment's default callback.
             initial_values: Optional initial circuit parameters as list of floats.
                     If None, uses current values from circuits.
-            loss_function: Optional custom detection criterion (DetectionMetric).
-                    If None, uses default 1-P(00) detection.
             optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
-                    If None, uses SGD with learning rate 0.5.
+                    If None, uses SGD.
+            learning_rate: Optional learning rate for the optimizer.
+                    If None defaults to 0.5.
             renormalize_grad: Radious of the sphere inside which the gradients are renormalized. (default: 1)
                     If False (0), does not renormalize the gradients.
 
@@ -979,7 +965,7 @@ class Experiment:
         >>> loss = DetectionMetric(metric=(lambda x: x), name='state list', detection_param=['11'])  # Detect |11⟩
         >>> callback = experiment.optimize_rotations(
         ...     num_steps=100,
-        ...     loss_function=loss
+        ...     detection_metric=loss
         ... )
         """
         import jax
@@ -1018,16 +1004,17 @@ class Experiment:
 
         # Create optimizer (default to SGD with lr=0.5 if not provided)
         if optimizer is None:
-            optimizer = optax.sgd(learning_rate=0.5)
+            optimizer = optax.sgd(learning_rate=learning_rate)
         opt_state = optimizer.init(params)
 
-        # Get initial state and solvers
+        # Get initial state, solvers and detection metric
         rho0 = self._cached_initial_state
         if rho0 is None:
             raise RuntimeError("Initial state cache is not initialized.")
 
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
+        detection_metric = self.detection_metric
 
         # Define objective function
         def objective_function(opt_params):
@@ -1059,8 +1046,7 @@ class Experiment:
                         solver_with,
                         rho0,
                         measurement_times,
-                        precomputed_unitaries=circuit_unitaries,
-                        loss_function=loss_function,
+                        precomputed_unitaries=circuit_unitaries
                     )
                 )
 
@@ -1069,8 +1055,7 @@ class Experiment:
                         solver_without,
                         rho0,
                         measurement_times,
-                        precomputed_unitaries=circuit_unitaries,
-                        loss_function=loss_function,
+                        precomputed_unitaries=circuit_unitaries
                     )
                 )
 
@@ -1078,12 +1063,13 @@ class Experiment:
             detect_with = jnp.mean(detect_with_batch)
             detect_without = jnp.mean(detect_without_batch)
             contrast = detect_with - detect_without
+            loss = detection_metric.metric(detect_with, detect_without)
 
             # Return negative for minimization
-            return -contrast, (detect_with, detect_without, contrast)
+            return loss, (detect_with, detect_without, contrast)
 
         # Get detection description for verbose output
-        detection_desc = "1 - P(0)" if loss_function is None else loss_function.name
+        detection_desc = detection_metric.detection_name
 
         if verbose:
             print(f"Configuration:")
@@ -1166,7 +1152,7 @@ class Experiment:
                     output_parts.append(f"{param_vals[n_initial + i]:<12.6f}")
                 output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}"])
                 print("".join(output_parts))
-
+            
             # Convergence check
             if grad_norm < tolerance:
                 break
