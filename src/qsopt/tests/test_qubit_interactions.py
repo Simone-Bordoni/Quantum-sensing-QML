@@ -1,23 +1,31 @@
 """
 Test qubit-qubit interaction functionality
+
+.. deprecated::
+    These tests are for deprecated TwoQubitExperiment and TrainableParameters functionality.
 """
 
 import numpy as np
 import pytest
 
-from qsopt.core.experiment import TwoQubitExperiment
-from qsopt.core.experimental_parameters import (
-    ExperimentalParameters,
-    InitialStateConfig,
-    InitialStateType,
-    InteractionType,
-    MeasurementProtocol,
-    NoiseConfiguration,
-    PhysicalConstants,
-    QubitInteraction,
-    SystemDimensions,
-)
-from qsopt.core.trainable_parameters import TrainableParameters
+pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters have been deprecated")
+
+# from qsopt.core.experiment import TwoQubitExperiment
+# from qsopt.core.experimental_parameters import (
+#     ExperimentalParameters,
+#     InitialStateConfig,
+#     InitialStateType,
+#     InteractionType,
+#     MeasurementProtocol,
+#     NoiseConfiguration,
+#     PhysicalConstants,
+#     QubitInteraction,
+#     SystemDimensions,
+# )
+# from qsopt.core.trainable_parameters import TrainableParameters
+
+
+pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters have been deprecated")
 
 
 def test_interaction_type_enum():

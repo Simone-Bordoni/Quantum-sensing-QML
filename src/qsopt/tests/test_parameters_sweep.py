@@ -16,7 +16,7 @@ from qsopt.core.experimental_parameters import (
     SystemDimensions,
 )
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
-from qsopt.utils.parameters_sweep import SweepResults, compute_chi_gamma_sweep
+from qsopt.utils.results import SweepResults
 from qsopt.utils.visualization import plot_sweep_results
 
 
@@ -156,10 +156,9 @@ def test_two_qubit_sweep_small(two_qubit_experiment):
     assert np.all(results.results["contrast_map"] <= 1.0)
 
 
-def test_compute_chi_gamma_sweep_function(single_qubit_experiment):
-    """Test the standalone compute_chi_gamma_sweep function."""
-    results = compute_chi_gamma_sweep(
-        single_qubit_experiment,
+def test_chi_gamma_sweep_alternate_call(single_qubit_experiment):
+    """Test chi-gamma sweep with different parameters."""
+    results = single_qubit_experiment.sweep_chi_gamma(
         chi_interval=[5.0, 15.0],
         gamma_interval=[5.0, 15.0],
         resolution_chi=2,

@@ -113,7 +113,7 @@ class TestParameterManagement:
         """Test getting and setting gate parameters."""
         rx = RXGate(theta=0.5, target=0)
         np.testing.assert_allclose(rx.get_parameter(), 0.5, rtol=1e-10)
-        
+
         rx.set_parameter(1.5)
         np.testing.assert_allclose(rx.get_parameter(), 1.5, rtol=1e-10)
 
@@ -121,7 +121,7 @@ class TestParameterManagement:
         """Test trainable parameter flag."""
         rx_trainable = RXGate(theta=0.5, target=0, trainable=True)
         rx_fixed = RXGate(theta=0.5, target=0, trainable=False)
-        
+
         assert rx_trainable._parameter.trainable is True
         assert rx_fixed._parameter.trainable is False
 
@@ -129,10 +129,10 @@ class TestParameterManagement:
         """Test enabling and disabling gradients."""
         rx = RXGate(theta=0.5, target=0, trainable=True)
         assert rx._parameter.trainable is True
-        
+
         rx._parameter.disable_gradients()
         assert rx._parameter.trainable is False
-        
+
         rx._parameter.enable_gradients()
         assert rx._parameter.trainable is True
 
@@ -191,7 +191,7 @@ class TestGateUnitarity:
         U = h.matrix(qutip=True)
         identity = U.dag() * U
         np.testing.assert_allclose(identity.full(), qt.qeye(2).full(), rtol=1e-10, atol=1e-12)
-        
+
         cnot = CNOTGate(target=(0, 1))
         U = cnot.matrix(qutip=True)
         identity = U.dag() * U
@@ -208,10 +208,10 @@ class TestAdditionalGateCoverage:
     def test_gate_parameter_value_update(self):
         """Test updating gate parameter values multiple times."""
         rx = RXGate(theta=0.0, target=0)
-        
+
         rx.set_parameter(np.pi/4)
         np.testing.assert_allclose(rx.get_parameter(), np.pi/4, rtol=1e-10)
-        
+
         rx.set_parameter(np.pi/2)
         np.testing.assert_allclose(rx.get_parameter(), np.pi/2, rtol=1e-10)
 
@@ -219,7 +219,7 @@ class TestAdditionalGateCoverage:
         """Test setting parameters with JAX arrays."""
         rx = RXGate(theta=jnp.array(0.5), target=0)
         assert isinstance(rx.get_parameter(), jnp.ndarray)
-        
+
         rx.set_parameter(jnp.array(1.5))
         np.testing.assert_allclose(rx.get_parameter(), 1.5, rtol=1e-10)
 
@@ -255,11 +255,11 @@ class TestAdditionalGateCoverage:
         """Test CZ gate matrix properties."""
         cz = CZGate(target=(0, 1))
         U = cz.matrix(qutip=False)
-        
+
         # CZ is diagonal
         off_diag = U - jnp.diag(jnp.diag(U))
         np.testing.assert_allclose(off_diag, 0, atol=1e-12)
-        
+
         # Check diagonal elements
         expected_diag = jnp.array([1, 1, 1, -1], dtype=jnp.complex128)
         np.testing.assert_allclose(jnp.diag(U), expected_diag, rtol=1e-10)
@@ -270,7 +270,7 @@ class TestAdditionalGateCoverage:
         rx = RXGate(theta=theta, target=0)
         ry = RYGate(theta=theta, target=0)
         rz = RZGate(theta=theta, target=0)
-        
+
         # All should be unitary
         for gate in [rx, ry, rz]:
             U = gate.matrix(qutip=True)
@@ -289,7 +289,7 @@ class TestAdditionalGateCoverage:
         """Test RX(π) is Pauli X."""
         rx_pi = RXGate(theta=np.pi, target=0)
         U = rx_pi.matrix(qutip=False)
-        
+
         # RX(π) should be -i*σx (up to global phase)
         # |<0|RX(π)|1>| should be 1
         np.testing.assert_allclose(abs(U[0, 1]), 1.0, rtol=1e-10)
@@ -299,7 +299,7 @@ class TestAdditionalGateCoverage:
         """Test RY(π/2) creates superposition."""
         ry_pi_half = RYGate(theta=np.pi/2, target=0)
         U = ry_pi_half.matrix(qutip=False)
-        
+
         # RY(π/2)|0⟩ = (|0⟩ + |1⟩)/√2
         state_0 = jnp.array([1, 0], dtype=jnp.complex128)
         result = U @ state_0
@@ -309,7 +309,7 @@ class TestAdditionalGateCoverage:
         """Test RZ doesn't change computational basis states."""
         rz = RZGate(theta=np.pi/3, target=0)
         U = rz.matrix(qutip=False)
-        
+
         # RZ should be diagonal
         off_diag = U - jnp.diag(jnp.diag(U))
         np.testing.assert_allclose(off_diag, 0, atol=1e-12)
@@ -317,5 +317,3 @@ class TestAdditionalGateCoverage:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-

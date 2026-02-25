@@ -17,11 +17,11 @@ from qsopt import OptimizationCallback
 
 def create_test_params(initial_values, final_values):
     """Helper function to create trainable parameter tuples for testing.
-    
+
     Args:
         initial_values: List of parameter values for initial circuit
         final_values: List of parameter values for final circuit
-        
+
     Returns:
         Tuple of (initial_params, final_params) as JAX arrays
     """

@@ -137,8 +137,8 @@ def generate_n_qubit_operators(
         # Detection and non-detection projectors using the detection states:
             # Default detection states are all the non zero states
         if detection_states is None:
-            detection_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)] 
-        
+            detection_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)]
+
         Ptemp = [P0,P1]
 
         P_detection = sum([ \
@@ -446,7 +446,7 @@ def _create_custom_state(
             # Compute flat index: field ⊗ cavity ⊗ qubit1 ⊗ ... ⊗ qubitn ordering
             idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
             psi_array[idx] = amplitude
-            
+
     elif all(isinstance(z, tuple) for (x,y,z),e in custom_amplitudes.items()):
         for (field, cavity, qubit), amplitude in custom_amplitudes.items():
 
@@ -461,7 +461,7 @@ def _create_custom_state(
             # Compute flat index: field ⊗ cavity ⊗ qubit ordering
             idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
             psi_array[idx] = amplitude
-    
+
 
     # Normalize the state
     norm = np.linalg.norm(psi_array)
@@ -731,14 +731,14 @@ def measure_qubits_probability(
         >>> p000 = measure_qubits_probability(rho, 'all', ops, state='000')
     """
     import jax.numpy as jnp
-    
+
     n_qubits= len((operators['P1_q']))
 
 
     if qubit_indices == 'all':
         # Joint measurement - only all-ground state supported
         if len(state) != n_qubits:
-            raise ValueError(   
+            raise ValueError(
                 f"State string length ({len(state)}) must match the total number of qubits in the system {n_qubits}"
             )
         if state == '0' * n_qubits:
@@ -754,7 +754,7 @@ def measure_qubits_probability(
                 q_levels = [2]*n_qubits
             elif isinstance(q_levels, int):
                 q_levels = [q_levels] * n_qubits
-            
+
             # Build projector for each qubit based on state string
             qubit_projectors = []
             for i, s in enumerate(state):
@@ -764,9 +764,9 @@ def measure_qubits_probability(
                     qubit_projectors.append(qt.Qobj([[0]*q_levels[i]] + [[0, 1] + [0]*(q_levels[i]-2)] + [[0]*q_levels[i]]*(q_levels[i]-2)))
                 else:
                     raise ValueError(f"Invalid state character '{s}', must be '0' or '1'")
-            
+
             P = qt.tensor([I_field, I_cavity] + qubit_projectors)
-    
+
     elif (isinstance(qubit_indices, list) and len(qubit_indices) == 1) or (isinstance(qubit_indices, int) and qubit_indices < n_qubits):
         # Single qubit measurement
         if isinstance(qubit_indices, list):
@@ -777,8 +777,8 @@ def measure_qubits_probability(
         if len(state) != 1:
             raise ValueError(f"In single qubit projections the state {state} must be either 0 or 1")
         P = operators[projector_key][qubit_indices]
-    
-    elif (len(qubit_indices) <= n_qubits): 
+
+    elif (len(qubit_indices) <= n_qubits):
         # Joint measurement
         if (field_levels is None) or (cavity_levels is None):
             raise ValueError("Non cached measurement of non fixed number of qubits require both the field_levels and cavity_levels")
@@ -792,7 +792,7 @@ def measure_qubits_probability(
             q_levels = [q_levels] * n_qubits
         elif len(q_levels) != n_qubits:
             raise ValueError(f"q_levels were passed, but the lenght is different than the number of qubits ({n_qubits})")
-            
+
             #Generate the projector: (l is the number of qubit levels of a qubit)
             # IF qubit is in the indices -> generates the matrix lxl that projects on the state at the same index
             # ELSE -> generates the identity lxl
@@ -805,7 +805,7 @@ def measure_qubits_probability(
             for i,l in enumerate(q_levels) \
                 ]
         P = qt.tensor([I_field, I_cavity] + qubit_projector)
-    
+
     else:
         raise ValueError(f'qubit indices must either be:\n \
         - int or list of int with lenght 1 ->   single qubit measurement in the interval [0,{n_qubits})\n\
@@ -834,7 +834,7 @@ def embed_circuit_unitary(
 
     Returns:
         Full-space unitary as JAX array: I_field ⊗ I_cavity ⊗ circuit_unitary
-        
+
     Example:
         >>> # 2-qubit circuit unitary (4x4 for 2-level qubits)
         >>> U_circuit = jnp.eye(4, dtype=jnp.complex128)
@@ -845,7 +845,7 @@ def embed_circuit_unitary(
     # I_field ⊗ I_cavity ⊗ U_circuit
     I_field = jnp.eye(field_levels, dtype=jnp.complex128)
     I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
-    
+
     # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
     U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), circuit_unitary)
 

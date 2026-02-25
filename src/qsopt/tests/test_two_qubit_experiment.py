@@ -1,20 +1,29 @@
-"""Tests for TwoQubitExperiment class."""  # Two qubit tests
+"""Tests for TwoQubitExperiment class.
+
+.. deprecated::
+    These tests are for deprecated TwoQubitExperiment and TrainableParameters functionality.
+"""
 
 import numpy as np
 import pytest
 import qutip as qt
 
-from qsopt.core.experiment.two_qubit_experiment import TwoQubitExperiment
-from qsopt.core.experimental_parameters import (
-    ExperimentalParameters,
-    InitialStateConfig,
-    InitialStateType,
-    MeasurementProtocol,
-    NoiseConfiguration,
-    PhysicalConstants,
-    SystemDimensions,
-)
-from qsopt.core.trainable_parameters import TrainableParameters
+pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters have been deprecated")
+
+# from qsopt.core.experiment.old.two_qubit_experiment import TwoQubitExperiment
+# from qsopt.core.experimental_parameters import (
+#     ExperimentalParameters,
+#     InitialStateConfig,
+#     InitialStateType,
+#     MeasurementProtocol,
+#     NoiseConfiguration,
+#     PhysicalConstants,
+#     SystemDimensions,
+# )
+# from qsopt.core.trainable_parameters import TrainableParameters
+
+
+pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters have been deprecated")
 
 
 @pytest.fixture

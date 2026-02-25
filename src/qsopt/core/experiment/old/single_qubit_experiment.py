@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
 
-from .quantum_utils import (
+from ..quantum_utils import (
     build_qubit_noise_operators,
     create_measurement_projector,
     generate_initial_state,
@@ -52,7 +52,7 @@ class SingleQubitExperiment:
 
     The system workflow:
     |ψ₀⟩ → Circuit₁ → H(t) Evolution → Circuit₂ → Measurement → Detection Probability
-    
+
     Args:
         experimental_params: Physical system parameters
         initial_circuit: QuantumCircuit to apply before evolution. If None, creates
@@ -71,10 +71,10 @@ class SingleQubitExperiment:
         # Create default circuits if not provided (single RY gates)
         if initial_circuit is None:
             initial_circuit = create_ry_circuit_layer(num_qubits=1, theta_values=[np.pi/2])
-        
+
         if final_circuit is None:
             final_circuit = create_ry_circuit_layer(num_qubits=1, theta_values=[-np.pi/2])
-        
+
         # Store circuits
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
@@ -95,11 +95,11 @@ class SingleQubitExperiment:
 
         # Initialize quantum objects
         self.__post_init__()
-    
+
     def _update_circuits_from_trainable_params(self):
         """
         Update circuit parameters from current trainable parameter values.
-        
+
         This synchronizes the circuits with the TrainableParameters after optimization steps.
         """
         self.initial_circuit.set_trainable_parameters(self.trainable_params_initial)
@@ -132,7 +132,7 @@ class SingleQubitExperiment:
 
         # Use utility function to generate all operators
         self.operators = generate_single_qubit_operators(field_levels, cavity_levels, qubit_levels)
-        
+
         # Add composite number operators for efficient reuse
         self.operators["n_cavity"] = self.operators["a_dag"] * self.operators["a"]
         self.operators["n_field"] = self.operators["a_in_dag"] * self.operators["a_in"]
@@ -319,16 +319,16 @@ class SingleQubitExperiment:
     def _embed_circuit_unitary(self, circuit_unitary: jnp.ndarray) -> qt.Qobj:
         """
         Embed a single-qubit unitary into the full three-system composite space.
-        
+
         The single-qubit unitary acts only on the qubit subsystem (third subsystem),
         while the input field and cavity subsystems remain unchanged.
-        
+
         Uses JAX operations (Kronecker products) to construct the embedded operator:
         U_full = I_field ⊗ I_cavity ⊗ U_qubit
-        
+
         Args:
             circuit_unitary: Single-qubit unitary matrix as JAX array (2x2)
-            
+
         Returns:
             Embedded unitary in full composite space (field ⊗ cavity ⊗ qubit) as QuTiP Qobj
         """
@@ -338,15 +338,15 @@ class SingleQubitExperiment:
         qubit_levels = (
             qubit_levels_list[0] if isinstance(qubit_levels_list, list) else qubit_levels_list
         )
-        
+
         # Build embedded operator using JAX Kronecker products
         # The qubit is the third subsystem: I_field ⊗ I_cavity ⊗ U_qubit
         I_field = jnp.eye(field_levels, dtype=jnp.complex128)
         I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
-        
+
         # Build full operator: I_field ⊗ I_cavity ⊗ U_qubit
         embedded_jax = jnp.kron(I_field, jnp.kron(I_cavity, circuit_unitary))
-        
+
         # Convert to QuTiP Qobj with proper dimensions
         total_dims = [field_levels, cavity_levels, qubit_levels]
         return qt.Qobj(embedded_jax, dims=[total_dims, total_dims])
@@ -354,23 +354,23 @@ class SingleQubitExperiment:
     def _prepare_circuit_unitaries(self) -> Tuple[qt.Qobj, qt.Qobj]:
         """
         Get embedded unitaries for initial and final circuits.
-        
+
         Computes and caches the full-space unitaries for both circuits.
         Updates circuits from trainable parameters before computing.
-        
+
         Returns:
             Tuple of (initial_unitary, final_unitary) embedded in composite space
-        """ 
+        """
         # Update circuits with current trainable parameter values
         self._update_circuits_from_trainable_params()
-        
+
         # Embed into full composite space
         initial_unitary = self._embed_circuit_unitary(self.initial_circuit.get_unitary(qutip=False))
         final_unitary = self._embed_circuit_unitary(self.final_circuit.get_unitary(qutip=False))
-        
+
         # Cache for reuse
         self._cached_circuit_unitaries = (initial_unitary, final_unitary)
-        
+
         return initial_unitary, final_unitary
 
     def proj0(self, rho: qt.Qobj) -> qt.Qobj:
@@ -601,7 +601,7 @@ class SingleQubitExperiment:
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
             measurement_protocol = self.experimental_params.measurement
-        
+
         # Get measurement times from protocol (handles both explicit and interval-based modes)
         if measurement_protocol.measurement_times is None:
             # Interval-based mode: compute times from initial_time, final_time, time_interval
@@ -611,7 +611,7 @@ class SingleQubitExperiment:
         else:
             # Explicit mode: use provided times
             measurement_times = np.array(measurement_protocol.measurement_times)
-        
+
         # Use measurement times for start and end
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
@@ -638,13 +638,13 @@ class SingleQubitExperiment:
         # Get number operators from cached dictionary
         n_cavity = self.operators["n_cavity"]
         n_field = self.operators["n_field"]
-        
+
         args = {"sigma": self.experimental_params.inverse_pulse_width}
-        
+
         # Check if we need to perform intermediate measurements
         intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
         perform_measurements = len(intermediate_meas_times) > 0
-        
+
         # Storage for results
         all_times = []
         prob_0_list = []
@@ -652,61 +652,61 @@ class SingleQubitExperiment:
         cavity_population_list = []
         field_population_list = []
         cumulative_prob = 0.0  # Running sum of detection probabilities
-        
+
         if perform_measurements:
             # Evolution with intermediate projective measurements
             segment_starts = [t_start] + list(intermediate_meas_times)
             segment_ends = list(intermediate_meas_times) + [t_end]
-            
+
             for seg_start, seg_end in zip(segment_starts, segment_ends):
                 # Number of points for this segment
                 seg_fraction = (seg_end - seg_start) / (t_end - t_start)
                 seg_n_points = max(2, int(n_points * seg_fraction))
-                
+
                 # Apply initial circuit before evolution
                 rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
-                
+
                 # Evolve segment
                 seg_times = np.linspace(seg_start, seg_end, seg_n_points)
                 result = solver.run(rho_after_circuit, tlist=seg_times, args=args)
-                
+
                 # Extract data for this segment
                 for i, rho_t in enumerate(result.states):
                     # Apply final circuit for measurement (same as simulation method)
                     rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
-                    
+
                     # Measure qubit probabilities
                     p0 = float(self.prob0(rho_meas))
                     p1 = float(self.prob1(rho_meas))
-                    
+
                     all_times.append(seg_times[i])
                     prob_0_list.append(p0*(1-cumulative_prob))  # Cumulative prob
                     prob_1_list.append(cumulative_prob + p1*(1-cumulative_prob))  # Cumulative prob
-                    
+
                     # Calculate populations (take real part since expectation values should be real)
                     cavity_pop = float(np.real(qt.expect(n_cavity, rho_t))*(1-cumulative_prob))
                     field_pop = float(np.real(qt.expect(n_field, rho_t))*(1-cumulative_prob))
                     cavity_population_list.append(cavity_pop)
                     field_population_list.append(field_pop)
-                
+
                 # Perform projective measurement at end of segment (if not the final segment)
                 if seg_end != t_end:
                     rho_evolved = result.states[-1]
-                    
+
                     # Apply final circuit for measurement (same as simulation method)
                     rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
-                    
+
                     # Get probability of detecting |1⟩ at this measurement
                     p1_measurement = float(self.prob1(rho_final))
-                    
+
                     # Update cumulative detection probability
                     # P(detect at least once) = P(already detected) + P(not yet detected) * P(detect now)
                     cumulative_prob = cumulative_prob + (1.0 - cumulative_prob) * p1_measurement
-                    
+
                     # Project onto |0⟩ state (matches simulation protocol)
                     proj_0 = self._cached_projector_0
                     rho_projected = proj_0 * rho_final * proj_0  # type: ignore
-                    
+
                     # Normalize
                     trace_val = rho_projected.tr()
                     rho_current = rho_projected if trace_val == 0 else rho_projected / trace_val
@@ -714,10 +714,10 @@ class SingleQubitExperiment:
             # Continuous evolution without intermediate measurements
             # Apply initial circuit before evolution
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
-            
+
             times = np.linspace(t_start, t_end, n_points)
             result = solver.run(rho_after_circuit, tlist=times, args=args)
-            
+
             for i, rho_t in enumerate(result.states):
                 # Apply final circuit for measurement
                 rho_final = final_unitary * rho_t * final_unitary_dag  # type: ignore
@@ -735,7 +735,7 @@ class SingleQubitExperiment:
                 field_pop = float(np.real(qt.expect(n_field, rho_t)))
                 cavity_population_list.append(cavity_pop)
                 field_population_list.append(field_pop)
-        
+
         times = np.array(all_times)
         # Compute pulse shape using the same u0 function as visualization
         sigma = self.experimental_params.inverse_pulse_width
@@ -802,18 +802,14 @@ class SingleQubitExperiment:
             ... )
             >>> print(f"Optimal chi: {results['chi_vals'][max_idx[1]]:.3f}")
         """
-        from qsopt.utils.parameters_sweep import compute_chi_gamma_sweep
-
-        return compute_chi_gamma_sweep(
-            self,
-            chi_interval,
-            gamma_interval,
-            resolution_chi,
-            resolution_gamma,
-            chi_scale,
-            gamma_scale,
-            batch_size,
-            verbose,
+        warnings.warn(
+            "SingleQubitExperiment is deprecated. Use the unified Experiment class instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        raise NotImplementedError(
+            "SingleQubitExperiment.sweep_chi_gamma() is deprecated. "
+            "Please use the unified Experiment class: experiment.sweep_chi_gamma()"
         )
 
     def _get_cached_measurement_times(self) -> List[float]:

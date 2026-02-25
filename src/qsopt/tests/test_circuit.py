@@ -102,7 +102,7 @@ class TestUnitaryComputation:
     def test_empty_circuit_and_jax_format(self):
         """Test empty circuit unitary and JAX array format."""
         circuit = QuantumCircuit(n_qubits=2)
-        
+
         # Empty circuit should be identity
         U_qutip = circuit.get_unitary(qutip=True)
         np.testing.assert_allclose(U_qutip.full(), qt.qeye([2, 2]).full(), rtol=1e-10)

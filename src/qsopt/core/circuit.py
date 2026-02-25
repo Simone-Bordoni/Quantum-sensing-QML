@@ -56,6 +56,9 @@ class QuantumCircuit:
 
         self.n_qubits = n_qubits
         self._gates: List[Gate] = []
+        self._cached_unitary_jax: Optional[jnp.ndarray] = None
+        self._cached_unitary_qutip: Optional[qt.Qobj] = None
+        self._cached_params: Optional[List] = None
 
     def add_gate(self, gate: Gate) -> None:
         """
@@ -70,7 +73,7 @@ class QuantumCircuit:
 
         # Normalize target to tuple for validation
         target_tuple = (gate.target,) if isinstance(gate.target, int) else tuple(gate.target)
-        
+
         # Validate all target qubits are in range
         for qubit in target_tuple:
             if qubit < 0 or qubit >= self.n_qubits:
@@ -78,7 +81,7 @@ class QuantumCircuit:
                     f"Target qubit {qubit} is out of range. "
                     f"Circuit has {self.n_qubits} qubits (0-{self.n_qubits-1})"
                 )
-        
+
         self._gates.append(gate)
 
     def get_trainable_parameters(self) -> List[jnp.ndarray]:
@@ -123,12 +126,17 @@ class QuantumCircuit:
         expected_count = self.count_trainable_parameters()
         if len(parameters) != expected_count:
             raise ValueError(f"Expected {expected_count} parameters, got {len(parameters)}")
-        
+
         param_idx = 0
         for gate in self._gates:
             if gate.has_parameter() and gate._parameter.trainable:
                 gate.set_parameter(parameters[param_idx])
                 param_idx += 1
+
+        # Invalidate cached unitary since parameters changed
+        self._cached_unitary_jax = None
+        self._cached_unitary_qutip = None
+        self._cached_params = None
 
     def get_unitary(self, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
         """
@@ -140,6 +148,23 @@ class QuantumCircuit:
         Returns:
             Circuit unitary matrix as QuTiP Qobj or JAX array
         """
+        # Check if we have a cached unitary for current parameters
+        current_params = self.get_trainable_parameters()
+        params_match = False
+        if self._cached_params is not None and len(current_params) == len(self._cached_params):
+            # Check if all parameters match (using allclose for numerical arrays)
+            params_match = all(
+                jnp.allclose(p1, p2) for p1, p2 in zip(current_params, self._cached_params)
+            )
+
+        # Return cached unitary if parameters match
+        if params_match:
+            if qutip and self._cached_unitary_qutip is not None:
+                return self._cached_unitary_qutip
+            elif not qutip and self._cached_unitary_jax is not None:
+                return self._cached_unitary_jax
+
+        # Otherwise, compute unitary
         if len(self._gates) == 0:
             # Identity for empty circuit
             dim = 2 ** self.n_qubits
@@ -168,9 +193,14 @@ class QuantumCircuit:
             # Apply gate (multiply on left since gates are applied left to right)
             U_jax = expanded_jax @ U_jax
 
-        # Return JAX array or wrap in Qobj
+        # Cache both JAX and QuTiP versions
+        self._cached_unitary_jax = U_jax
+        self._cached_unitary_qutip = qt.Qobj(U_jax, dims=[[2]*self.n_qubits, [2]*self.n_qubits])
+        self._cached_params = [jnp.array(p) for p in current_params]  # Store copy of params
+
+        # Return appropriate version
         if qutip:
-            return qt.Qobj(U_jax, dims=[[2]*self.n_qubits, [2]*self.n_qubits])
+            return self._cached_unitary_qutip
         return U_jax
 
     def __call__(self, state: Optional[Union[jnp.ndarray, qt.Qobj]] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
@@ -232,18 +262,18 @@ class QuantumCircuit:
         if qutip:
             return qt.Qobj(rho_final, dims=[[2]*self.n_qubits, [2]*self.n_qubits])
         return rho_final
-    
+
     def _expand_gate_jax(self, gate_matrix: jnp.ndarray, targets: tuple) -> jnp.ndarray:
         """
         Expand a gate matrix to act on specific qubits in the full Hilbert space.
-        
+
         Uses JAX operations (Kronecker products) to build the expanded operator,
         maintaining JAX traceability for autodiff.
-        
+
         Args:
             gate_matrix: Gate matrix as JAX array
             targets: Tuple of target qubit indices
-            
+
         Returns:
             Expanded gate matrix as JAX array
         """
@@ -256,24 +286,24 @@ class QuantumCircuit:
                     matrices.append(gate_matrix)
                 else:
                     matrices.append(jnp.eye(2, dtype=jnp.complex128))
-            
+
             # Build full operator using Kronecker products
             result = matrices[0]
             for mat in matrices[1:]:
                 result = jnp.kron(result, mat)
             return result
-        
+
         elif len(targets) == 2:
             # Two-qubit gate (e.g., CNOT)
             # Build the full operator by expanding the 4x4 gate matrix to the full Hilbert space
             # while preserving the control-target relationship
-            
+
             q0, q1 = targets  # Qubits as specified in gate (e.g., control, target for CNOT)
-            
+
             # Create full operator matrix
             dim = 2 ** self.n_qubits
             full_matrix = jnp.zeros((dim, dim), dtype=jnp.complex128)
-            
+
             # Iterate over all basis states
             for i in range(dim):
                 for j in range(dim):
@@ -282,24 +312,24 @@ class QuantumCircuit:
                     # So qubit k's bit is at position (n_qubits - 1 - k)
                     i_bits = [(i >> (self.n_qubits - 1 - k)) & 1 for k in range(self.n_qubits)]
                     j_bits = [(j >> (self.n_qubits - 1 - k)) & 1 for k in range(self.n_qubits)]
-                    
+
                     # Check if all other qubits (not q0, q1) are the same
                     other_qubits_match = all(
                         i_bits[k] == j_bits[k] for k in range(self.n_qubits) if k != q0 and k != q1
                     )
-                    
+
                     if other_qubits_match:
                         # Get the 2-qubit state indices for gate application
                         # The gate matrix expects: |q0, q1⟩ ordering
                         # So index 0 = |00⟩, 1 = |01⟩, 2 = |10⟩, 3 = |11⟩ for qubits (q0, q1)
                         i_gate = i_bits[q0] * 2 + i_bits[q1]  # Row index in 4x4 gate matrix
                         j_gate = j_bits[q0] * 2 + j_bits[q1]  # Col index in 4x4 gate matrix
-                        
+
                         # Apply the gate matrix element
                         full_matrix = full_matrix.at[i, j].set(gate_matrix[i_gate, j_gate])
-            
+
             return full_matrix
-        
+
     def __repr__(self) -> str:
         """String representation of circuit."""
         header = f"QuantumCircuit({self.n_qubits} qubits, {len(self._gates)} gates)"
@@ -310,7 +340,7 @@ class QuantumCircuit:
             f"  {i}: {gate}[{gate.target}]" for i, gate in enumerate(self._gates)
         )
         return f"{header}\n{gates_str}"
-    
+
 
 
 # Utility functions for circuit construction
@@ -392,7 +422,7 @@ def create_ry_circuit_layer(
 
     Args:
         n_qubits: Number of qubits in the circuit
-        theta_values: Rotation angle value applied to all qubits or a list (one per qubit). 
+        theta_values: Rotation angle value applied to all qubits or a list (one per qubit).
                       If None initializes all to π/2
         trainable: Whether the rotation parameters should be trainable
 

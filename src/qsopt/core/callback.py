@@ -92,7 +92,7 @@ class OptimizationCallback:
         # Handle backward compatibility: if trainable_params tuple is provided, unpack it
         if trainable_params is not None:
             trainable_params_initial, trainable_params_final = trainable_params
-        
+
         # Package parameters as tuple for internal storage
         trainable_params = (trainable_params_initial, trainable_params_final)
 
@@ -121,7 +121,7 @@ class OptimizationCallback:
         Get the best trainable parameters found during optimization.
 
         Returns:
-            Tuple of (initial_circuit_params, final_circuit_params), 
+            Tuple of (initial_circuit_params, final_circuit_params),
             or None if no parameters recorded yet
         """
         return self.best_trainable_params
@@ -292,7 +292,7 @@ class OptimizationCallback:
                 # Convert to numpy to handle both regular floats and JAX arrays
                 val_float = float(np.asarray(value))
                 lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
-            
+
             # Show final circuit parameters
             lines.append("     Final circuit:")
             for i, value in enumerate(final_params):

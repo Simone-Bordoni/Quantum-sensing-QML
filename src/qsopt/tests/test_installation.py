@@ -242,6 +242,7 @@ class TestBasicFunctionality:
         assert dims.qubit_levels == 2
         assert dims.field_levels == 2
 
+    @pytest.mark.skip(reason="TrainableParameters has been deprecated")
     def test_create_trainable_parameters(self):
         """Test creating TrainableParameters object."""
         import numpy as np

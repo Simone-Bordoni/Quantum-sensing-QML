@@ -63,7 +63,7 @@ def load_experiment_from_report(
         DeprecationWarning,
         stacklevel=2
     )
-    
+
     raise NotImplementedError(
         "This function requires TrainableParameters which has been removed. "
         "Please use circuit-based parameter management instead."

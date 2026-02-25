@@ -72,7 +72,7 @@ class TimeEvolutionResults:
         n_qubits = self.metadata["n_qubits"]
         detection_criterion = self.metadata["detection_criterion"]
 
-        # Detect system type     
+        # Detect system type
         system_type = f"{n_qubits} qubit"
         lines.append(f"  System type: {system_type}")
         lines.append(f"  Detection Criterion: {detection_criterion}")
@@ -86,7 +86,7 @@ class TimeEvolutionResults:
             lines.append(f"  Measurement times: {list(meas_times)}")
         else:
             lines.append(f"  Measurement times: Not specified")
-        
+
         lines.append(
             f"  Cavity population: {'Available' if self.cavity_population is not None else 'Not available'}"
         )

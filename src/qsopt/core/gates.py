@@ -169,7 +169,7 @@ class RXGate(Gate):
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return RX gate matrix.
-        
+
         Args:
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
@@ -209,7 +209,7 @@ class RYGate(Gate):
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return RY gate matrix.
-        
+
         Args:
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
@@ -249,7 +249,7 @@ class RZGate(Gate):
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return RZ gate matrix.
-        
+
         Args:
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
@@ -280,7 +280,7 @@ class HadamardGate(Gate):
 
     def __init__(self, target: int):
         """Initialize Hadamard gate.
-        
+
         Args:
             target: Target qubit index
         """
@@ -288,7 +288,7 @@ class HadamardGate(Gate):
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return Hadamard gate matrix.
-        
+
         Args:
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
@@ -316,7 +316,7 @@ class CNOTGate(Gate):
 
     def __init__(self, target: Tuple[int, int]):
         """Initialize CNOT gate.
-        
+
         Args:
             target: Tuple of (control, target) qubit indices
         """
@@ -324,7 +324,7 @@ class CNOTGate(Gate):
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return CNOT gate matrix.
-        
+
         Args:
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
@@ -356,7 +356,7 @@ class CZGate(Gate):
 
     def __init__(self, target: Tuple[int, int]):
         """Initialize CZ gate.
-        
+
         Args:
             target: Tuple of (control, target) qubit indices
         """
@@ -364,7 +364,7 @@ class CZGate(Gate):
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return CZ gate matrix.
-        
+
         Args:
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """

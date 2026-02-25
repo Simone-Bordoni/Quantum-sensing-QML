@@ -27,7 +27,7 @@ def plot_optimization_dashboard(
     show_parameters: bool = True,
     show_trajectory: bool = True,
     show_probabilities: bool = True,
-    figsize: Tuple[int, int] = (16, 14),
+    figsize: Tuple[int, int] = (16, 18),
     save_path: Optional[str] = None,
     dpi: int = 300,
 ) -> Figure:
@@ -49,7 +49,7 @@ def plot_optimization_dashboard(
         show_gradients: Display gradient magnitude evolution plot when True
         show_parameters: Display parameter evolution plot when True
         show_probabilities: Display detection probabilities plot
-        figsize: Figure size as ``(width, height)`` in inches
+        figsize: Figure size as ``(width, height)`` in inches (default: 16x18)
         save_path: Optional path to save the figure (e.g., ``'dashboard.pdf'``)
             If None, figure is displayed but not saved
         dpi: Resolution for saved figure (default: 300)
@@ -106,14 +106,14 @@ def plot_optimization_dashboard(
     param_names = []
     n_initial_params = 0
     n_final_params = 0
-    
+
     if history["trainable_params"]:
         # trainable_params is now tuple[list, list] of (initial_params, final_params)
         first_params_tuple = history["trainable_params"][0]
         initial_params, final_params = first_params_tuple
         n_initial_params = len(initial_params)
         n_final_params = len(final_params)
-        
+
         # Generate generic parameter names
         param_names = [f"init_{i}" for i in range(n_initial_params)] + [f"final_{i}" for i in range(n_final_params)]
 
@@ -214,7 +214,7 @@ def plot_optimization_dashboard(
             else:
                 color = colors_final[i - n_initial_params] if n_final_params > 1 else colors_final[0]
                 linestyle = '--'
-            
+
             params_deg = param_arrays[:, i] * 180 / np.pi
             ax.plot(epochs, params_deg, linestyle, linewidth=2, label=name, color=color, alpha=0.8)
 
@@ -265,19 +265,80 @@ def plot_optimization_dashboard(
         ax.set_title("Detection Probabilities Evolution", fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
-    
-    if show_trajectory:
-        plot_parameter_trajectory(
-            optimization_callback = optimization_callback,
-            param_indices = (0,1),
-            figsize = (10, 8),
-            dpi = 300,
+
+    # Plot 5: Parameter Trajectory
+    if show_trajectory and len(param_arrays) >= 2:
+        ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
+        axes.append(ax)
+        plot_idx += 1
+
+        # Use first two parameters by default
+        param_indices = (0, 1)
+        idx1, idx2 = param_indices
+        theta1_deg = param_arrays[:, idx1] * 180 / np.pi
+        theta2_deg = param_arrays[:, idx2] * 180 / np.pi
+
+        # Plot trajectory
+        scatter = ax.scatter(
+            theta1_deg,
+            theta2_deg,
+            c=epochs,
+            cmap="viridis",
+            s=50,
+            alpha=0.7,
+            edgecolors="black",
+            linewidth=1,
+        )
+        ax.plot(theta1_deg, theta2_deg, "k-", alpha=0.4, linewidth=1.5)
+
+        # Mark start and end
+        ax.plot(
+            theta1_deg[0],
+            theta2_deg[0],
+            "ro",
+            markersize=12,
+            label="Start",
+            markeredgecolor="black",
+            markeredgewidth=2,
+        )
+        ax.plot(
+            theta1_deg[-1],
+            theta2_deg[-1],
+            "gs",
+            markersize=12,
+            label="End",
+            markeredgecolor="black",
+            markeredgewidth=2,
         )
 
+        # Mark reference if available
+        if reference_params is not None and len(reference_params) > max(param_indices):
+            ref_theta1_deg = reference_params[idx1] * 180 / np.pi
+            ref_theta2_deg = reference_params[idx2] * 180 / np.pi
+            ax.plot(
+                ref_theta1_deg,
+                ref_theta2_deg,
+                "b^",
+                markersize=14,
+                label="Reference",
+                markeredgecolor="black",
+                markeredgewidth=2,
+            )
+
+        ax.set_xlabel(f"{param_names[idx1]} (degrees)", fontsize=12)
+        ax.set_ylabel(f"{param_names[idx2]} (degrees)", fontsize=12)
+        ax.set_title("Optimization Trajectory", fontsize=14)
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+
+        # Add colorbar
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label("Epoch", fontsize=10)
 
     # Overall title
     plt.suptitle("Optimization Dashboard", fontsize=18)
     plt.tight_layout()
+    plt.subplots_adjust(hspace=0.3)
 
     # Save if path provided
     if save_path is not None:
@@ -392,7 +453,7 @@ def plot_parameter_trajectory(
         initial_params, final_params = first_params_tuple
         n_initial = len(initial_params)
         n_final = len(final_params)
-        
+
         # Generate generic parameter names
         param_names = [f"init_{i}" for i in range(n_initial)] + [f"final_{i}" for i in range(n_final)]
 
@@ -724,7 +785,6 @@ def plot_time_interval_landscape(
 
     Includes system information box showing:
     - Physical constants (coupling strengths, pulse widths)
-    - Rotation parameters (θ₁, θ₂)
     - Noise configuration
     - Batch averaging details (if used)
     - Optimal interval statistics
@@ -736,8 +796,6 @@ def plot_time_interval_landscape(
             - 'detection_with': Array of detection probabilities with photon
             - 'detection_without': Array of detection probabilities without photon
             - 'n_measurements': Array of number of measurements per interval
-            - 'theta1': Fixed θ₁ value
-            - 'theta2': Fixed θ₂ value
             - 'mode': Computation mode ('continuous' or 'discrete')
             - 'batch_size': Batch size used
             - 'initial_time_uncertainty': Uncertainty value
@@ -750,12 +808,16 @@ def plot_time_interval_landscape(
         matplotlib Figure object
 
     Example:
-        >>> from qsopt.utils import compute_time_interval_landscape, plot_time_interval_landscape
+        >>> from qsopt.core.circuit import create_ry_circuit_layer
+        >>> from qsopt.core.experiment import Experiment
         >>>
-        >>> data = compute_time_interval_landscape(
-        ...     exp_params,
-        ...     theta1=np.pi/2,
-        ...     theta2=-np.pi/2,
+        >>> # Create experiment with circuits
+        >>> initial_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[np.pi/2])
+        >>> final_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[-np.pi/2])
+        >>> experiment = Experiment(exp_params, initial_circuit, final_circuit)
+        >>>
+        >>> # Optimize measurement times
+        >>> data = experiment.optimize_measurement_times(
         ...     resolution=50,
         ...     batch_size=10
         ... )
@@ -786,8 +848,6 @@ def plot_time_interval_landscape(
     detection_with = np.asarray(landscape_data["detection_with"])
     detection_without = np.asarray(landscape_data["detection_without"])
     n_measurements = np.asarray(landscape_data["n_measurements"])
-    theta1 = float(landscape_data["theta1"])
-    theta2 = float(landscape_data["theta2"])
     mode = str(landscape_data["mode"])
     batch_size = int(landscape_data["batch_size"])
     uncertainty = float(landscape_data["initial_time_uncertainty"])
@@ -949,10 +1009,6 @@ Physical Constants:
   • Photon-cavity coupling (γ):    {exp_params.photon_cavity_coupling:.6f} rad/time
   • Inverse pulse width (σ):        {exp_params.inverse_pulse_width:.6f} 1/time
   • Dispersive coupling (χ):        {chi_display if isinstance(chi_display, str) else f'{chi_display:.6f}'} rad/time
-
-Rotation Parameters:
-  • θ₁ (first rotation):   {np.degrees(theta1):>7.2f}° ({theta1:.6f} rad)
-  • θ₂ (second rotation):  {np.degrees(theta2):>7.2f}° ({theta2:.6f} rad)
 
 Noise Configuration:
   • Relaxation (γ_relax):   {relaxation_display if isinstance(relaxation_display, str) else f'{relaxation_display:.6f}'} rad/time
@@ -1272,7 +1328,7 @@ def plot_time_evolution(
             alpha=0.7,
             label=r"Cavity $\langle a^\dagger a \rangle$",
         )
-    
+
     # Add field population on same y-axis if requested
     if show_field_population and field_population is not None:
         ax.plot(
@@ -1343,6 +1399,7 @@ def plot_sweep_results(
     mark_optimal: bool = True,
     save_path: Optional[str] = None,
     dpi: int = 300,
+    aspect: str = "auto",
 ) -> Figure:
     """
     Unified function to plot parameter sweep results.
@@ -1355,14 +1412,14 @@ def plot_sweep_results(
     Args:
         sweep: SweepResults object from any compute_*_sweep function
         results_to_plot: Optional list of result keys to plot. If None, plots all results.
-            Common keys: 'contrast_map', 'detection_map', 'detection_without_map',
-            'p00', 'p01', 'p10', 'p11'
+            Common keys: 'contrast_map', 'detection_map', 'detection_without_map'
         figsize: Figure size (width, height) in inches. If None, automatically sized
         contour_levels: Levels for filled contours. Default: [0, 0.1, 0.2, ..., 1.0]
         label_levels: Levels for labeled line contours. Default: [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
         mark_optimal: If True and contrast_map exists, mark the optimal point
         save_path: Optional path to save the figure
         dpi: Resolution for saved figure
+        aspect: Aspect ratio for subplots. 'auto' (default) uses figsize, 'equal' forces square plots
 
     Returns:
         matplotlib Figure object
@@ -1376,9 +1433,9 @@ def plot_sweep_results(
         >>> sweep = compute_chi_gamma_sweep(exp_2q, ...)
         >>> plot_sweep_results(sweep, results_to_plot=['p00', 'p01', 'p10', 'p11'])
         >>>
-        >>> # Asymmetry sweep
+        >>> # Asymmetry sweep with custom size
         >>> sweep = compute_asymmetry_coupling_sweep(exp_2q, ...)
-        >>> plot_sweep_results(sweep, mark_optimal=True)
+        >>> plot_sweep_results(sweep, figsize=(10, 6), mark_optimal=True)
     """
     # Default contour levels
     if contour_levels is None:
@@ -1419,25 +1476,30 @@ def plot_sweep_results(
     # Determine subplot layout
     if n_plots == 1:
         nrows, ncols = 1, 1
-        subplot_size = 8
+        subplot_size = (10, 7)  # Single plot: rectangular for better visibility
     elif n_plots == 2:
         nrows, ncols = 1, 2
-        subplot_size = 8
+        subplot_size = (8, 8)
     elif n_plots == 3:
         nrows, ncols = 3, 1
-        subplot_size = 8
+        subplot_size = (8, 8)
     elif n_plots == 4:
         nrows, ncols = 2, 2
-        subplot_size = 6
+        subplot_size = (6, 6)
     else:
         # General case: try to make square-ish
         ncols = int(np.ceil(np.sqrt(n_plots)))
         nrows = int(np.ceil(n_plots / ncols))
-        subplot_size = 6
+        subplot_size = (6, 6)
 
     # Determine figure size
     if figsize is None:
-        figsize = (subplot_size * ncols, subplot_size * nrows)
+        if n_plots == 1:
+            figsize = subplot_size  # Use tuple directly for single plot
+        else:
+            # Use first element as base size (assuming square subplot_size)
+            base_size = subplot_size[0] if isinstance(subplot_size, tuple) else subplot_size
+            figsize = (base_size * ncols, base_size * nrows)
 
     # Create figure
     fig, axes_array = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
@@ -1448,10 +1510,6 @@ def plot_sweep_results(
         "contrast_map": "Sensing Contrast",
         "detection_map": "P(detection | with photon)",
         "detection_without_map": "P(detection | without photon)",
-        "p00": r"$P_{00}$ (Both ground)",
-        "p01": r"$P_{01}$ (Q1 ground, Q2 excited)",
-        "p10": r"$P_{10}$ (Q1 excited, Q2 ground)",
-        "p11": r"$P_{11}$ (Both excited)",
     }
 
     # Format parameter names for axis labels
@@ -1512,7 +1570,12 @@ def plot_sweep_results(
         ax.set_xlabel(param1_label, fontsize=11)
         ax.set_ylabel(param2_label, fontsize=11)
         ax.set_title(title_map.get(result_key, result_key), fontsize=12)
-        ax.set_aspect("equal", adjustable="box")
+
+        # Set aspect ratio (use 'auto' to respect figsize, 'equal' for square plots)
+        if aspect in ["auto", "equal"]:
+            ax.set_aspect(aspect, adjustable="box")
+        else:
+            ax.set_aspect(aspect)
 
     # Hide unused subplots
     for idx in range(n_plots, len(axes)):

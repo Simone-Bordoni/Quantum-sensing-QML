@@ -26,12 +26,12 @@ class DetectionMetric:
     Parameters
     ----------
     metric : Callable[[float,float], float], optional
-        Custom function that takes probabilities of detection with and without photon and derives a loss. 
+        Custom function that takes probabilities of detection with and without photon and derives a loss.
         If None, defaults to lambda x,y: -(x-y)
     n_qubits : int, optional
         Number of qubits, defaults to 2
     detection_criterion : str, optional
-        Critirion of detection, each criterion uses differently detection_param:        
+        Critirion of detection, each criterion uses differently detection_param:
 
             - "any excited" (default): detects if there is any excitation. Corresponds to
                 Doesn't take any parameter, detection_param default None
@@ -82,7 +82,7 @@ class DetectionMetric:
         """Initialize the detection probability calculator."""
 
         self.detection_states, self.detection_name = self.std_detection(detection_criterion, detection_param, n_qubits)
-        
+
         if metric is None:
             self.metric = std_metric
             metric_name = 'contrast'
@@ -110,7 +110,7 @@ class DetectionMetric:
 
     def std_detection(self, criterion, detection_param, n_qubits):
         """Predefined detection criterion for common use cases:
-        
+
             - any excited: detects if there is any excitation.
                 detection_param: None
 
@@ -119,17 +119,17 @@ class DetectionMetric:
 
             - excited qubits: detects if one or more of the qubits in a list are excited
                 detection_param: List[int], list of qubit indexes
-            
+
             - custom states: detects states that belong to a list of states
                 detection_param: List[str], list of state keys
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
-            
+
             non_0_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)]
             return non_0_states, criterion
 
         elif criterion == 'min excited':
-            
+
             if detection_param is None:
                 detection_param = 1
             elif (not isinstance(detection_param,int) and (0 < detection_param < n_qubits)):
@@ -146,7 +146,7 @@ class DetectionMetric:
             return states, name
 
         elif criterion == 'excited qubits':
-            
+
             if detection_param is None:
                 detection_param = [0]
             elif not isinstance(detection_param,list):
@@ -192,5 +192,4 @@ class DetectionMetric:
 @jit
 def std_metric(p_with_photon: float, p_without_photon: float)-> float:
     contrast = p_with_photon - p_without_photon
-    return -contrast 
-
+    return -contrast

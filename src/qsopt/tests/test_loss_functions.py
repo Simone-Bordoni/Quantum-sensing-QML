@@ -3,21 +3,26 @@ Tests for loss functions and detection probability definitions.
 
 This module tests the DetectionFromProbabilities class and predefined
 detection criteria for quantum sensing experiments.
+
+.. deprecated::
+    DetectionFromProbabilities has been removed.
 """
 
 import jax.numpy as jnp
 import pytest
 
-from qsopt.core.loss_functions import (
-    DetectionFromProbabilities,
-    detection_11,
-    detection_any_excited,
-    detection_both_excited,
-    detection_not_00,
-    detection_qubit1,
-    detection_qubit2,
-    detection_xor,
-)
+pytestmark = pytest.mark.skip(reason="DetectionFromProbabilities has been removed")
+
+# from qsopt.core.loss_functions import (
+#     DetectionFromProbabilities,
+#     detection_11,
+#     detection_any_excited,
+#     detection_both_excited,
+#     detection_not_00,
+#     detection_qubit1,
+#     detection_qubit2,
+#     detection_xor,
+# )
 
 
 class TestDetectionFromProbabilities:

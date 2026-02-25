@@ -5,15 +5,14 @@ This module provides visualization and helper utilities for:
 - Optimization visualization and dashboards
 - Parameter landscape analysis
 - Experiment data loading
+
+Note: Parameter sweep functions (compute_chi_gamma_sweep, etc.) have been
+removed. Use the Experiment class methods instead:
+    - experiment.sweep_chi_gamma()
 """
 
 from .experiment_loader import load_experiment_from_report
 from .landscape_analysis import compute_theta1_theta2_landscape, compute_time_interval_landscape
-from .parameters_sweep import (
-    compute_asymmetry_coupling_sweep,
-    compute_asymmetry_gamma_sweep,
-    compute_chi_gamma_sweep,
-)
 from .results import SweepResults, TimeEvolutionResults, load_results, save_results
 from .visualization import (
     plot_contrast_evolution,
@@ -40,7 +39,4 @@ __all__ = [
     "SweepResults",
     "save_results",
     "load_results",
-    "compute_chi_gamma_sweep",
-    "compute_asymmetry_coupling_sweep",
-    "compute_asymmetry_gamma_sweep",
 ]

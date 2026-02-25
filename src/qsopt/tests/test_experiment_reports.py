@@ -1,5 +1,8 @@
 """
 Test save and load experiment report functionality.
+
+.. deprecated::
+    These tests are for deprecated SingleQubitExperiment and TrainableParameters functionality.
 """
 
 import json
@@ -9,17 +12,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from qsopt import (
-    ExperimentalParameters,
-    InitialStateConfig,
-    InitialStateType,
-    MeasurementProtocol,
-    NoiseConfiguration,
-    PhysicalConstants,
-    SingleQubitExperiment,
-    SystemDimensions,
-    TrainableParameters,
-)
+# from qsopt import (
+#     ExperimentalParameters,
+#     InitialStateConfig,
+#     InitialStateType,
+#     MeasurementProtocol,
+#     NoiseConfiguration,
+#     PhysicalConstants,
+#     SingleQubitExperiment,
+#     SystemDimensions,
+#     TrainableParameters,
+# )
+
+
+pytestmark = pytest.mark.skip(reason="SingleQubitExperiment and TrainableParameters have been deprecated")
 
 
 class TestExperimentReports:

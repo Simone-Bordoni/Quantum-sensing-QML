@@ -13,7 +13,7 @@ from qsopt.core.experimental_parameters import (
     NoiseConfiguration
 )
 from qsopt.core.trainable_parameters import TrainableParameters
-from qsopt.core.experiment.two_qubit_experiment import TwoQubitExperiment
+from qsopt.core.experiment.old.two_qubit_experiment import TwoQubitExperiment
 from qsopt.utils.visualization import plot_optimization_dashboard
 
 # Suppress warnings for cleaner output

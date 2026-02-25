@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
 
-from .quantum_utils import (
+from ..quantum_utils import (
     apply_qubit_rotation,
     build_qubit_noise_operators,
     generate_initial_state,
@@ -85,21 +85,21 @@ class TwoQubitExperiment:
             detector: Custom detection probability calculator. If None, uses default 1-P(00).
         """
         import optax
-        
+
         # Create default circuits if not provided (2-qubit RY gates)
         if initial_circuit is None:
             initial_circuit = create_ry_circuit_layer(num_qubits=2, theta_values=[np.pi/2, np.pi/2])
-        
+
         if final_circuit is None:
             final_circuit = create_ry_circuit_layer(num_qubits=2, theta_values=[-np.pi/2, -np.pi/2])
-        
+
         # Store circuits
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
-        
+
         # Create TrainableParameters from circuits
         trainable_params = self._create_trainable_params_from_circuits(optimizer)
-        
+
         super().__init__(experimental_params, trainable_params)
 
         # Verify we have 2 qubits configured
@@ -604,13 +604,13 @@ class TwoQubitExperiment:
         # I_field ⊗ I_cavity ⊗ U_circuit
         I_field = jnp.eye(field_levels, dtype=jnp.complex128)
         I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
-        
+
         # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
         U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), U_jax)
 
         # Wrap in Qobj with proper dimensions
         return qt.Qobj(
-            U_full_jax, 
+            U_full_jax,
             dims=[[field_levels, cavity_levels, 2, 2], [field_levels, cavity_levels, 2, 2]]
         )
 
@@ -640,7 +640,7 @@ class TwoQubitExperiment:
         # Update circuits with current parameter values
         initial_dict = {initial_keys[0]: theta1_q1, initial_keys[1]: theta1_q2}
         final_dict = {final_keys[0]: theta2_q1, final_keys[1]: theta2_q2}
-        
+
         self.initial_circuit.set_trainable_parameters(initial_dict)
         self.final_circuit.set_trainable_parameters(final_dict)
 
@@ -1140,14 +1140,14 @@ class TwoQubitExperiment:
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
             measurement_protocol = self.experimental_params.measurement
-        
+
         # Get measurement times from protocol
         measurement_times = np.array(measurement_protocol.measurement_times)
-        
+
         # Use measurement times for start and end
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
-            
+
         # Get current rotation angles (need 4 angles for 2 qubits)
         rotation_angles = self.trainable_params.get_rotation_angles()
         if len(rotation_angles) < 4:
@@ -1178,17 +1178,17 @@ class TwoQubitExperiment:
         a_dag = self.operators["a_dag"]
         a = self.operators["a"]
         n_cavity = a_dag * a  # Cavity number operator a†a
-        
+
         a_in_dag = self.operators["a_in_dag"]
         a_in = self.operators["a_in"]
         n_field = a_in_dag * a_in  # Field number operator a_in†a_in
-        
+
         args = {"sigma": self.experimental_params.inverse_pulse_width}
-        
+
         # Check if we need to perform intermediate measurements
         intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
         perform_measurements = len(intermediate_meas_times) > 0
-        
+
         # Storage for results
         all_times = []
         prob_00_list = []
@@ -1197,76 +1197,76 @@ class TwoQubitExperiment:
         prob_11_list = []
         cavity_population_list = []
         field_population_list = []
-        
+
         if perform_measurements:
             # Evolution with intermediate projective measurements
             segment_starts = [t_start] + list(intermediate_meas_times)
             segment_ends = list(intermediate_meas_times) + [t_end]
-            
+
             for seg_start, seg_end in zip(segment_starts, segment_ends):
                 # Number of points for this segment
                 seg_fraction = (seg_end - seg_start) / (t_end - t_start)
                 seg_n_points = max(2, int(n_points * seg_fraction))
-                
+
                 # Evolve segment
                 seg_times = np.linspace(seg_start, seg_end, seg_n_points)
                 result = solver.run(rho_current, tlist=seg_times, args=args)
-                
+
                 # Extract data for this segment
                 for i, rho_t in enumerate(result.states):
                     # Apply second rotations for measurement
                     rho_meas = self.apply_rotation(rho_t, theta2_q1, qubit=0)
                     rho_meas = self.apply_rotation(rho_meas, theta2_q2, qubit=1)
-                    
+
                     # Measure two-qubit probabilities
                     p00 = float(self.prob(rho_meas, qubits=[0, 1], state="00"))
                     p01 = float(self.prob(rho_meas, qubits=[0, 1], state="01"))
                     p10 = float(self.prob(rho_meas, qubits=[0, 1], state="10"))
                     p11 = float(self.prob(rho_meas, qubits=[0, 1], state="11"))
-                    
+
                     all_times.append(seg_times[i])
                     prob_00_list.append(p00)
                     prob_01_list.append(p01)
                     prob_10_list.append(p10)
                     prob_11_list.append(p11)
-                    
+
                     # Calculate populations (take real part since expectation values should be real)
                     cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
                     field_pop = float(np.real(qt.expect(n_field, rho_t)))
                     cavity_population_list.append(cavity_pop)
                     field_population_list.append(field_pop)
-                
+
                 # Perform projective measurement at end of segment (if not the final segment)
                 if seg_end != t_end:
                     rho_final = result.states[-1]
-                    
+
                     # Measurement protocol: Ry(-theta2) -> project -> Ry(theta2)
                     rho_before_proj = self.apply_rotation(rho_final, -theta2_q1, qubit=0)
                     rho_before_proj = self.apply_rotation(rho_before_proj, -theta2_q2, qubit=1)
-                    
+
                     # Get probabilities in basis
                     p00_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="00"))
                     p01_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="01"))
                     p10_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="10"))
                     p11_basis = float(self.prob(rho_before_proj, qubits=[0, 1], state="11"))
-                    
+
                     # Stochastic projection (weighted by probabilities)
                     # For deterministic visualization, use weighted mixture
                     proj_00 = self.get_qubit_projector(1, "0") * self.get_qubit_projector(2, "0")
                     proj_01 = self.get_qubit_projector(1, "0") * self.get_qubit_projector(2, "1")
                     proj_10 = self.get_qubit_projector(1, "1") * self.get_qubit_projector(2, "0")
                     proj_11 = self.get_qubit_projector(1, "1") * self.get_qubit_projector(2, "1")
-                    
+
                     rho_projected = (
                         p00_basis * (proj_00 * rho_before_proj * proj_00) +
                         p01_basis * (proj_01 * rho_before_proj * proj_01) +
                         p10_basis * (proj_10 * rho_before_proj * proj_10) +
                         p11_basis * (proj_11 * rho_before_proj * proj_11)
                     )  # type: ignore
-                    
+
                     # Normalize
                     rho_projected = rho_projected / rho_projected.tr()
-                    
+
                     # Apply rotations back
                     rho_current = self.apply_rotation(rho_projected, theta2_q1, qubit=0)
                     rho_current = self.apply_rotation(rho_current, theta2_q2, qubit=1)
@@ -1274,7 +1274,7 @@ class TwoQubitExperiment:
             # Continuous evolution without intermediate measurements
             times = np.linspace(t_start, t_end, n_points)
             result = solver.run(rho_current, tlist=times, args=args)
-            
+
             for i, rho_t in enumerate(result.states):
                 # Apply second rotations
                 rho_final = self.apply_rotation(rho_t, theta2_q1, qubit=0)
@@ -1297,7 +1297,7 @@ class TwoQubitExperiment:
                 field_pop = float(np.real(qt.expect(n_field, rho_t)))
                 cavity_population_list.append(cavity_pop)
                 field_population_list.append(field_pop)
-        
+
         times = np.array(all_times)
         # Compute pulse shape u(t) = exp(-t^2)
         pulse_shape = np.exp(-(times**2))
@@ -1694,18 +1694,14 @@ class TwoQubitExperiment:
         Note:
             Chi is assumed equal for both qubits (χ₁ = χ₂).
         """
-        from qsopt.utils.parameters_sweep import compute_chi_gamma_sweep
-
-        return compute_chi_gamma_sweep(
-            self,
-            chi_interval,
-            gamma_interval,
-            resolution_chi,
-            resolution_gamma,
-            chi_scale,
-            gamma_scale,
-            batch_size,
-            verbose,
+        warnings.warn(
+            "TwoQubitExperiment is deprecated. Use the unified Experiment class instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        raise NotImplementedError(
+            "TwoQubitExperiment.sweep_chi_gamma() is deprecated. "
+            "Please use the unified Experiment class: experiment.sweep_chi_gamma()"
         )
 
     def measure_all_states(self, rho: qt.Qobj) -> Dict[str, float]:
