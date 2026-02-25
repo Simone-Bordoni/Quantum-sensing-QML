@@ -3,6 +3,7 @@
 *.py[codz]
 *$py.class
 testNathan.py
+ֿֿ*cpython-313.pyc
 
 
 # C extensions
