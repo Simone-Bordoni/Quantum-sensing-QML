@@ -390,50 +390,6 @@ class Experiment:
             )
         return self._cached_solvers["no_interaction"]
 
-    def prob(self, rho: qt.Qobj, qubits: Optional[List[int]] = None) -> List[float]:
-        """
-        Measure ground state probability for specified qubits.
-
-        Args:
-            rho: Density matrix in composite space
-            qubits: List of qubit indices to measure. If None, measures all qubits.
-
-        Returns:
-            List of ground state probabilities for each measured qubit
-
-        Example:
-            >>> # Measure all qubits
-            >>> probs = experiment.prob(rho)  # Returns [p0_q0, p0_q1, ..., p0_qn]
-            >>> 
-            >>> # Measure specific qubits
-            >>> probs = experiment.prob(rho, qubits=[0, 2])  # Returns [p0_q0, p0_q2]
-        """
-        if self.operators is None:
-            raise RuntimeError("Operators must be generated before measuring")
-        
-        n_qubits = self.experimental_params.n_qubits
-        
-        # If qubits not specified, measure all qubits
-        if qubits is None:
-            qubits = list(range(n_qubits))
-        
-        # Validate qubit indices
-        for qubit_idx in qubits:
-            if qubit_idx < 0 or qubit_idx >= n_qubits:
-                raise ValueError(f"Invalid qubit index {qubit_idx}. Must be in [0, {n_qubits-1}]")
-        
-        # Get ground state projectors for each qubit
-        P0_q = self.operators["P0_q"]
-        
-        # Measure ground state probability for each qubit
-        probabilities = []
-        for qubit_idx in qubits:
-            P0 = P0_q[qubit_idx]
-            prob = float(jnp.real((P0 * rho).tr()))
-            probabilities.append(prob)
-        
-        return probabilities
-
     def _prepare_circuit_unitaries(self) -> tuple:
         """
         Get embedded unitaries for initial and final circuits with their daggers.
@@ -498,6 +454,10 @@ class Experiment:
         # Get detection metric 
         detection_metric = self.detection_metric
 
+        # Get measurement operators
+        measure_reset = self.operators["measure_reset"]
+        measure_reset_dag = self.operators["measure_reset_dag"]
+
         measurement_array = np.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
@@ -517,24 +477,16 @@ class Experiment:
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
+
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
-            #print(F'DEBUG SIMULATION, rho_final.tr(): {rho_final.tr()}')
-            #print(f'DEBUG SIMULATION, rho_final:\n{rho_final}')
-
             # Measure probability of non detection and reset the qubit
-            measure_reset = self.operators["measure_reset"]
-            measure_reset_dag = self.operators["measure_reset_dag"]
-
             rho_reset = measure_reset * rho_final * measure_reset_dag
             prob_no_detect = jnp.real(rho_reset.tr())
             rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
-
-            #print(F'DEBUG SIMULATION, rho_current.tr(): {rho_current.tr()}')
-            #print(f'DEBUG SIMULATION, rho_current:\n{rho_current}')
 
             prob = prob * prob_no_detect     
 
@@ -753,6 +705,7 @@ class Experiment:
         >>> # Without cavity population (default)
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
+
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
             measurement_protocol = self.experimental_params.measurement
@@ -764,9 +717,10 @@ class Experiment:
         t_end = float(measurement_times[-1])
             
         # Get initial state and solver
-        rho0 = self._cached_initial_state
-        if rho0 is None:
+        rho = self._cached_initial_state
+        if rho is None:
             raise RuntimeError("Initial state cache is not initialized.")
+
 
         solver = (
             self.get_solver_with_interaction()
@@ -777,127 +731,76 @@ class Experiment:
         # Prepare circuit unitaries as QuTiP objects (including daggers)
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
 
-        # Apply initial circuit
-        rho_current = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
+        # Apply initial circuit  # type: ignore
 
         # Get number operators for population calculation
         n_cavity = self.operators["a_dag"] * self.operators["a"]
         n_field = self.operators["a_in_dag"] * self.operators["a_in"]
+
+        # Get measurement operators and sigma
+        measure_reset = self.operators["measure_reset"]
+        measure_reset_dag = self.operators["measure_reset_dag"]
         
         args = {"sigma": self.experimental_params.inverse_pulse_width}
         
         # Get number of qubits and generate all possible states
         n_qubits = self.experimental_params.n_qubits
-        all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
+        all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)] ################
         qubit_indices = list(range(0, n_qubits))
-        
-        # Check if we need to perform intermediate measurements
-        intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
-        perform_measurements = len(intermediate_meas_times) > 0
         
         # Storage for results
         all_times = []
-        state_prob_lists = {state: [] for state in all_states}
+        detection_list = []
         cavity_population_list = []
         field_population_list = []
         
-        if perform_measurements:
-            # Evolution with intermediate projective measurements
-            segment_starts = [t_start] + list(intermediate_meas_times)
-            segment_ends = list(intermediate_meas_times) + [t_end]
+        # Set up measurements
+        intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
+        segment_starts = [t_start] + list(intermediate_meas_times)
+        segment_ends = list(intermediate_meas_times) + [t_end]
+        
+        # Evolution
+        for seg_start, seg_end in zip(segment_starts, segment_ends):
+            # Number of points for this segment
+            seg_fraction = (seg_end - seg_start) / (t_end - t_start)
+            seg_n_points = max(2, int(n_points * seg_fraction))
+
+            # Apply initial circuit for measurement
+            rho = initial_unitary * rho * initial_unitary_dag
+
+            # Evolve segment
+            seg_times = np.linspace(seg_start, seg_end, seg_n_points)
+            result = solver.run(rho, tlist=seg_times, args=args)
             
-            for seg_start, seg_end in zip(segment_starts, segment_ends):
-                # Number of points for this segment
-                seg_fraction = (seg_end - seg_start) / (t_end - t_start)
-                seg_n_points = max(2, int(n_points * seg_fraction))
-                
-                # Evolve segment
-                seg_times = np.linspace(seg_start, seg_end, seg_n_points)
-                result = solver.run(rho_current, tlist=seg_times, args=args)
-                
-                # Extract data for this segment
-                for i, rho_t in enumerate(result.states):
-                    # Apply final circuit for measurement
-                    rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
-                    
-                    # Measure all qubit state probabilities
-                    for state in all_states:
-                        prob = self.prob(rho_meas, qubits=qubit_indices)
-                        state_prob_lists[state].append(prob)
-                    
-                    all_times.append(seg_times[i])
-                    
-                    # Calculate populations (take real part since expectation values should be real)
-                    cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
-                    field_pop = float(np.real(qt.expect(n_field, rho_t)))
-                    cavity_population_list.append(cavity_pop)
-                    field_population_list.append(field_pop)
-                
-                # Perform projective measurement at end of segment (if not the final segment)
-                if seg_end != t_end:
-                    rho_final = result.states[-1]
-                    
-                    # Undo final circuit for projection in computational basis
-                    rho_before_proj = final_unitary_dag * rho_final * final_unitary  # type: ignore
-                    
-                    # Get probabilities in basis for all states
-                    state_probs_basis = {}
-                    for state in all_states:
-                        state_probs_basis[state] = self.prob(rho_before_proj, qubits=qubit_indices)
-                    
-                    # Stochastic projection (weighted by probabilities)
-                    # For deterministic visualization, use weighted mixture
-                    rho_projected = None
-                    for state, prob_val in state_probs_basis.items():
-                        # Build projector for this state
-                        projector = None
-                        for q_idx, bit in enumerate(state, start=1):
-                            q_proj = self.get_qubit_projector(q_idx, bit)
-                            if projector is None:
-                                projector = q_proj
-                            else:
-                                projector = projector * q_proj
-                        
-                        # Add weighted projection
-                        projected_component = projector * rho_before_proj * projector  # type: ignore
-                        if rho_projected is None:
-                            rho_projected = prob_val * projected_component
-                        else:
-                            rho_projected = rho_projected + prob_val * projected_component  # type: ignore
-                    
-                    # Normalize
-                    rho_projected = rho_projected / rho_projected.tr()
-                    
-                    # Apply final circuit back
-                    rho_current = final_unitary * rho_projected * final_unitary_dag  # type: ignore
-        else:
-            # Continuous evolution without intermediate measurements
-            times = np.linspace(t_start, t_end, n_points)
-            result = solver.run(rho_current, tlist=times, args=args)
-            
+            # Extract data for this segment
             for i, rho_t in enumerate(result.states):
-                # Apply final circuit
-                rho_final = final_unitary * rho_t * final_unitary_dag  # type: ignore
 
-                # Measure all qubit state probabilities
-                for state in all_states:
-                    prob = float(math.prod(self.prob(rho_final, qubits=qubit_indices)))
-                    state_prob_lists[state].append(prob)
+                # Apply final circuit for measurement
+                rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
+                
+                # Measure detection
+                rho_reset = measure_reset * rho_meas * measure_reset_dag
+                prob_no_detect = jnp.real(rho_reset.tr())
 
-                all_times.append(times[i])
-
+                detection_list.append(1-prob_no_detect)
+                
+                all_times.append(seg_times[i])
+                
                 # Calculate populations (take real part since expectation values should be real)
                 cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
                 field_pop = float(np.real(qt.expect(n_field, rho_t)))
                 cavity_population_list.append(cavity_pop)
                 field_population_list.append(field_pop)
+
+            # Update system after actual measurement
+            rho = rho_reset #if prob_no_detect == 0 else rho_reset/prob_no_detect
         
         times = np.array(all_times)
         # Compute pulse shape using the same u0 function as visualization
         pulse_shape = np.array([float(u0(t, sigma=args["sigma"])) for t in times])
 
         # Build probabilities dictionary
-        probabilities = {f"prob_{state}": np.array(state_prob_lists[state]) for state in all_states}
+        probabilities = { "detection_probability" : np.array(detection_list)}
 
         # Import at runtime to avoid circular dependency
         from qsopt.utils.results import TimeEvolutionResults
@@ -914,6 +817,7 @@ class Experiment:
                 "gamma": self.experimental_params.photon_cavity_coupling,
                 "with_interaction": with_interaction,
                 "n_qubits": n_qubits,
+                "detection_criterion" : self.detection_metric.detection_name,
             },
         )
 
@@ -927,7 +831,6 @@ class Experiment:
         callback: Optional[OptimizationCallback] = None,
         initial_values: Optional[List[float]] = None,
         optimizer = None,
-        learning_rate: float = 0.5,
         renormalize_grad: Optional[Union[bool,float]] = False,
     ) -> OptimizationCallback:
         """
@@ -962,10 +865,10 @@ class Experiment:
         >>>
         >>> # With custom detection criterion
         >>> from qsopt.utils.loss_functions import DetectionMetric
-        >>> loss = DetectionMetric(metric=(lambda x: x), name='state list', detection_param=['11'])  # Detect |11⟩
+        >>> detection = DetectionMetric(metric=(lambda x: x), name='state list', detection_param=['11'])  # Detect |11⟩
         >>> callback = experiment.optimize_rotations(
         ...     num_steps=100,
-        ...     detection_metric=loss
+        ...     detection_metric=detection
         ... )
         """
         import jax
@@ -1002,9 +905,9 @@ class Experiment:
 
         params = jnp.array(initial_values, dtype=float)
 
-        # Create optimizer (default to SGD with lr=0.5 if not provided)
+        # Initialize optimizer (default to SGD with lr=0.5 if not provided)
         if optimizer is None:
-            optimizer = optax.sgd(learning_rate=learning_rate)
+            optimizer = optax.sgd(learning_rate=0.5)
         opt_state = optimizer.init(params)
 
         # Get initial state, solvers and detection metric
@@ -1184,6 +1087,111 @@ class Experiment:
     
 
         return callback
+
+    
+    def optimize_measurement_times(
+        self,
+        resolution: Optional[int] = None,
+        mode: str = "continuous",
+        batch_size: int = 1,
+        verbose: bool = True,
+        min_interval: Optional[float] = None,
+        max_interval: Optional[float] = None,
+    ) -> Dict[str, Union[np.ndarray, float, str, int]]:
+        """Optimize measurement interval via landscape search.
+
+        This helper mirrors :func:`qsopt.utils.landscape_analysis.compute_time_interval_landscape`
+        and applies the best-performing interval to the experiment configuration.
+        Current rotation angles are used automatically.
+
+        Args:
+            resolution: Number of interval samples to evaluate (minimum 2). When None,
+                falls back to defaults stored in ``TrainableParameters`` or 50.
+            mode: Interval sampling mode, ``'continuous'`` or ``'discrete'``.
+            batch_size: Number of uncertainty realizations per interval.
+            verbose: Print progress feedback when True.
+            min_interval: Optional lower bound on the interval sweep. Defaults to stored
+                measurement-interval settings when available.
+            max_interval: Optional upper bound on the interval sweep. Defaults to stored
+                measurement-interval settings when available.
+
+        Returns:
+            Dictionary returned by ``compute_time_interval_landscape`` with additional keys:
+                - ``'best_interval'``: Interval delivering the highest contrast.
+                - ``'best_contrast'``: Maximum contrast observed.
+                - ``'best_index'``: Index of the optimal interval in the sampled array.
+        """
+
+        from qsopt.utils.landscape_analysis import compute_time_interval_landscape
+
+        rotation_angles = self.rotation_angles
+        if len(rotation_angles) < 2:
+            raise ValueError("Need at least 2 rotation angle parameters")
+
+        theta_values = list(rotation_angles.values())
+        theta1 = theta_values[0]
+        theta2 = theta_values[1]
+
+        interval_defaults = self.trainable_params.get_measurement_interval_defaults()
+        default_resolution = interval_defaults.get("grid_resolution") if interval_defaults else None
+        resolved_resolution = resolution or default_resolution or 50
+        resolved_resolution = int(resolved_resolution)
+
+        resolved_min_interval = min_interval
+        resolved_max_interval = max_interval
+        if resolved_min_interval is None and interval_defaults:
+            resolved_min_interval = interval_defaults.get("grid_min")
+        if resolved_max_interval is None and interval_defaults:
+            resolved_max_interval = interval_defaults.get("grid_max")
+
+        if resolved_min_interval is not None:
+            resolved_min_interval = float(resolved_min_interval)
+        if resolved_max_interval is not None:
+            resolved_max_interval = float(resolved_max_interval)
+        if (
+            resolved_min_interval is not None
+            and resolved_max_interval is not None
+            and resolved_min_interval > resolved_max_interval
+        ):
+            resolved_min_interval, resolved_max_interval = (
+                resolved_max_interval,
+                resolved_min_interval,
+            )
+
+        results = compute_time_interval_landscape(
+            self.experimental_params,
+            theta1=theta1,
+            theta2=theta2,
+            resolution=resolved_resolution,
+            mode=mode,
+            batch_size=batch_size,
+            verbose=verbose,
+            min_interval=resolved_min_interval,
+            max_interval=resolved_max_interval,
+        )
+
+        contrast_vals_np = np.asarray(results["contrast_vals"], dtype=float)
+        interval_vals_np = np.asarray(results["interval_vals"], dtype=float)
+        best_index = int(np.argmax(contrast_vals_np))
+        best_interval = float(interval_vals_np[best_index])
+        best_contrast = float(contrast_vals_np[best_index])
+
+        # Apply best interval to experimental parameters
+        self.experimental_params.measurement.time_interval = best_interval
+        self.experimental_params.measurement.measurement_times = None
+        self.experimental_params._update_measurement_times()
+
+        # Keep trainable parameters in sync if measurement interval exists
+        for param in self.trainable_params.parameters:
+            if param.param_type == ParameterType.MEASUREMENT_TIME:
+                param.value = best_interval
+
+        results_with_best = dict(results)
+        results_with_best["best_interval"] = best_interval
+        results_with_best["best_contrast"] = best_contrast
+        results_with_best["best_index"] = best_index
+
+        return results_with_best
 
     def sweep_chi_gamma(
         self,

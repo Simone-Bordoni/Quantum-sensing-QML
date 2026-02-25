@@ -56,7 +56,7 @@ class TimeEvolutionResults:
     """
 
     times: np.ndarray
-    probabilities: Dict[str, np.ndarray]
+    probabilities: Optional[Dict[str, np.ndarray]]
     pulse_shape: Optional[np.ndarray] = None
     measurement_times: Optional[Union[List[float], np.ndarray]] = None
     cavity_population: Optional[np.ndarray] = None
@@ -69,12 +69,13 @@ class TimeEvolutionResults:
         lines.append(f"  Time interval: [{self.times.min():.3g}, {self.times.max():.3g}]")
         lines.append(f"  Number of time points: {len(self.times)}")
 
-        # Detect system type
-        prob_keys = sorted(self.probabilities.keys())
-        is_two_qubit = any("prob_" in k and len(k) == 7 for k in prob_keys)
-        system_type = "Two-qubit" if is_two_qubit else "Single-qubit"
+        n_qubits = self.metadata["n_qubits"]
+        detection_criterion = self.metadata["detection_criterion"]
+
+        # Detect system type     
+        system_type = f"{n_qubits} qubit"
         lines.append(f"  System type: {system_type}")
-        lines.append(f"  Available probabilities: {', '.join(prob_keys)}")
+        lines.append(f"  Detection Criterion: {detection_criterion}")
 
         # Pulse and measurements info
         lines.append(
@@ -99,7 +100,7 @@ class TimeEvolutionResults:
         """Return a detailed string representation for debugging."""
         return (
             f"TimeEvolutionResults(times=array({len(self.times)} points), "
-            f"probabilities={list(self.probabilities.keys())}, "
+            f"DetectionCriterion={self.probabilities.keys()}, "
             f"pulse={'available' if self.pulse_shape is not None else 'None'})"
         )
 

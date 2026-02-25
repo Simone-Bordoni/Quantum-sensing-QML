@@ -1255,32 +1255,11 @@ def plot_time_evolution(
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Plot probabilities
-    if is_two_qubit:
-        # Two-qubit plotting
-        linestyles = {"prob_00": "-", "prob_01": "--", "prob_10": "-.", "prob_11": ":"}
-        labels = {
-            "prob_00": r"$P_{00}$",
-            "prob_01": r"$P_{01}$",
-            "prob_10": r"$P_{10}$",
-            "prob_11": r"$P_{11}$",
-        }
-
-        for key in ["prob_00", "prob_01", "prob_10", "prob_11"]:
-            if key in probabilities:
-                ax.plot(
-                    times,
-                    probabilities[key],
-                    label=labels[key],
-                    linestyle=linestyles[key],
-                    linewidth=2,
-                )
-    else:
-        # Single-qubit plotting
-        if "prob_0" in probabilities:
-            ax.plot(times, probabilities["prob_0"], label="P(0)", linewidth=2, linestyle="-")
-        if "prob_1" in probabilities:
-            ax.plot(times, probabilities["prob_1"], label="P(1)", linewidth=2, linestyle="--")
+    # Plot detection probabilities
+    if "detection_probability" in probabilities:
+        ax.plot(times, probabilities["detection_probability"], label="P_detect", linewidth=2, linestyle="-")
+    if "nondetection_probability" in probabilities:
+        ax.plot(times, probabilities["nondetection_probability"], label="P_nondetect", linewidth=2, linestyle="--")
 
     # Add cavity population on same y-axis if requested
     if show_cavity_population and cavity_population is not None:
