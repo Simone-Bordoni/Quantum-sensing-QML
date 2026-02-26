@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import qutip as qt
 import math
+import time as t
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
@@ -940,6 +941,9 @@ class Experiment:
         import jax
         import optax
 
+        self.debug_times = []
+        self.debug_times.append({ 'opt_start' : t.time()})   ################################
+
         # Use provided callback or default
         if callback is None:
             callback = self.callback
@@ -984,6 +988,8 @@ class Experiment:
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
         detection_metric = self.detection_metric
+
+        self.debug_times.append({ 'define_obj_func' : t.time()})   ################################
 
         # Define objective function
         def objective_function(opt_params):
@@ -1037,6 +1043,8 @@ class Experiment:
             # Return negative for minimization
             return loss, (detect_with, detect_without, contrast)
 
+        self.debug_times.append({ 'verbose_pretrain' : t.time()})   ################################
+
         # Get detection description for verbose output
         detection_desc = detection_metric.detection_name
 
@@ -1080,11 +1088,18 @@ class Experiment:
         step = 0
         grad_norm = float("inf")
 
+        self.debug_times.append({ 'start_training' : t.time()})   ################################
+
         for step in range(num_steps):
+
+            self.debug_times.append({ f'compute_gradients{step}' : t.time()})   ################################
+
             # Compute gradients using JAX autodiff
             grads, (prob_with, prob_without, sensing_contrast) = jax.grad(
                 objective_function, has_aux=True
             )(params)
+
+            self.debug_times.append({ f'callback_tracking{step}' : t.time()})   ################################
 
             # Track best parameters
             if sensing_contrast > best_contrast:
@@ -1100,12 +1115,16 @@ class Experiment:
                 contrast=float(sensing_contrast),
             )
 
-            #Renormalize gradient to be between [-1,+1]
+            self.debug_times.append({ f'start_training{step}' : t.time()})   ################################
+
+            #Check for gradient renormalization 
             grad_norm = float(jnp.linalg.norm(grads))
             if renormalize_grad != False:
                 new_norm = jnp.tanh(grad_norm/renormalize_grad) * renormalize_grad
                 grads = grads * new_norm/grad_norm
                 grad_norm = new_norm
+                
+            self.debug_times.append({ f'verbose_stepping{step}' : t.time()})   ################################
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
@@ -1122,6 +1141,9 @@ class Experiment:
                 output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}"])
                 print("".join(output_parts))
 
+            
+            self.debug_times.append({ f'update_params{step}' : t.time()})   ################################
+
             # Convergence check
             if grad_norm < tolerance:
                 break
@@ -1129,6 +1151,9 @@ class Experiment:
             # Update parameters
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
+
+
+        self.debug_times.append({ 'after_training' : t.time()})   ################################
 
         # Ensure best parameters are set at the end
         best_values = np.asarray(best_params, dtype=float)
@@ -1151,6 +1176,16 @@ class Experiment:
             converged=float(grad_norm) < tolerance, final_grad_norm=float(grad_norm)
         )
 
+        self.debug_times.append({ 'end' : t.time()})   ################################
+
+        temp = self.debug_times[0]
+
+        for time in self.debug_times[1:]:
+            
+            print('{:10}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
+
+
+            temp = time
 
         return callback
 
