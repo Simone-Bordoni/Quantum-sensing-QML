@@ -1,0 +1,275 @@
+TIMELOG interaction -> no interaction   (55min):
+
+Configuration:
+    Max iterations: 5
+    Batch size: 1
+    Convergence tolerance: 1.00e-08
+    Detection criterion: any excited
+    Trainable parameters: 4 (2 initial circuit + 2 final circuit)
+    Initial parameter values:
+        param0. setup_=1.047 rad (60.0°)
+        param1. setup_=0.785 rad (45.0°)
+        param2. reset_=-1.047 rad (-60.0°)
+        param3. reset_=-3.142 rad (-180.0°)
+===========================================================================
+Step  setup_0     setup_1     reset_0     reset_1     Contrast    Grad Norm
+---------------------------------------------------------------------------
+0     1.047198    0.785398    -1.047198   -3.141593   -0.000302   3.26e-02    
+===========================================================================
+Final gradient norm: 5.97e-02
+Best sensing contrast: 0.003368
+Best parameters:
+    param0. setup_[name]=1.041 rad (59.6°)
+    param1. setup_[name]=0.839 rad (48.1°)
+    param2. reset_[name]=-1.045 rad (-59.9°)
+    param3. reset_[name]=-3.081 rad (-176.5°)
+
+
+===========================================================================
+
+
+opt_start                        :  0.014786
+define_obj_func                  :  0.000003
+verbose_pretrain                 :  0.019645
+start_training                   :  0.000006
+compute_gradients0               :  0.000643
+setup_circuits0                  :  0.854562
+setup_measurements0              :  0.000323
+setup_simulations0               :  0.000004
+start 1st simulation0            :  0.000007
+load_cached_parameters0          :  0.000108
+start_simulation0                :  0.000005
+measurement0:initialcircuit_0    :  0.022363
+measurement0:solver_0            : 41.301603
+measurement0:finalcircuit_0      :  0.000987
+measurement0:measure_0           :  0.073562
+measurement0:probupdate_0        :  0.012330
+measurement1:initialcircuit_0    :  0.000958
+measurement1:solver_0            : 40.550553
+measurement1:finalcircuit_0      :  0.001307
+measurement1:measure_0           :  0.004067
+measurement1:probupdate_0        :  0.012314
+measurement2:initialcircuit_0    :  0.001108
+measurement2:solver_0            : 41.407541
+measurement2:finalcircuit_0      :  0.000966
+measurement2:measure_0           :  0.004227
+measurement2:probupdate_0        :  0.000560
+returning_simulation0            :  0.045065
+start 2nd simulation0            :  0.000008
+load_cached_parameters0          :  0.000157
+start_simulation0                :  0.000007
+measurement0:initialcircuit_0    :  0.001048
+measurement0:solver_0            :  1.215971
+measurement0:finalcircuit_0      :  0.001128
+measurement0:measure_0           :  0.005772
+measurement0:probupdate_0        :  0.000674
+measurement1:initialcircuit_0    :  0.001059
+measurement1:solver_0            :  0.014547
+measurement1:finalcircuit_0      :  0.001750
+measurement1:measure_0           :  0.006102
+measurement1:probupdate_0        :  0.000445
+measurement2:initialcircuit_0    :  0.000928
+measurement2:solver_0            :  0.015294
+measurement2:finalcircuit_0      :  0.001774
+measurement2:measure_0           :  0.004505
+measurement2:probupdate_0        :  0.000742
+returning_simulation0            :  0.002859
+batch_averaging0                 :  0.041517
+exit_objective0                  :571.775473
+callback_tracking0               :  0.025931
+start_training0                  :  0.020661
+verbose_stepping0                :  0.000149
+update_params0                   :  0.033114
+compute_gradients1               :  0.000331
+setup_circuits1                  :  0.035295
+setup_measurements1              :  0.000391
+setup_simulations1               :  0.000005
+start 1st simulation1            :  0.000010
+load_cached_parameters1          :  0.000156
+start_simulation1                :  0.000008
+measurement0:initialcircuit_1    :  0.001324
+measurement0:solver_1            : 43.078859
+measurement0:finalcircuit_1      :  0.000943
+measurement0:measure_1           :  0.004740
+measurement0:probupdate_1        :  0.001087
+measurement1:initialcircuit_1    :  0.001191
+measurement1:solver_1            : 43.953251
+measurement1:finalcircuit_1      :  0.001164
+measurement1:measure_1           :  0.005446
+measurement1:probupdate_1        :  0.000502
+measurement2:initialcircuit_1    :  0.001064
+measurement2:solver_1            : 42.974180
+measurement2:finalcircuit_1      :  0.001196
+measurement2:measure_1           :  0.005239
+measurement2:probupdate_1        :  0.000554
+returning_simulation1            :  0.003451
+start 2nd simulation1            :  0.000007
+load_cached_parameters1          :  0.000138
+start_simulation1                :  0.000007
+measurement0:initialcircuit_1    :  0.001097
+measurement0:solver_1            :  0.018122
+measurement0:finalcircuit_1      :  0.001131
+measurement0:measure_1           :  0.004950
+measurement0:probupdate_1        :  0.000534
+measurement1:initialcircuit_1    :  0.001122
+measurement1:solver_1            :  0.016425
+measurement1:finalcircuit_1      :  0.001172
+measurement1:measure_1           :  0.005471
+measurement1:probupdate_1        :  0.000656
+measurement2:initialcircuit_1    :  0.001250
+measurement2:solver_1            :  0.019060
+measurement2:finalcircuit_1      :  0.001394
+measurement2:measure_1           :  0.005249
+measurement2:probupdate_1        :  0.000599
+returning_simulation1            :  0.004018
+batch_averaging1                 :  0.002265
+exit_objective1                  :604.098425
+callback_tracking1               :  0.012121
+start_training1                  :  0.000048
+verbose_stepping1                :  0.000003
+update_params1                   :  0.000311
+compute_gradients2               :  0.000260
+setup_circuits2                  :  0.033837
+setup_measurements2              :  0.000356
+setup_simulations2               :  0.000004
+start 1st simulation2            :  0.000006
+load_cached_parameters2          :  0.000129
+start_simulation2                :  0.000006
+measurement0:initialcircuit_2    :  0.001161
+measurement0:solver_2            : 44.270374
+measurement0:finalcircuit_2      :  0.001296
+measurement0:measure_2           :  0.005597
+measurement0:probupdate_2        :  0.000949
+measurement1:initialcircuit_2    :  0.001311
+measurement1:solver_2            : 44.474121
+measurement1:finalcircuit_2      :  0.001127
+measurement1:measure_2           :  0.010068
+measurement1:probupdate_2        :  0.000503
+measurement2:initialcircuit_2    :  0.001068
+measurement2:solver_2            : 37.574446
+measurement2:finalcircuit_2      :  0.000874
+measurement2:measure_2           :  0.004112
+measurement2:probupdate_2        :  0.000430
+returning_simulation2            :  0.002551
+start 2nd simulation2            :  0.000005
+load_cached_parameters2          :  0.000112
+start_simulation2                :  0.000005
+measurement0:initialcircuit_2    :  0.000892
+measurement0:solver_2            :  0.017335
+measurement0:finalcircuit_2      :  0.000959
+measurement0:measure_2           :  0.004131
+measurement0:probupdate_2        :  0.000426
+measurement1:initialcircuit_2    :  0.000881
+measurement1:solver_2            :  0.013887
+measurement1:finalcircuit_2      :  0.000955
+measurement1:measure_2           :  0.004157
+measurement1:probupdate_2        :  0.000456
+measurement2:initialcircuit_2    :  0.000959
+measurement2:solver_2            :  0.014091
+measurement2:finalcircuit_2      :  0.000959
+measurement2:measure_2           :  0.004241
+measurement2:probupdate_2        :  0.000467
+returning_simulation2            :  0.002878
+batch_averaging2                 :  0.001534
+exit_objective2                  :426.218618
+callback_tracking2               :  0.000765
+start_training2                  :  0.000032
+verbose_stepping2                :  0.000001
+update_params2                   :  0.000217
+compute_gradients3               :  0.000199
+setup_circuits3                  :  0.023358
+setup_measurements3              :  0.000282
+setup_simulations3               :  0.000003
+start 1st simulation3            :  0.000005
+load_cached_parameters3          :  0.000102
+start_simulation3                :  0.000005
+measurement0:initialcircuit_3    :  0.000903
+measurement0:solver_3            : 27.225670
+measurement0:finalcircuit_3      :  0.000916
+measurement0:measure_3           :  0.003943
+measurement0:probupdate_3        :  0.000443
+measurement1:initialcircuit_3    :  0.000930
+measurement1:solver_3            : 26.368167
+measurement1:finalcircuit_3      :  0.001183
+measurement1:measure_3           :  0.005083
+measurement1:probupdate_3        :  0.000552
+measurement2:initialcircuit_3    :  0.001534
+measurement2:solver_3            : 27.521110
+measurement2:finalcircuit_3      :  0.000943
+measurement2:measure_3           :  0.004042
+measurement2:probupdate_3        :  0.000680
+returning_simulation3            :  0.002659
+start 2nd simulation3            :  0.000006
+load_cached_parameters3          :  0.000116
+start_simulation3                :  0.000005
+measurement0:initialcircuit_3    :  0.000923
+measurement0:solver_3            :  0.013052
+measurement0:finalcircuit_3      :  0.000907
+measurement0:measure_3           :  0.004041
+measurement0:probupdate_3        :  0.000454
+measurement1:initialcircuit_3    :  0.000933
+measurement1:solver_3            :  0.014202
+measurement1:finalcircuit_3      :  0.000966
+measurement1:measure_3           :  0.004130
+measurement1:probupdate_3        :  0.000448
+measurement2:initialcircuit_3    :  0.000954
+measurement2:solver_3            :  0.015993
+measurement2:finalcircuit_3      :  0.001903
+measurement2:measure_3           :  0.004384
+measurement2:probupdate_3        :  0.000478
+returning_simulation3            :  0.002833
+batch_averaging3                 :  0.001517
+exit_objective3                  :553.445049
+callback_tracking3               :  0.000966
+start_training3                  :  0.000044
+verbose_stepping3                :  0.000002
+update_params3                   :  0.000441
+compute_gradients4               :  0.000417
+setup_circuits4                  :  0.044867
+setup_measurements4              :  0.000587
+setup_simulations4               :  0.000006
+start 1st simulation4            :  0.000014
+load_cached_parameters4          :  0.000191
+start_simulation4                :  0.000009
+measurement0:initialcircuit_4    :  0.002157
+measurement0:solver_4            : 46.881687
+measurement0:finalcircuit_4      :  0.001224
+measurement0:measure_4           :  0.004839
+measurement0:probupdate_4        :  0.000529
+measurement1:initialcircuit_4    :  0.001351
+measurement1:solver_4            : 46.631145
+measurement1:finalcircuit_4      :  0.001196
+measurement1:measure_4           :  0.005310
+measurement1:probupdate_4        :  0.000767
+measurement2:initialcircuit_4    :  0.010125
+measurement2:solver_4            : 46.297827
+measurement2:finalcircuit_4      :  0.001326
+measurement2:measure_4           :  0.005276
+measurement2:probupdate_4        :  0.000550
+returning_simulation4            :  0.003769
+start 2nd simulation4            :  0.000010
+load_cached_parameters4          :  0.000173
+start_simulation4                :  0.000012
+measurement0:initialcircuit_4    :  0.001422
+measurement0:solver_4            :  0.021688
+measurement0:finalcircuit_4      :  0.001327
+measurement0:measure_4           :  0.005052
+measurement0:probupdate_4        :  0.000547
+measurement1:initialcircuit_4    :  0.001204
+measurement1:solver_4            :  0.020794
+measurement1:finalcircuit_4      :  0.001460
+measurement1:measure_4           :  0.006491
+measurement1:probupdate_4        :  0.000700
+measurement2:initialcircuit_4    :  0.001547
+measurement2:solver_4            :  0.020218
+measurement2:finalcircuit_4      :  0.001219
+measurement2:measure_4           :  0.005284
+measurement2:probupdate_4        :  0.000577
+returning_simulation4            :  0.003440
+batch_averaging4                 :  0.001829
+exit_objective4                  :636.492055
+callback_tracking4               :  0.001240
+start_training4                  :  0.000071
+verbose_stepping4                :  0.000002
+update_params4                   :  0.000438
+after_training                   :  0.000777

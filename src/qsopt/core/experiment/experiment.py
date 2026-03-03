@@ -8,10 +8,13 @@ This class handles quantum sensing protocols with n qubits coupled to a shared c
 
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from functools import partial
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
+import qutip_jax
 import math
 import time as t
 
@@ -46,7 +49,7 @@ from .quantum_utils import (
 # Suppress Diffrax complex dtype warning
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
 
-
+@jax.tree_util.register_pytree_node_class
 class Experiment:
     """
     N-qubit quantum sensing experiment.
@@ -76,6 +79,7 @@ class Experiment:
         initial_circuit: Optional[QuantumCircuit] = None,
         final_circuit: Optional[QuantumCircuit] = None,
         detection_metric: Optional[DetectionMetric] = None,
+        time_trainable: bool = False
     ):
         """
         Initialize n-qubit experiment.
@@ -125,6 +129,11 @@ class Experiment:
         # Callback
         self.callback = OptimizationCallback(save_every=1, save_best=True)
 
+        # Define trainable parameters for pytree
+        self._dynamic_fields = ("initial_circuit","final_circuit")
+        if time_trainable == True:
+            self._dynamic_fields = self._dynamic_fields + ("experimental_params",) #experimental params is not yet defined as a pytree
+
         # Initialize quantum objects
         self.__post_init__()
 
@@ -133,6 +142,27 @@ class Experiment:
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_initial_state()
+
+    # Pytree construction from class for jax
+    def tree_flatten(self):
+        children = tuple(getattr(self, name) for name in self._dynamic_fields)
+        aux_data = {k: v for k, v in self.__dict__.items()
+                    if k not in self._dynamic_fields}
+        return children, aux_data
+
+    # Class reconstruction from pytree for jax
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = cls.__new__(cls)
+
+        # restore static data first
+        obj.__dict__.update(aux_data)
+
+        # restore dynamic fields
+        for name, value in zip(obj._dynamic_fields, children):
+            setattr(obj, name, value)
+
+        return obj
 
     @property
     def n_qubits(self) -> int:
@@ -493,6 +523,7 @@ class Experiment:
 
         return initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag
 
+    @partial(jax.jit, static_argnames=["solver","args"])
     def simulation(
         self,
         solver: qt.MESolver,
@@ -515,6 +546,11 @@ class Experiment:
         Returns:
             Detection probability as JAX array
         """
+        if  not hasattr(self,'debug_times'):          #####################################
+            self.debug_times = []
+            self.step=0
+        self.debug_times.append({ f'load_cached_parameters{self.step}' : t.time()})   ################################
+
         if args is None:
             args = {"sigma": self.experimental_params.inverse_pulse_width}
 
@@ -525,7 +561,7 @@ class Experiment:
         measure_reset = self.operators["measure_reset"]
         measure_reset_dag = self.operators["measure_reset_dag"]
 
-        measurement_array = np.asarray(measurements, dtype=float)
+        measurement_array = jnp.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
 
@@ -542,20 +578,47 @@ class Experiment:
         # Track cumulative probability of non-detection
         prob = jnp.array(1.0)
 
+        self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
+        n_meas=0
+
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
 
+            self.debug_times.append({ f'measurement{n_meas}:initialcircuit_{self.step}' : t.time()})   ################################
+
+
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
+
+            self.debug_times.append({ f'measurement{n_meas}:solver_{self.step}' : t.time()})   ################################
+
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
+
+            self.debug_times.append({ f'measurement{n_meas}:finalcircuit_{self.step}' : t.time()})   ################################
+
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
+
+            self.debug_times.append({ f'measurement{n_meas}:measure_{self.step}' : t.time()})   ################################
 
             # Measure probability of non detection and reset the qubit
             rho_reset = measure_reset * rho_final * measure_reset_dag
             prob_no_detect = jnp.real(rho_reset.tr())
-            rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+            rho_current = jax.lax.cond(
+                jnp.isclose(prob_no_detect, 0.0),
+                lambda _: rho_reset,
+                lambda _: rho_reset / prob_no_detect,
+                operand=None
+            )
+
+            self.debug_times.append({ f'measurement{n_meas}:probupdate_{self.step}' : t.time()})   ################################
 
             prob = prob * prob_no_detect
+
+
+            n_meas+=1
+
+        self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
+
 
         return 1-prob
 
@@ -610,11 +673,14 @@ class Experiment:
 
         for measurement_times in measurement_sequences:
 
+            print(measurement_times)
+            print(jnp.array(measurement_times))
+
             # Simulation with photon interaction
             prob_with = self.simulation(
                 solver=solver_with,
                 rho=rho0,
-                measurements=measurement_times,
+                measurements=jnp.array(measurement_times),
                 precomputed_unitaries=circuit_unitaries,
             )
             prob_with_list.append(prob_with)
@@ -623,7 +689,7 @@ class Experiment:
             prob_without = self.simulation(
                 solver=solver_without,
                 rho=rho0,
-                measurements=measurement_times,
+                measurements=jnp.array(measurement_times),
                 precomputed_unitaries=circuit_unitaries,
             )
             prob_without_list.append(prob_without)
@@ -992,14 +1058,19 @@ class Experiment:
         self.debug_times.append({ 'define_obj_func' : t.time()})   ################################
 
         # Define objective function
+        @jax.jit
         def objective_function(opt_params):
             """Negative sensing contrast for minimization with batch averaging."""
+
+            self.debug_times.append({ f'setup_circuits{self.step}' : t.time()})   ################################
 
             self.initial_circuit.set_trainable_parameters(opt_params[:n_initial])
             self.final_circuit.set_trainable_parameters(opt_params[n_initial:])
 
             # Compute circuit unitaries
             circuit_unitaries = self._prepare_circuit_unitaries()
+
+            self.debug_times.append({ f'setup_measurements{self.step}' : t.time()})   ################################
 
             # Get measurement times batch
             measurement_times_batch = (
@@ -1013,17 +1084,12 @@ class Experiment:
             detect_with_batch = jnp.zeros(batch_size)
             detect_without_batch = jnp.zeros(batch_size)
 
+            self.debug_times.append({ f'setup_simulations{self.step}' : t.time()})   ################################
+
             for i in range(batch_size):
                 measurement_times = measurement_times_batch[i]
 
-                detect_with_batch = detect_with_batch.at[i].set(
-                    self.simulation(
-                        solver_with,
-                        rho0,
-                        measurement_times,
-                        precomputed_unitaries=circuit_unitaries
-                    )
-                )
+                self.debug_times.append({ f'start 1st simulation{self.step}' : t.time()})   ################################
 
                 detect_without_batch = detect_without_batch.at[i].set(
                     self.simulation(
@@ -1034,14 +1100,33 @@ class Experiment:
                     )
                 )
 
+                self.debug_times.append({ f'start 2nd simulation{self.step}' : t.time()})   ################################
+
+                detect_with_batch = detect_with_batch.at[i].set(
+                    self.simulation(
+                        solver_with,
+                        rho0,
+                        measurement_times,
+                        precomputed_unitaries=circuit_unitaries
+                    )
+                )
+
+            self.debug_times.append({ f'batch_averaging{self.step}' : t.time()})   ################################
+
             # Average over batch
             detect_with = jnp.mean(detect_with_batch)
             detect_without = jnp.mean(detect_without_batch)
             contrast = detect_with - detect_without
             loss = detection_metric.metric(detect_with, detect_without)
 
+            self.debug_times.append({ f'exit_objective{self.step}' : t.time()})   ################################
+
             # Return negative for minimization
             return loss, (detect_with, detect_without, contrast)
+
+        jitted_value_grad = jax.jit(jax.value_and_grad(
+                objective_function, has_aux=True
+            ))
 
         self.debug_times.append({ 'verbose_pretrain' : t.time()})   ################################
 
@@ -1092,13 +1177,13 @@ class Experiment:
 
         for step in range(num_steps):
 
+            self.step=step      ###################################
+
             self.debug_times.append({ f'compute_gradients{step}' : t.time()})   ################################
 
             # Compute gradients using JAX autodiff
-            grads, (prob_with, prob_without, sensing_contrast) = jax.grad(
-                objective_function, has_aux=True
-            )(params)
-
+            #(loss, (prob_with, prob_without, sensing_contrast)), grads = jax.value_and_grad(objective_function, has_aux=True)(params)
+            (loss, (prob_with, prob_without, sensing_contrast)), grads = jitted_value_grad(params)
             self.debug_times.append({ f'callback_tracking{step}' : t.time()})   ################################
 
             # Track best parameters
@@ -1113,6 +1198,7 @@ class Experiment:
                 prob_with=float(prob_with),
                 prob_without=float(prob_without),
                 contrast=float(sensing_contrast),
+                loss=float(loss),
             )
 
             self.debug_times.append({ f'start_training{step}' : t.time()})   ################################
@@ -1178,16 +1264,18 @@ class Experiment:
 
         self.debug_times.append({ 'end' : t.time()})   ################################
 
-        temp = self.debug_times[0]
+        temp = self.debug_times[0]        ####################################
 
-        for time in self.debug_times[1:]:
-            
-            print('{:10}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
+        print('\n\n'+'='*75 + '\n\n')               ###################################
 
+        for time in self.debug_times[1:]:                    ###############################
+                                        ######################
+            print('{:33}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
+                                        ######################
 
-            temp = time
+            temp = time                           ###########################################
 
-        return callback
+        return callback                     
 
 
     def optimize_measurement_times(

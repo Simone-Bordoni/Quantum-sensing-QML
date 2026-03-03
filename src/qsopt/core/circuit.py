@@ -30,12 +30,14 @@ Example:
 """
 
 from typing import List, Union, Optional
+import jax
 import jax.numpy as jnp
 import qutip as qt
+import qutip_jax
 from .gates import Gate
 import math
 
-
+@jax.tree_util.register_pytree_node_class
 class QuantumCircuit:
     """
     Quantum circuit with JAX-compatible gates.
@@ -59,6 +61,28 @@ class QuantumCircuit:
         self._cached_unitary_jax: Optional[jnp.ndarray] = None
         self._cached_unitary_qutip: Optional[qt.Qobj] = None
         self._cached_params: Optional[List] = None
+        self._dynamic_fields = ("_gates", "_cached_unitary_jax", "_cached_unitary_qutip", "_cached_params")
+
+    # Pytree construction from class for jax
+    def tree_flatten(self):
+        children = tuple(getattr(self, name) for name in self._dynamic_fields)
+        aux_data = {k: v for k, v in self.__dict__.items()
+                    if k not in self._dynamic_fields}
+        return children, aux_data
+
+    # Class reconstruction from pytree for jax
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = cls.__new__(cls)
+
+        # restore static data first
+        obj.__dict__.update(aux_data)
+
+        # restore dynamic fields
+        for name, value in zip(obj._dynamic_fields, children):
+            setattr(obj, name, value)
+
+        return obj
 
     def add_gate(self, gate: Gate) -> None:
         """

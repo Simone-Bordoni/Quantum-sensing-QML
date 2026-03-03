@@ -19,13 +19,14 @@ class OptimizationCallback:
 
     This callback tracks:
     - Detection probabilities (with and without photon)
-    - Sensing contrast (optimization objective)
+    - Loss value (optimization objective)
+    - Sensing contrast
     - Trainable parameters at each epoch
-    - Best parameters found (maximizing contrast)
+    - Best parameters found (minimizing loss)
 
     Attributes:
         save_every (int): Save history every N epochs
-        save_best (bool): Track best parameters based on contrast
+        save_best (bool): Track best parameters based on loss
         epoch (int): Current epoch number
         history (Dict): Complete optimization history
         best_trainable_params (Optional): Best trainable parameters found
@@ -47,6 +48,7 @@ class OptimizationCallback:
         # Initialize history containers
         self.history: Dict[str, List[Any]] = {
             "epochs": [],
+            "loss": [],
             "contrast": [],
             "prob_with": [],
             "prob_without": [],
@@ -56,6 +58,7 @@ class OptimizationCallback:
         # Best tracking (maximize contrast)
         self.best_trainable_params: Optional[Any] = None
         self.best_contrast: float = -float("inf")
+        self.best_loss: float = float("inf")
         self.best_metrics: Optional[Dict[str, float]] = None
 
         # Optimization completion info
@@ -69,6 +72,7 @@ class OptimizationCallback:
         prob_with: float = 0.0,
         prob_without: float = 0.0,
         contrast: float = 0.0,
+        loss: float = 0.0,
         trainable_params: Optional[tuple] = None,  # Backward compatibility
         **kwargs
     ) -> None:
@@ -99,6 +103,7 @@ class OptimizationCallback:
         # Save history every N epochs
         if self.epoch % self.save_every == 0:
             self.history["epochs"].append(self.epoch)
+            self.history["loss"].append(float(loss))
             self.history["contrast"].append(float(contrast))
             self.history["prob_with"].append(float(prob_with))
             self.history["prob_without"].append(float(prob_without))
@@ -106,11 +111,13 @@ class OptimizationCallback:
             self.history["trainable_params"].append(copy.deepcopy(trainable_params))
 
         # Track best parameters if enabled (maximize contrast)
-        if self.save_best and contrast > self.best_contrast:
+        if self.save_best and loss > self.best_loss:
+            self.best_loss = float(loss)
             self.best_contrast = float(contrast)
             self.best_trainable_params = copy.deepcopy(trainable_params)
             self.best_metrics = {
                 "epoch": self.epoch,
+                "loss": float(loss),
                 "contrast": float(contrast),
                 "prob_with": float(prob_with),
                 "prob_without": float(prob_without),
@@ -131,7 +138,7 @@ class OptimizationCallback:
         Get the metrics at the best parameters.
 
         Returns:
-            Dictionary containing epoch, contrast, and probabilities
+            Dictionary containing epoch, loss, contrast, and probabilities
             at the best parameters, or None if no best parameters found
         """
         return self.best_metrics
@@ -141,7 +148,7 @@ class OptimizationCallback:
         Get the complete optimization history.
 
         Returns:
-            Dictionary with lists of epochs, contrasts,
+            Dictionary with lists of epochs, losses, contrasts,
             probabilities, and trainable parameters
         """
         return self.history
@@ -191,6 +198,7 @@ class OptimizationCallback:
         # Prepare data for saving
         save_dict = {
             "epochs": np.array(self.history["epochs"]),
+            "loss": np.array(self.history["loss"]),
             "contrast": np.array(self.history["contrast"]),
             "prob_with": np.array(self.history["prob_with"]),
             "prob_without": np.array(self.history["prob_without"]),
@@ -202,6 +210,7 @@ class OptimizationCallback:
             initial_best, final_best = self.best_trainable_params
             all_best = [float(p) for p in initial_best] + [float(p) for p in final_best]
             save_dict["best_parameters"] = np.array(all_best)
+            save_dict["best_loss"] = np.array(self.best_loss)
             save_dict["best_contrast"] = np.array(self.best_contrast)
 
             if self.best_metrics is not None:
@@ -243,6 +252,7 @@ class OptimizationCallback:
         self.epoch = 0
         self.history = {
             "epochs": [],
+            "loss": [],
             "contrast": [],
             "prob_with": [],
             "prob_without": [],
@@ -250,6 +260,7 @@ class OptimizationCallback:
         }
         self.best_trainable_params = None
         self.best_contrast = -float("inf")
+        self.best_loss = float("inf")
         self.best_metrics = None
         self.converged = False
         self.final_grad_norm = None
@@ -305,6 +316,7 @@ class OptimizationCallback:
             lines.append("  Detection Probabilities:")
             lines.append(f"     P(with photon):    {self.best_metrics['prob_with']:.6f}")
             lines.append(f"     P(without photon): {self.best_metrics['prob_without']:.6f}")
+            lines.append(f"     Loss:              {self.best_metrics['loss']:.6f}")
             lines.append(f"     Contrast:          {self.best_metrics['contrast']:.6f}")
 
         return "\n".join(lines)

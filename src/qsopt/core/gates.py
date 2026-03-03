@@ -31,8 +31,10 @@ from typing import Optional, Tuple, Union, List
 import jax
 import jax.numpy as jnp
 import qutip as qt
+import qutip_jax
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass
 class GateParameter:
     """
@@ -46,6 +48,7 @@ class GateParameter:
     value: jnp.ndarray
     trainable: bool = True
     name: Optional[str] = '[nome]'
+    _dynamic_fields = ("value",)
 
     def get(self) -> jnp.ndarray:
         """Get parameter value with appropriate gradient handling."""
@@ -65,6 +68,27 @@ class GateParameter:
     def disable_gradients(self) -> None:
         """Disable gradient tracing for this parameter."""
         self.trainable = False
+
+    # Pytree construction from class for jax
+    def tree_flatten(self):
+        children = tuple(getattr(self, name) for name in self._dynamic_fields)
+        aux_data = {k: v for k, v in self.__dict__.items()
+                    if k not in self._dynamic_fields}
+        return children, aux_data
+
+    # Class reconstruction from pytree for jax
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = cls.__new__(cls)
+
+        # restore static data first
+        obj.__dict__.update(aux_data)
+
+        # restore dynamic fields
+        for name, value in zip(obj._dynamic_fields, children):
+            setattr(obj, name, value)
+
+        return obj
 
 
 class Gate(ABC):
@@ -86,6 +110,34 @@ class Gate(ABC):
         self.name = name
         self.target: Union[int, Tuple[int, ...]] = target
         self._parameter: Optional[GateParameter] = None
+        self._dynamic_fields = ("_parameter",)
+
+    # Making every
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        jax.tree_util.register_pytree_node_class(cls)
+
+
+    # Pytree construction from class for jax
+    def tree_flatten(self):
+        children = tuple(getattr(self, name) for name in self._dynamic_fields)
+        aux_data = {k: v for k, v in self.__dict__.items()
+                    if k not in self._dynamic_fields}
+        return children, aux_data
+
+    # Class reconstruction from pytree for jax
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        obj = cls.__new__(cls)
+
+        # restore static data first
+        obj.__dict__.update(aux_data)
+
+        # restore dynamic fields
+        for name, value in zip(obj._dynamic_fields, children):
+            setattr(obj, name, value)
+
+        return obj
 
 
 
