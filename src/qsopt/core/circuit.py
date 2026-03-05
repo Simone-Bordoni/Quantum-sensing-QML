@@ -29,7 +29,7 @@ Example:
     >>> params = circuit.get_trainable_parameters()
 """
 
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Callable
 import jax
 import jax.numpy as jnp
 import qutip as qt
@@ -227,6 +227,51 @@ class QuantumCircuit:
             return self._cached_unitary_qutip
         return U_jax
 
+    @jax.jit
+    def get_parametric_circuit(self) -> Callable[List[jnp.ndarray, jnp.ndarray]]:
+        """
+        Compute the circuit unitary from a set of parameters
+
+        Returns:
+            Circuit unitary matrix as QuTiP Qobj or JAX array
+        """
+
+        # Compute unitary
+        if len(self._gates) == 0:
+            # Identity for empty circuit
+            dim = 2 ** self.n_qubits
+            identity = jnp.eye(dim, dtype=jnp.complex128)
+            return identity
+
+        # Build unitary by applying gates in sequence
+        dim = 2 ** self.n_qubits
+        U_jax = jnp.eye(dim, dtype=jnp.complex128)
+
+        for gate in self._gates:
+            # Get gate matrix as JAX array directly
+            gate_jax = gate.matrix(qutip=False)
+
+            # Expand to full Hilbert space using JAX operations
+            if self.n_qubits == 1:
+                # Single qubit circuit
+                expanded_jax = gate_jax
+            else:
+                # Multi-qubit circuit - manually expand using Kronecker products
+                target_tuple = (gate.target,) if isinstance(gate.target, int) else gate.target
+                expanded_jax = self._expand_gate_jax(gate_jax, target_tuple)
+
+            # Apply gate (multiply on left since gates are applied left to right)
+            U_jax = expanded_jax @ U_jax
+
+        # Cache both JAX and QuTiP versions
+        self._cached_unitary_jax = U_jax
+        self._cached_unitary_qutip = qt.Qobj(U_jax, dims=[[2]*self.n_qubits, [2]*self.n_qubits])
+        self._cached_params = [jnp.array(p) for p in parameters]  # Store copy of params
+
+        # Return appropriate version
+        return U_jax
+
+
     def __call__(self, state: Optional[Union[jnp.ndarray, qt.Qobj]] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
         """
         Apply the circuit to a quantum state.
@@ -353,6 +398,88 @@ class QuantumCircuit:
                         full_matrix = full_matrix.at[i, j].set(gate_matrix[i_gate, j_gate])
 
             return full_matrix
+    
+    def add_layer(
+        self, gate_type: type,
+        parameters: Optional[Union[float,List[float]]] = None,
+        targets: Optional[List[int]] = None,
+        trainable: bool = True
+    ) -> None:
+        """
+        Add a layer of identical single-qubit gates to the circuit.
+
+        Args:
+            gate_type: Gate class (e.g., RXGate, RYGate)
+            parameters: List of parameters for each qubit (None = pi/2 for each qubit)
+            targets: List of target qubits (None = all qubits)
+            trainable: Whether parameters should be trainable
+        """
+        from .gates import CNOTGate, CZGate, HadamardGate
+
+        if any(gate == gate_type for gate in [CNOTGate, CZGate]):
+            raise ValueError(f"For entangling gates ({gate_type}) use the method: circuit.add_entangling_layer(gate_type, pattern)")
+        
+        if targets is None:
+            targets = list(range(self.n_qubits))
+        
+        if gate_type == HadamardGate:
+            for qubit in targets:
+                gate = gate_type(target=qubit)
+                self.add_gate(gate) 
+
+        else:
+            
+            if parameters is None:
+                parameters = [np.pi / 2] * len(targets)
+            elif isinstance(parameters,float):
+                parameters = [parameters] * len(targets)
+
+            if len(parameters) != len(targets):
+                raise ValueError(
+                    f"Number of parameters ({len(parameters)}) must match "
+                    f"number of targets ({len(targets)})"
+                )
+
+            for qubit, param in zip(targets, parameters):
+                gate = gate_type(theta=param, target=qubit, trainable=trainable)
+                self.add_gate(gate)
+
+    def add_entangling_layer(
+        self , gate_type: type,
+        pattern: str = "linear",
+        targets: Optional[List[int]] = None
+    ) -> None:
+        """
+        Add a layer of two-qubit entangling gates to the circuit.
+
+        Args:
+            gate_type: Two-qubit gate class (e.g., CNOTGate, CZGate)
+            pattern: Connectivity pattern - "linear" or "circular"
+            targets: Ordered list of target qubits 
+                        if None -> all qubits ordered by index
+        """
+
+        if targets is None:
+            targets = list(range(self.n_qubits))
+
+        if len(targets) < 2:
+            raise ValueError("Need at least 2 qubits for entangling layer")
+
+        if pattern == "linear":
+            # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
+            for i in targets:
+                gate = gate_type(target=(i, i + 1))
+                self.add_gate(gate)
+        elif pattern == "circular":
+            # Linear + connect last to first
+            for i in targets:
+                gate = gate_type(target=(i, i + 1))
+                self.add_gate(gate)
+            # Wrap around
+            gate = gate_type(target=(targets[-1], targets[0]))
+            self.add_gate(gate)
+        else:
+            raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
 
     def __repr__(self) -> str:
         """String representation of circuit."""
@@ -368,70 +495,6 @@ class QuantumCircuit:
 
 
 # Utility functions for circuit construction
-
-def create_layer(
-    circuit: QuantumCircuit,
-    gate_type: type,
-    parameters: List[float],
-    qubits: Optional[List[int]] = None,
-    trainable: bool = True,
-) -> None:
-    """
-    Add a layer of identical single-qubit gates to the circuit.
-
-    Args:
-        circuit: QuantumCircuit to add gates to
-        gate_type: Gate class (e.g., RXGate, RYGate)
-        parameters: List of parameters for each qubit
-        qubits: List of target qubits (None = all qubits)
-        trainable: Whether parameters should be trainable
-    """
-    if qubits is None:
-        qubits = list(range(circuit.n_qubits))
-
-    if len(parameters) != len(qubits):
-        raise ValueError(
-            f"Number of parameters ({len(parameters)}) must match "
-            f"number of qubits ({len(qubits)})"
-        )
-
-    for qubit, param in zip(qubits, parameters):
-        gate = gate_type(theta=param, target=qubit, trainable=trainable)
-        circuit.add_gate(gate)
-
-
-def create_entangling_layer(
-    circuit: QuantumCircuit, gate_type: type, pattern: str = "linear"
-) -> None:
-    """
-    Add a layer of two-qubit entangling gates.
-
-    Args:
-        circuit: QuantumCircuit to add gates to
-        gate_type: Two-qubit gate class (e.g., CNOTGate, CZGate)
-        pattern: Connectivity pattern - "linear" or "circular"
-    """
-
-    n_qubits = circuit.n_qubits
-    if n_qubits < 2:
-        raise ValueError("Need at least 2 qubits for entangling layer")
-
-    if pattern == "linear":
-        # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
-        for i in range(n_qubits - 1):
-            gate = gate_type(target=(i, i + 1))
-            circuit.add_gate(gate)
-    elif pattern == "circular":
-        # Linear + connect last to first
-        for i in range(n_qubits - 1):
-            gate = gate_type(target=(i, i + 1))
-            circuit.add_gate(gate)
-        # Wrap around
-        gate = gate_type(target=(n_qubits - 1, 0))
-        circuit.add_gate(gate)
-    else:
-        raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
-
 
 def create_ry_circuit_layer(
     n_qubits: int,
@@ -476,8 +539,6 @@ def create_ry_circuit_layer(
 
     circuit = QuantumCircuit(n_qubits=n_qubits)
 
-    for qubit_idx, theta in enumerate(theta_values):
-        gate = RYGate(theta=theta, target=qubit_idx, trainable=trainable)
-        circuit.add_gate(gate)
+    circuit.add_layer(RYGate, parameters=theta_values, trainable=trainable)
 
     return circuit

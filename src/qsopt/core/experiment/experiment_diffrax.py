@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from functools import partial
 
 import jax
+import diffrax as dfx
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
@@ -1051,6 +1052,7 @@ class Experiment:
 
             # Compute circuit unitaries
             circuit_unitaries = self._prepare_circuit_unitaries()
+            print_type(circuit_unitaries[0])
 
             self.debug_times.append({ f'setup_measurements{self.step}' : t.time()})   ################################
 
