@@ -227,7 +227,7 @@ class QuantumCircuit:
             return self._cached_unitary_qutip
         return U_jax
 
-    @jax.jit
+    '''@jax.jit
     def get_parametric_circuit(self) -> Callable[List[jnp.ndarray, jnp.ndarray]]:
         """
         Compute the circuit unitary from a set of parameters
@@ -269,7 +269,7 @@ class QuantumCircuit:
         self._cached_params = [jnp.array(p) for p in parameters]  # Store copy of params
 
         # Return appropriate version
-        return U_jax
+        return U_jax'''
 
 
     def __call__(self, state: Optional[Union[jnp.ndarray, qt.Qobj]] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:

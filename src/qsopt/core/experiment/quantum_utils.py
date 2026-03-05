@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
+import qutip_jax
 from jax.scipy.special import erfc
 
 from qsopt.core.experimental_parameters import InitialStateType
@@ -194,6 +195,13 @@ def generate_n_qubit_operators(
             "measure_reset_dag": measure_reset_dag
         }
 
+        #Precalculating isherm term
+        for key in operators.keys():
+            if type(operators[key]) == list:
+                for element in operators[key]:
+                    element.isherm
+            else:
+                operators[key].isherm
         return operators
 
 

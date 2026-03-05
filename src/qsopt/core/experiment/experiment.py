@@ -17,6 +17,7 @@ import qutip as qt
 import qutip_jax
 import math
 import time as t
+from qutip import settings
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
@@ -139,6 +140,7 @@ class Experiment:
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
+        settings.core["auto_real_casting"] = False
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_initial_state()
@@ -591,7 +593,7 @@ class Experiment:
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
 
             self.debug_times.append({ f'measurement{n_meas}:measure_{self.step}' : t.time()})   ################################
-
+            print(evolution_result)
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
