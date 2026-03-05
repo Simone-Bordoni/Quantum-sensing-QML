@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
+<<<<<<< Updated upstream
+=======
+from qutip import settings
+import qutip_jax
+>>>>>>> Stashed changes
 import math
 
 from qsopt.core.callback import OptimizationCallback
@@ -129,6 +134,11 @@ class Experiment:
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
+        # Disable auto_real_casting to avoid TracerBoolConversionError with JAX
+        # When using JAX, QuTiP's trace() method tries to check `if self.isherm`
+        # on traced states, which fails. Disabling this setting prevents the check.
+        settings.core["auto_real_casting"] = False  # type: ignore
+        
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_initial_state()
@@ -492,6 +502,36 @@ class Experiment:
 
         return initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag
 
+<<<<<<< Updated upstream
+=======
+    def _prepare_circuit_unitaries_from_params(self, params_initial: jnp.ndarray, params_final: jnp.ndarray) -> tuple:
+        """
+        Get embedded unitaries for circuits from explicit parameters (for optimization).
+        
+        This version accepts parameters as arguments and sets them on the circuits,
+        making it suitable for use in optimization where parameters change frequently.
+        
+        Args:
+            params_initial: Parameter values for initial circuit (JAX array or slice)
+            params_final: Parameter values for final circuit (JAX array or slice)
+
+        Returns:
+            Tuple of (initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag)
+        """
+        # Convert to list - keeps JAX tracers during gradient computation
+        # Do NOT convert to Python float(), as that breaks JAX tracing
+        params_initial_list = [params_initial[i] for i in range(len(params_initial))]
+        params_final_list = [params_final[i] for i in range(len(params_final))]
+        
+        # Set parameters on circuits (they can handle JAX arrays/tracers)
+        self.initial_circuit.set_trainable_parameters(params_initial_list)
+        self.final_circuit.set_trainable_parameters(params_final_list)
+        
+        # Get unitaries using the standard method (which handles caching)
+        return self._prepare_circuit_unitaries()
+
+    #@partial(jax.jit, static_argnames=["solver","args"])
+>>>>>>> Stashed changes
     def simulation(
         self,
         solver: qt.MESolver,
@@ -543,7 +583,6 @@ class Experiment:
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
-
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
             rho_evolved = evolution_result.states[-1]
@@ -557,6 +596,80 @@ class Experiment:
             prob = prob * prob_no_detect
 
         return 1-prob
+
+    def create_jitted_simulation_with_unitaries(self, solver: qt.MESolver):
+        """
+        Create a JIT-compiled simulation function that accepts unitaries as arguments.
+        
+        This version is optimized for optimization loops: unitaries can be updated
+        without recompilation. The solver is captured in closure (static), while
+        unitaries, rho, and measurements are traced arguments.
+        
+        Based on the QuTiP-JAX tutorial pattern - solver marked as static via closure.
+        
+        Args:
+            solver: Configured quantum evolution solver (static in closure)
+        
+        Returns:
+            JIT-compiled function: (unitaries, rho, measurements) -> detection_prob
+        
+        Example:
+            >>> solver_with = experiment.get_solver_with_interaction()
+            >>> jitted_sim = experiment.create_jitted_simulation_with_unitaries(solver_with)
+            >>> unitaries = experiment._prepare_circuit_unitaries()
+            >>> detection_prob = jitted_sim(unitaries, rho0, measurement_times)
+        """
+        # Get operators (static - captured in closure)
+        measure_reset = self.operators["measure_reset"]
+        measure_reset_dag = self.operators["measure_reset_dag"]
+        args = {"sigma": self.experimental_params.inverse_pulse_width}
+        
+        def simulation_fn(unitaries, rho, measurements):
+            """Inner simulation function to be JIT-compiled.
+            
+            Args:
+                unitaries: Tuple of (U_init, U_init_dag, U_final, U_final_dag)
+                rho: Initial density matrix
+                measurements: Array of measurement times
+            """
+            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = unitaries
+            measurement_array = jnp.array(measurements, dtype=float)
+            
+            def scan_fn(carry, time_pair):
+                """Scan function for measurement loop (JIT-compatible)."""
+                rho_current, prob = carry
+                t0, t1 = time_pair
+                
+                # Apply initial circuit
+                rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag
+                
+                # Evolve (solver.run is traced by JAX)
+                evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
+                rho_evolved = evolution_result.states[-1]
+                
+                # Apply final circuit
+                rho_final = final_unitary * rho_evolved * final_unitary_dag
+                
+                # Measure and reset
+                rho_reset = measure_reset * rho_final * measure_reset_dag
+                prob_no_detect = jnp.real(rho_reset.tr())
+                rho_normalized = rho_reset / (prob_no_detect + 1e-12)
+                new_prob = prob * prob_no_detect
+                
+                return (rho_normalized, new_prob), None
+            
+            # Prepare time pairs for jax.lax.scan
+            time_pairs = jnp.stack([measurement_array[:-1], measurement_array[1:]], axis=1)
+            initial_carry = (rho, jnp.array(1.0))
+            
+            # Run scan (JIT-compatible loop)
+            (final_rho, final_prob), _ = jax.lax.scan(scan_fn, initial_carry, time_pairs)
+            
+            return 1.0 - final_prob
+        
+        # Return JIT-compiled function
+        # Unitaries are traced (not static), allowing parameter updates without recompilation
+        return jax.jit(simulation_fn)
 
     def run_simulation(self, batch_size: int = 1, measure_qubit: Optional[Union[int,List[int]]] = None) -> OptimizationCallback:
         """
@@ -985,15 +1098,37 @@ class Experiment:
         solver_without = self.get_solver_no_interaction()
         detection_metric = self.detection_metric
 
+<<<<<<< Updated upstream
         # Define objective function
-        def objective_function(opt_params):
-            """Negative sensing contrast for minimization with batch averaging."""
+=======
+        # Pre-create JIT-compiled simulation functions
+        # These inner functions are JIT-compiled and provide the performance benefit
+        jitted_sim_with = self.create_jitted_simulation_with_unitaries(solver_with)
+        jitted_sim_without = self.create_jitted_simulation_with_unitaries(solver_without)
 
+        # Define objective function WITHOUT side effects for JIT compatibility
+>>>>>>> Stashed changes
+        def objective_function(opt_params):
+            """Objective function using JIT-compiled simulations.
+            
+            This function avoids side effects and uses jax.vmap for batch processing,
+            making it compatible with JAX autodiff. The simulation functions inside
+            are JIT-compiled, providing significant performance improvements.
+            """
+            # Split parameters for initial and final circuits
+            params_initial = opt_params[:n_initial]
+            params_final = opt_params[n_initial:]
+
+<<<<<<< Updated upstream
             self.initial_circuit.set_trainable_parameters(opt_params[:n_initial])
             self.final_circuit.set_trainable_parameters(opt_params[n_initial:])
 
             # Compute circuit unitaries
             circuit_unitaries = self._prepare_circuit_unitaries()
+=======
+            # Compute circuit unitaries from parameters
+            circuit_unitaries = self._prepare_circuit_unitaries_from_params(params_initial, params_final)
+>>>>>>> Stashed changes
 
             # Get measurement times batch
             measurement_times_batch = (
@@ -1004,6 +1139,7 @@ class Experiment:
             if measurement_times_batch.ndim == 1:
                 measurement_times_batch = measurement_times_batch[jnp.newaxis, :]
 
+<<<<<<< Updated upstream
             detect_with_batch = jnp.zeros(batch_size)
             detect_without_batch = jnp.zeros(batch_size)
 
@@ -1027,6 +1163,18 @@ class Experiment:
                         precomputed_unitaries=circuit_unitaries
                     )
                 )
+=======
+            # Use jax.vmap for vectorized batch processing (JIT-compatible)
+            def simulate_single(measurement_times):
+                """Simulate one realization using JIT-compiled simulation."""
+                detect_with = jitted_sim_with(circuit_unitaries, rho0, measurement_times)
+                detect_without = jitted_sim_without(circuit_unitaries, rho0, measurement_times)
+                return detect_with, detect_without
+            
+            # Vectorize over batch (replaces Python for-loop)
+            vectorized_simulate = jax.vmap(simulate_single)
+            detect_with_batch, detect_without_batch = vectorized_simulate(measurement_times_batch)
+>>>>>>> Stashed changes
 
             # Average over batch
             detect_with = jnp.mean(detect_with_batch)
@@ -1034,7 +1182,11 @@ class Experiment:
             contrast = detect_with - detect_without
             loss = detection_metric.metric(detect_with, detect_without)
 
+<<<<<<< Updated upstream
             # Return negative for minimization
+=======
+            # Return loss for minimization
+>>>>>>> Stashed changes
             return loss, (detect_with, detect_without, contrast)
 
         # Get detection description for verbose output
@@ -1081,10 +1233,24 @@ class Experiment:
         grad_norm = float("inf")
 
         for step in range(num_steps):
+<<<<<<< Updated upstream
             # Compute gradients using JAX autodiff
             grads, (prob_with, prob_without, sensing_contrast) = jax.grad(
                 objective_function, has_aux=True
             )(params)
+=======
+            # Compute gradients using JAX autodiff (fast due to JIT-compiled simulations)
+            (loss, (prob_with, prob_without, sensing_contrast)), grads = jax.value_and_grad(
+                objective_function, has_aux=True
+            )(params)
+            
+            # Update circuit parameters for state consistency outside JIT
+            # (objective function doesn't modify state, so we update here)
+            params_init_list = [float(p) for p in params[:n_initial]]
+            params_final_list = [float(p) for p in params[n_initial:]]
+            self.initial_circuit.set_trainable_parameters(params_init_list)
+            self.final_circuit.set_trainable_parameters(params_final_list)
+>>>>>>> Stashed changes
 
             # Track best parameters
             if sensing_contrast > best_contrast:
@@ -1093,14 +1259,18 @@ class Experiment:
 
             # Call callback to track progress
             callback(
-                trainable_params_initial=params[:n_initial], #self.initial_circuit.get_trainable_parameters(),
-                trainable_params_final=params[n_initial:], #self.final_circuit.get_trainable_parameters(),
+                trainable_params_initial=params[:n_initial],
+                trainable_params_final=params[n_initial:],
                 prob_with=float(prob_with),
                 prob_without=float(prob_without),
                 contrast=float(sensing_contrast),
             )
 
+<<<<<<< Updated upstream
             #Renormalize gradient to be between [-1,+1]
+=======
+            # Check for gradient renormalization 
+>>>>>>> Stashed changes
             grad_norm = float(jnp.linalg.norm(grads))
             if renormalize_grad != False:
                 new_norm = jnp.tanh(grad_norm/renormalize_grad) * renormalize_grad
@@ -1151,7 +1321,10 @@ class Experiment:
             converged=float(grad_norm) < tolerance, final_grad_norm=float(grad_norm)
         )
 
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
         return callback
 
 

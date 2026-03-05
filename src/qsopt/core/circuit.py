@@ -203,6 +203,54 @@ class QuantumCircuit:
             return self._cached_unitary_qutip
         return U_jax
 
+<<<<<<< Updated upstream
+=======
+    @jax.jit
+    def get_parametric_circuit(self) -> jnp.ndarray:
+        """
+        Compute the circuit unitary from a set of parameters
+
+        Returns:
+            Circuit unitary matrix as JAX array
+        """
+
+        # Compute unitary
+        if len(self._gates) == 0:
+            # Identity for empty circuit
+            dim = 2 ** self.n_qubits
+            identity = jnp.eye(dim, dtype=jnp.complex128)
+            return identity
+
+        # Build unitary by applying gates in sequence
+        dim = 2 ** self.n_qubits
+        U_jax = jnp.eye(dim, dtype=jnp.complex128)
+
+        for gate in self._gates:
+            # Get gate matrix as JAX array directly
+            gate_jax = gate.matrix(qutip=False)
+
+            # Expand to full Hilbert space using JAX operations
+            if self.n_qubits == 1:
+                # Single qubit circuit
+                expanded_jax = gate_jax
+            else:
+                # Multi-qubit circuit - manually expand using Kronecker products
+                target_tuple = (gate.target,) if isinstance(gate.target, int) else gate.target
+                expanded_jax = self._expand_gate_jax(gate_jax, target_tuple)
+
+            # Apply gate (multiply on left since gates are applied left to right)
+            U_jax = expanded_jax @ U_jax
+
+        # Cache both JAX and QuTiP versions
+        self._cached_unitary_jax = U_jax
+        self._cached_unitary_qutip = qt.Qobj(U_jax, dims=[[2]*self.n_qubits, [2]*self.n_qubits])
+        self._cached_params = [jnp.array(p) for p in parameters]  # Store copy of params
+
+        # Return appropriate version
+        return U_jax
+
+
+>>>>>>> Stashed changes
     def __call__(self, state: Optional[Union[jnp.ndarray, qt.Qobj]] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
         """
         Apply the circuit to a quantum state.
