@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import qutip as qt
 import math
+import time as t
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
@@ -514,6 +515,12 @@ class Experiment:
         Returns:
             Detection probability as JAX array
         """
+
+        if  not hasattr(self,'debug_times'):          #####################################
+            self.debug_times = []
+            self.step=0
+        self.debug_times.append({ f'load_cached_parameters{self.step}' : t.time()})   ################################
+
         if args is None:
             args = {"sigma": self.experimental_params.inverse_pulse_width}
 
@@ -541,11 +548,20 @@ class Experiment:
         # Track cumulative probability of non-detection
         prob = jnp.array(1.0)
 
+        self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
+        n_meas=0                      ############################
+
         # Loop over measurement intervals
         for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
 
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
+            
+            self.debug_times.append({ f'measurement{n_meas}:solver_{self.step}' : t.time()})   ################################
+
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
+            
+            self.debug_times.append({ f'measurement{n_meas}:measure_{self.step}' : t.time()})   ################################
+           
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
@@ -555,6 +571,11 @@ class Experiment:
             rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
 
             prob = prob * prob_no_detect
+            
+            n_meas+=1       ####################
+
+        self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
+
 
         return 1-prob
 
@@ -585,12 +606,20 @@ class Experiment:
             ValueError: If initial state cache is not initialized
         """
         # Get initial state and solvers
+
+        self.debug_times = []
+        self.step=0
+
+        self.debug_times.append({ f'initialize_solvers' : t.time()})   ################################
+ 
         rho0 = self._cached_initial_state
         if rho0 is None:
             raise RuntimeError("Initial state cache is not initialized.")
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
 
+        self.debug_times.append({ f'get_measurements' : t.time()})   ################################
+ 
         # Prepare measurement time realizations for batch averaging
         measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(
             batch_size
@@ -600,6 +629,8 @@ class Experiment:
         else:
             measurement_sequences = [measurement_times_batch[i, :] for i in range(batch_size)]
 
+        self.debug_times.append({ f'get_circuits' : t.time()})   ################################
+ 
         # Prepare circuit unitaries once for the entire batch
         circuit_unitaries = self._prepare_circuit_unitaries()
 
@@ -607,7 +638,11 @@ class Experiment:
         prob_with_list = []
         prob_without_list = []
 
+        self.debug_times.append({ f'start_measurement_loop' : t.time()})   ################################
+ 
         for measurement_times in measurement_sequences:
+
+            self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})   ################################
 
             # Simulation with photon interaction
             prob_with = self.simulation(
@@ -618,6 +653,8 @@ class Experiment:
             )
             prob_with_list.append(prob_with)
 
+            self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})   ################################
+
             # Simulation without photon interaction (reference)
             prob_without = self.simulation(
                 solver=solver_without,
@@ -626,11 +663,17 @@ class Experiment:
                 precomputed_unitaries=circuit_unitaries,
             )
             prob_without_list.append(prob_without)
+            self.step += 1
+
+        self.debug_times.append({ f'compute_probs' : t.time()})   ################################
 
         # Average over batch
         prob_with = jnp.mean(jnp.array(prob_with_list))
         prob_without = jnp.mean(jnp.array(prob_without_list))
         contrast = jnp.abs(prob_with - prob_without)
+
+
+        self.debug_times.append({ f'save_callback' : t.time()})   ################################
 
         # Create callback with single epoch for simulation results
         callback = OptimizationCallback(save_every=1, save_best=True)
@@ -641,6 +684,23 @@ class Experiment:
             prob_without=float(prob_without),
             contrast=float(contrast),
         )
+
+
+        self.debug_times.append({ f'end_time' : t.time()})   ################################
+
+        temp = self.debug_times[0]        #############################
+
+        print('\n\n'+'='*75 + '\n\n')               ############################
+        sum=0
+        for time in self.debug_times[1:]:                    ###############################
+                                        ######################
+            sum += list(time.values())[0]-list(temp.values())[0]
+            print('{:33}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
+                                        ######################
+
+            temp = time                           ###########################
+
+        print(f'tempo totale = {sum}')
 
 
         return callback
