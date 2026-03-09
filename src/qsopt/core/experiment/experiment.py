@@ -593,14 +593,22 @@ class Experiment:
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
 
             self.debug_times.append({ f'measurement{n_meas}:measure_{self.step}' : t.time()})   ################################
-            print(evolution_result)
+            
             rho_evolved = evolution_result.states[-1]
+            
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Measure probability of non detection and reset the qubit
             rho_reset = measure_reset * rho_final * measure_reset_dag
             prob_no_detect = jnp.real(rho_reset.tr())
-            rho_current = rho_reset if prob_no_detect == 0 else rho_reset / prob_no_detect
+
+            rho_current = jax.lax.cond(
+                prob_no_detect == 0,
+                lambda _: rho_reset,
+                lambda _: rho_reset / prob_no_detect,
+                operand=None
+            )
+
             prob = prob * prob_no_detect
 
 

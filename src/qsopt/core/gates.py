@@ -108,7 +108,7 @@ class Gate(ABC):
             target: Target qubit(s) - int for single-qubit, tuple for multi-qubit gates
         """
         self.name = name
-        self.target: Union[int, Tuple[int, ...]] = target
+        self.target: Tuple[int, ...] = target
         self._parameter: Optional[GateParameter] = None
         self._dynamic_fields = ("_parameter",)
 
@@ -214,24 +214,22 @@ class RXGate(Gate):
             target: Target qubit index
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RX", target=target)
+        super().__init__("RX", target=(target,))
         self._parameter = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'theta_x_qb{target}'
+            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'Rx_qb{target}'
         )
 
-    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+    def matrix(self, theta: float = self._parameter.value) -> jnp.ndarray:
         """Return RX gate matrix.
 
         Args:
-            qutip: If True, return QuTiP Qobj; if False, return JAX array
+            theta: rotation angle as a float
         """
-        theta = self.get_parameter()
-        # Get Pauli X matrix as JAX array
-        sx_data = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
-        # Compute rotation: exp(-i theta sx / 2)
-        matrix_data = jax.scipy.linalg.expm(-1j * theta * sx_data / 2)
-        # Return JAX array or wrap in Qobj
-        return qt.Qobj(matrix_data, dims=[[2],[2]]) if qutip else matrix_data
+        c = jnp.cos(theta/2)
+        s = jnp.sin(theta/2)
+        return jnp.array([[c, -1j*s],
+                        [-1j*s, c]], dtype=jnp.complex64)
+
 
 
 class RYGate(Gate):
@@ -254,24 +252,21 @@ class RYGate(Gate):
             target: Target qubit index
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RY", target=target)
+        super().__init__("RY", target=(target,))
         self._parameter = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'theta_y_qb{target}'
+            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'Ry_qb{target}'
         )
 
-    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+    def matrix(self, theta: float = self._parameter.value) -> jnp.ndarray:
         """Return RY gate matrix.
 
         Args:
-            qutip: If True, return QuTiP Qobj; if False, return JAX array
+            theta: rotation angle as a float
         """
-        theta = self.get_parameter()
-        # Get Pauli Y matrix as JAX array
-        sy_data = jnp.array([[0, -1j], [1j, 0]], dtype=jnp.complex128)
-        # Compute rotation: exp(-i theta sy / 2)
-        matrix_data = jax.scipy.linalg.expm(-1j * theta * sy_data / 2)
-        # Return JAX array or wrap in Qobj
-        return qt.Qobj(matrix_data, dims=[[2],[2]]) if qutip else matrix_data
+        c = jnp.cos(theta/2)
+        s = jnp.sin(theta/2)
+        return jnp.array([[c, -s],
+                        [s, c]], dtype=jnp.complex64)
 
 
 class RZGate(Gate):
@@ -294,24 +289,21 @@ class RZGate(Gate):
             target: Target qubit index
             trainable: Whether theta should be traced by JAX
         """
-        super().__init__("RZ", target=target)
+        super().__init__("RZ", target=(target,))
         self._parameter = GateParameter(
-            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'theta_z_qb{target}'
+            value=jnp.asarray(theta, dtype=float), trainable=trainable, name=f'Rz_qb{target}'
         )
 
-    def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
+    def matrix(self, theta: float = self._parameter.value) -> jnp.ndarray:
         """Return RZ gate matrix.
 
         Args:
-            qutip: If True, return QuTiP Qobj; if False, return JAX array
+            theta: rotation angle as a float
         """
-        theta = self.get_parameter()
-        # Get Pauli Z matrix as JAX array
-        sz_data = jnp.array([[1, 0], [0, -1]], dtype=jnp.complex128)
-        # Compute rotation: exp(-i theta sz / 2)
-        matrix_data = jax.scipy.linalg.expm(-1j * theta * sz_data / 2)
-        # Return JAX array or wrap in Qobj
-        return qt.Qobj(matrix_data, dims=[[2],[2]]) if qutip else matrix_data
+        e_minus = jnp.exp(-1j*theta/2)
+        e_plus  = jnp.exp(1j*theta/2)
+        return jnp.array([[e_minus, 0],
+                        [0, e_plus]], dtype=jnp.complex64)
 
 
 # ============================================================================
@@ -336,7 +328,7 @@ class HadamardGate(Gate):
         Args:
             target: Target qubit index
         """
-        super().__init__("H", target=target)
+        super().__init__("H", target=(target,))
 
     def matrix(self, qutip: bool = True) -> Union[qt.Qobj, jnp.ndarray]:
         """Return Hadamard gate matrix.

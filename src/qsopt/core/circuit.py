@@ -96,7 +96,7 @@ class QuantumCircuit:
         """
 
         # Normalize target to tuple for validation
-        target_tuple = (gate.target,) if isinstance(gate.target, int) else tuple(gate.target)
+        target_tuple = tuple(gate.target)
 
         # Validate all target qubits are in range
         for qubit in target_tuple:
@@ -211,8 +211,7 @@ class QuantumCircuit:
                 expanded_jax = gate_jax
             else:
                 # Multi-qubit circuit - manually expand using Kronecker products
-                target_tuple = (gate.target,) if isinstance(gate.target, int) else gate.target
-                expanded_jax = self._expand_gate_jax(gate_jax, target_tuple)
+                expanded_jax = self._expand_gate_jax(gate_jax, gate.target)
 
             # Apply gate (multiply on left since gates are applied left to right)
             U_jax = expanded_jax @ U_jax
@@ -227,29 +226,31 @@ class QuantumCircuit:
             return self._cached_unitary_qutip
         return U_jax
 
-    '''@jax.jit
-    def get_parametric_circuit(self) -> Callable[List[jnp.ndarray, jnp.ndarray]]:
+    @jax.jit
+    def get_parametric_circuit(self) -> Callable[List[jnp.ndarray], jnp.ndarray]:
         """
-        Compute the circuit unitary from a set of parameters
+        Compute the circuit unitary as a function of the parameters.
 
         Returns:
-            Circuit unitary matrix as QuTiP Qobj or JAX array
+            Function that takes parameters and outputs circuit unitary matrix as JAX array
         """
+
+        dim = 2 ** self.n_qubits
 
         # Compute unitary
         if len(self._gates) == 0:
             # Identity for empty circuit
-            dim = 2 ** self.n_qubits
-            identity = jnp.eye(dim, dtype=jnp.complex128)
-            return identity
+            def parametric_circuit(params: List[jnp.ndarray]) -> jnp.ndarray:
+                identity = jnp.eye(dim, dtype=jnp.complex128)
+                return identity
+            return parametric_circuit
 
         # Build unitary by applying gates in sequence
-        dim = 2 ** self.n_qubits
         U_jax = jnp.eye(dim, dtype=jnp.complex128)
 
         for gate in self._gates:
             # Get gate matrix as JAX array directly
-            gate_jax = gate.matrix(qutip=False)
+            gate_jax = gate.matrix()
 
             # Expand to full Hilbert space using JAX operations
             if self.n_qubits == 1:
@@ -269,7 +270,7 @@ class QuantumCircuit:
         self._cached_params = [jnp.array(p) for p in parameters]  # Store copy of params
 
         # Return appropriate version
-        return U_jax'''
+        return U_jax
 
 
     def __call__(self, state: Optional[Union[jnp.ndarray, qt.Qobj]] = None, qutip: bool = True) -> Union[jnp.ndarray, qt.Qobj]:
@@ -349,12 +350,8 @@ class QuantumCircuit:
         if len(targets) == 1:
             # Single-qubit gate
             target = targets[0]
-            matrices = []
-            for i in range(self.n_qubits):
-                if i == target:
-                    matrices.append(gate_matrix)
-                else:
-                    matrices.append(jnp.eye(2, dtype=jnp.complex128))
+            matrices = [jnp.eye(2, dtype=jnp.complex128)] * self.n_qubits
+            matrices[target] = gate_matrix
 
             # Build full operator using Kronecker products
             result = matrices[0]
