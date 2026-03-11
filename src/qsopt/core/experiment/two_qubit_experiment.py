@@ -241,8 +241,8 @@ class TwoQubitExperiment(Experiment):
         
         # Dispersive qubit-resonator interaction Hamiltonians
         # H_q = -Σᵢ (χᵢ/2) a† a σz_i
-        H_dispersive1 = qt.Qobj(-chi1/2 * a_dag * a * sigma_z1)  # type: ignore
-        H_dispersive2 = qt.Qobj(-chi2/2 * a_dag * a * sigma_z2)  # type: ignore
+        H_dispersive1 = qt.Qobj(-chi1 * a_dag * a * sigma_z1)  # type: ignore
+        H_dispersive2 = qt.Qobj(-chi2 * a_dag * a * sigma_z2)  # type: ignore
         H_dispersive = H_dispersive1 + H_dispersive2
         
         # Qubit-qubit interaction Hamiltonians

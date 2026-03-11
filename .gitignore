@@ -3,7 +3,8 @@
 *.py[codz]
 *$py.class
 testNathan.py
-ֿֿ*.cpython-313.pyc
+ֿֿ*.pyc
+*.conda
 
 
 # C extensions

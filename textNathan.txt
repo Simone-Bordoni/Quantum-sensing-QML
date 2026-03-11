@@ -1,0 +1,107 @@
+VECCHIA IMPLEMENTAZIONE:
+
+--- DEBUG initial_state ---
+Type: <class 'qutip.core.qobj.Qobj'>
+dims: [[2, 2, 2, 2], [2, 2, 2, 2]]
+shape: (16, 16)
+type: oper
+isherm: True
+issuper: False
+superrep: None
+data type: <class 'qutip_jax.jaxarray.JaxArray'>
+is sparse: False
+norm: (1+0j)
+
+--- DEBUG hamiltonian_int ---
+Type: <class 'qutip.core.cy.qobjevo.QobjEvo'>
+dims: [[2, 2, 2, 2], [2, 2, 2, 2]]
+shape: (16, 16)
+isconstant: False
+num_terms: 2
+
+--- Term 0 ---
+Qobj:
+  shape: (16, 16)
+  dims: [[2, 2, 2, 2], [2, 2, 2, 2]]
+  isherm: True
+  type: oper
+  norm: (120.6001666665509+0j)      <=============================
+  data type: <class 'qutip_jax.jaxarray.JaxArray'>
+  is sparse: False
+Coefficient:
+  type: <class 'str'>
+  repr: constant
+
+--- Term 1 ---
+Qobj:
+  shape: (16, 16)
+  dims: [[2, 2, 2, 2], [2, 2, 2, 2]]
+  isherm: True
+  type: oper
+  norm: (15.491933384829666+0j)
+  data type: <class 'qutip_jax.jaxarray.JaxArray'>
+  is sparse: False
+Coefficient:
+  type: <class 'qutip_jax.qobjevo.JaxJitCoeff'>
+  repr: <qutip_jax.qobjevo.JaxJitCoeff object at 0x7b9230febed0>
+
+--- DEBUG lindblad_int ---
+Type: <class 'list'>
+repr: [QobjEvo: dims = [[2, 2, 2, 2], [2, 2, 2, 2]], shape = (16, 16), type = oper, superrep = None, isconstant = False, num_elements = 2]
+
+--- DEBUG hamiltonian ---
+Type: <class 'qutip.core.qobj.Qobj'>
+dims: [[2, 2, 2, 2], [2, 2, 2, 2]]
+shape: (16, 16)
+type: oper
+isherm: True
+issuper: False
+superrep: None
+data type: <class 'qutip_jax.jaxarray.JaxArray'>
+is sparse: False
+norm: (120+0j)          <=============================
+
+--- DEBUG lindblad ---
+Type: <class 'list'>
+repr: []
+
+
+Old simulation start............................................................
+===========================================================================
+
+initialize_parameters            :  0.000052
+initialize_solvers               :  1.728589
+get_measurements                 :  0.000078
+start_measurement_loop           :  0.000010
+start_simulation_with0           :  0.000012
+load_cached_parameters0          :  1.011960
+start_simulation0                :  0.000479
+measurement0:solver_0            :  5.174516
+measurement0:measure_0           :  0.180377
+measurement1:solver_0            :  4.326098
+measurement1:measure_0           :  0.032378
+returning_simulation0            :  0.034721
+start_simulation_no0             :  0.000013
+load_cached_parameters0          :  0.002347
+start_simulation0                :  0.000248
+measurement0:solver_0            :  1.332423
+measurement0:measure_0           :  0.040642
+measurement1:solver_0            :  1.036614
+measurement1:measure_0           :  0.002892
+returning_simulation0            :  0.001477
+compute_probs                    :  0.100020
+save_callback                    :  0.000841
+
+tempo totale OLD = 15.006786584854126
+
+
+MODE: Single Simulation
+  Current Parameters:
+     theta1_q1: 1.570796 rad (90.00°)
+     theta2_q1: -1.570796 rad (-90.00°)
+     theta1_q2: 1.570796 rad (90.00°)
+     theta2_q2: -1.570796 rad (-90.00°)
+  Detection Probabilities:z
+     P(with photon):    0.872831
+     P(without photon): 0.750000
+     Contrast:          0.122831
