@@ -2,8 +2,10 @@
 *__pycache__/
 *.py[codz]
 *$py.class
-testNathan.py
-ֿֿ*cpython-313.pyc
+personal_test.py
+personal_text.txt
+ֿֿ*.pyc
+*.conda
 
 
 # C extensions
