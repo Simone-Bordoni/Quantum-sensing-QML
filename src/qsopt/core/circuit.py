@@ -330,6 +330,92 @@ class QuantumCircuit:
 
             return full_matrix
 
+    
+    # Utility functions for circuit construction
+
+    def add_layer(
+        self, gate_type: type,
+        parameters: Optional[Union[float,List[float]]] = None,
+        targets: Optional[List[int]] = None,
+        trainable: bool = True
+    ) -> None:
+        """
+        Add a layer of identical single-qubit gates to the circuit.
+
+        Args:
+            gate_type: Gate class (e.g., RXGate, RYGate)
+            parameters: List of parameters for each qubit (None = pi/2 for each qubit)
+            targets: List of target qubits (None = all qubits)
+            trainable: Whether parameters should be trainable
+        """
+        from .gates import CNOTGate, CZGate, HadamardGate
+
+        if any(gate == gate_type for gate in [CNOTGate, CZGate]):
+            raise ValueError(f"For entangling gates ({gate_type}) use the method: circuit.add_entangling_layer(gate_type, pattern)")
+        
+        if targets is None:
+            targets = list(range(self.n_qubits))
+        
+        if gate_type == HadamardGate:
+            for qubit in targets:
+                gate = gate_type(target=qubit)
+                self.add_gate(gate) 
+
+        else:
+            
+            if parameters is None:
+                parameters = [np.pi / 2] * len(targets)
+            elif isinstance(parameters,float):
+                parameters = [parameters] * len(targets)
+
+            if len(parameters) != len(targets):
+                raise ValueError(
+                    f"Number of parameters ({len(parameters)}) must match "
+                    f"number of targets ({len(targets)})"
+                )
+
+            for qubit, param in zip(targets, parameters):
+                gate = gate_type(theta=param, target=qubit, trainable=trainable)
+                self.add_gate(gate)
+
+    def add_entangling_layer(
+        self , gate_type: type,
+        pattern: str = "linear",
+        targets: Optional[List[int]] = None
+    ) -> None:
+        """
+        Add a layer of two-qubit entangling gates to the circuit.
+
+        Args:
+            gate_type: Two-qubit gate class (e.g., CNOTGate, CZGate)
+            pattern: Connectivity pattern - "linear" or "circular"
+            targets: Ordered list of target qubits 
+                        if None -> all qubits ordered by index
+        """
+
+        if targets is None:
+            targets = list(range(self.n_qubits))
+
+        if len(targets) < 2:
+            raise ValueError("Need at least 2 qubits for entangling layer")
+
+        if pattern == "linear":
+            # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
+            for i in targets:
+                gate = gate_type(target=(i, i + 1))
+                self.add_gate(gate)
+        elif pattern == "circular":
+            # Linear + connect last to first
+            for i in targets:
+                gate = gate_type(target=(i, i + 1))
+                self.add_gate(gate)
+            # Wrap around
+            gate = gate_type(target=(targets[-1], targets[0]))
+            self.add_gate(gate)
+        else:
+            raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
+
+    
     def __repr__(self) -> str:
         """String representation of circuit."""
         header = f"QuantumCircuit({self.n_qubits} qubits, {len(self._gates)} gates)"
@@ -341,75 +427,7 @@ class QuantumCircuit:
         )
         return f"{header}\n{gates_str}"
 
-
-
-# Utility functions for circuit construction
-
-def create_layer(
-    circuit: QuantumCircuit,
-    gate_type: type,
-    parameters: List[float],
-    qubits: Optional[List[int]] = None,
-    trainable: bool = True,
-) -> None:
-    """
-    Add a layer of identical single-qubit gates to the circuit.
-
-    Args:
-        circuit: QuantumCircuit to add gates to
-        gate_type: Gate class (e.g., RXGate, RYGate)
-        parameters: List of parameters for each qubit
-        qubits: List of target qubits (None = all qubits)
-        trainable: Whether parameters should be trainable
-    """
-    if qubits is None:
-        qubits = list(range(circuit.n_qubits))
-
-    if len(parameters) != len(qubits):
-        raise ValueError(
-            f"Number of parameters ({len(parameters)}) must match "
-            f"number of qubits ({len(qubits)})"
-        )
-
-    for qubit, param in zip(qubits, parameters):
-        gate = gate_type(theta=param, target=qubit, trainable=trainable)
-        circuit.add_gate(gate)
-
-
-def create_entangling_layer(
-    circuit: QuantumCircuit, gate_type: type, pattern: str = "linear"
-) -> None:
-    """
-    Add a layer of two-qubit entangling gates.
-
-    Args:
-        circuit: QuantumCircuit to add gates to
-        gate_type: Two-qubit gate class (e.g., CNOTGate, CZGate)
-        pattern: Connectivity pattern - "linear" or "circular"
-    """
-
-    n_qubits = circuit.n_qubits
-    if n_qubits < 2:
-        raise ValueError("Need at least 2 qubits for entangling layer")
-
-    if pattern == "linear":
-        # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
-        for i in range(n_qubits - 1):
-            gate = gate_type(target=(i, i + 1))
-            circuit.add_gate(gate)
-    elif pattern == "circular":
-        # Linear + connect last to first
-        for i in range(n_qubits - 1):
-            gate = gate_type(target=(i, i + 1))
-            circuit.add_gate(gate)
-        # Wrap around
-        gate = gate_type(target=(n_qubits - 1, 0))
-        circuit.add_gate(gate)
-    else:
-        raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
-
-
-def create_ry_circuit_layer(
+def create_ry_circuit(
     n_qubits: int,
     theta_values: Optional[Union[List[float],float]] = None,
     trainable: bool = True,
@@ -452,8 +470,6 @@ def create_ry_circuit_layer(
 
     circuit = QuantumCircuit(n_qubits=n_qubits)
 
-    for qubit_idx, theta in enumerate(theta_values):
-        gate = RYGate(theta=theta, target=qubit_idx, trainable=trainable)
-        circuit.add_gate(gate)
+    circuit.add_layer(RYGate, parameters=theta_values, trainable=trainable)
 
     return circuit
