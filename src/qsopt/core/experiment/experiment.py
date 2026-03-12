@@ -16,7 +16,7 @@ import math
 import time as t
 
 from qsopt.core.callback import OptimizationCallback
-from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
+from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     InteractionType,
@@ -1110,9 +1110,16 @@ class Experiment:
             print(f"    Initial parameter values:")
 
             initial_vals = np.asarray(params, dtype=float)
+            setup_gates = [gate for gate in self.initial_circuit._gates if gate.has_parameter() and gate._parameter.trainable]
+            reset_gates = [gate for gate in self.final_circuit._gates if gate.has_parameter() and gate._parameter.trainable]
+            
             for i, val in enumerate(initial_vals):
-                circuit_type = "setup" if i < n_initial else "reset"
-                print(f"        param{i}. {circuit_type}_={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                if i < n_initial :
+                    circuit_type = "setup" 
+                    print(f"        param{i}. {circuit_type}_{setup_gates[i]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                else:
+                    circuit_type = "reset"
+                    print(f"        param{i}. {circuit_type}_{reset_gates[i-n_initial]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
 
             uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:

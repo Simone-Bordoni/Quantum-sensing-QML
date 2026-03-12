@@ -399,20 +399,18 @@ class QuantumCircuit:
         if len(targets) < 2:
             raise ValueError("Need at least 2 qubits for entangling layer")
 
-        if pattern == "linear":
-            # Connect adjacent qubits: 0-1, 1-2, 2-3, ...
-            for i in targets:
-                gate = gate_type(target=(i, i + 1))
-                self.add_gate(gate)
-        elif pattern == "circular":
-            # Linear + connect last to first
-            for i in targets:
-                gate = gate_type(target=(i, i + 1))
-                self.add_gate(gate)
+        targets_iter = zip(targets[:-1],targets[1:])
+        
+        # Connect ordered targets: 0-1, 1-2, 2-3, ...
+        for x,y in targets_iter:
+            gate = gate_type(target=(x,y))
+            self.add_gate(gate)
+
+        if pattern == "circular":
             # Wrap around
             gate = gate_type(target=(targets[-1], targets[0]))
             self.add_gate(gate)
-        else:
+        elif pattern != "linear":
             raise ValueError(f"Unknown pattern: {pattern}. Use 'linear' or 'circular'")
 
     
@@ -423,7 +421,7 @@ class QuantumCircuit:
             return header
 
         gates_str = "\n".join(
-            f"  {i}: {gate}[{gate.target}]" for i, gate in enumerate(self._gates)
+            f"  {i}: {gate}" for i, gate in enumerate(self._gates)
         )
         return f"{header}\n{gates_str}"
 
