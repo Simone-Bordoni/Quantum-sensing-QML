@@ -130,6 +130,11 @@ class Experiment:
 
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
+        # Disable auto_real_casting to avoid TracerBoolConversionError with JAX
+        # When using JAX, QuTiP's trace() method tries to check `if self.isherm`
+        # on traced states, which fails. Disabling this setting prevents the check.
+        qt.settings.core["auto_real_casting"] = False  # type: ignore
+
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_initial_state()
@@ -670,7 +675,7 @@ class Experiment:
         # Average over batch
         prob_with = jnp.mean(jnp.array(prob_with_list))
         prob_without = jnp.mean(jnp.array(prob_without_list))
-        contrast = jnp.abs(prob_with - prob_without)
+        contrast = prob_with - prob_without
 
 
         self.debug_times.append({ f'save_callback' : t.time()})   ################################
@@ -1001,6 +1006,8 @@ class Experiment:
         import jax
         import optax
 
+        time = t.time()
+
         # Use provided callback or default
         if callback is None:
             callback = self.callback
@@ -1117,10 +1124,10 @@ class Experiment:
             for i, val in enumerate(initial_vals):
                 if i < n_initial :
                     circuit_type = "setup" 
-                    print(f"        param{i}. {circuit_type}_{setup_gates[i]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                    print(f"        param{(f"{i}"+"."):<3} {circuit_type}_{setup_gates[i].__repr__(params=False)}={val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
                 else:
                     circuit_type = "reset"
-                    print(f"        param{i}. {circuit_type}_{reset_gates[i-n_initial]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                    print(f"        param{i}. {circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}={val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
 
             uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:
@@ -1134,9 +1141,9 @@ class Experiment:
             n_init_show = min(n_initial, 4)
             n_final_show = min(n_final, 4)
             for i in range(n_init_show):
-                header_parts.append(f"setup_{i:<6}")
+                header_parts.append(f"setup{i}_{setup_gates[i].__repr__(params=False):<8}")
             for i in range(n_final_show):
-                header_parts.append(f"reset_{i:<6}")
+                header_parts.append(f"reset{i}_{reset_gates[i].__repr__(params=False):<8}")
             header_parts.extend([f"{'Contrast':<12}", "Grad Norm"])
             print("".join(header_parts))
             print("-" * 75)
@@ -1177,6 +1184,9 @@ class Experiment:
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
+                temp = t.time()
+                delta_t = temp-time
+                time = temp
                 # Build parameter display (up to 4 each)
                 n_init_show = min(n_initial, 4)
                 n_final_show = min(n_final, 4)
@@ -1184,10 +1194,10 @@ class Experiment:
 
                 output_parts = [f"{step:<6}"]
                 for i in range(n_init_show):
-                    output_parts.append(f"{param_vals[i]:<12.6f}")
+                    output_parts.append(f"{param_vals[i]:<14.6f}")
                 for i in range(n_final_show):
-                    output_parts.append(f"{param_vals[n_initial + i]:<12.6f}")
-                output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}"])
+                    output_parts.append(f"{param_vals[n_initial + i]:<14.6f}")
+                output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}",f"{delta_t:<8.2f}"])
                 print("".join(output_parts))
 
             # Convergence check
@@ -1211,8 +1221,12 @@ class Experiment:
             print(f"Best sensing contrast: {best_contrast:.6f}")
             print(f"Best parameters:")
             for i, val in enumerate(best_values):
-                circuit_type = "setup" if i < n_initial else "reset"
-                print(f"    param{i}. {circuit_type}_[name]={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                if i < n_initial:
+                    circuit_type = "setup"  
+                    print(f"    param{i}. {circuit_type}_{setup_gates[i]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+                else:
+                    circuit_type = "reset"
+                    print(f"    param{i}. {circuit_type}_{reset_gates[i-n_initial]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
 
         # Set convergence information in callback
         callback.set_convergence_info(

@@ -109,7 +109,7 @@ class DetectionMetric:
         return self.metric(p_with_photon,p_without_photon)
 
     def std_detection(self, criterion, detection_param, n_qubits):
-        """Predefined detection criterion for common use cases:
+        """Possible criterions:
 
             - any excited: detects if there is any excitation.
                 detection_param: None
@@ -122,6 +122,11 @@ class DetectionMetric:
 
             - custom states: detects states that belong to a list of states
                 detection_param: List[str], list of state keys
+            
+            - max difference: maximizes the difference between the interaction and 
+            non interaction measurements in all the states
+                detection_param: None
+        
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
 
@@ -181,6 +186,25 @@ class DetectionMetric:
             name = criterion
 
             return states, name
+        
+        elif criterion == 'max difference':
+            # this criterion must measure separetly all states, it is handled inside quantum utils
+            return criterion, criterion
+
+        else:
+            raise ValueError(f"criterion was given the value '{criterion}'\n\
+            criterion must be a string of the following:\n\
+            - 'any excited': detects if there is any excitation.\n\
+                detection_param: None\n\n\
+            - 'min excited': detects if there are more than a set number of excitations\n\
+                detection_param: int, number of excitations\n\n\
+            - 'excited qubits': detects if one or more of the qubits in a list are excited\n\
+                detection_param: List[int], list of qubit indexes\n\n\
+            - 'custom states': detects states that belong to a list of states\n\
+                detection_param: List[str], list of state keys\n\n\
+            - 'max distance': maximizes the difference between the interaction and\n\
+                non interaction measurements in all the states\n\
+                detection_param: None")
 
     def __repr__(self) -> str:
         """String representation of the detector."""

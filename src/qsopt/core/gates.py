@@ -129,10 +129,10 @@ class Gate(ABC):
             raise ValueError(f"Gate {self.name} has no parameters")
         self._parameter.set(value)
 
-    def __repr__(self) -> str:
+    def __repr__(self, params = True) -> str:
         """String representation of gate."""
-        if self.has_parameter():
-            return f"{self.name}({self._parameter.value:.4f})[{self.target}]"
+        if params & self.has_parameter():
+            return f"{self.name}[{self.target}](param={self._parameter.value:.4f})"
         return f"{self.name}[{self.target}]"
 
 
