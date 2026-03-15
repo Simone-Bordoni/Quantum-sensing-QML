@@ -690,7 +690,7 @@ class Experiment:
 
         temp = self.debug_times[0]        #############################
 
-        print('\n\n'+'='*75 + '\n\n')               ############################
+        print('\n'+'='*75)               ############################
         sum=0
         for time in self.debug_times[1:]:                    ###############################
                                         ######################
@@ -700,7 +700,8 @@ class Experiment:
 
             temp = time                           ###########################
 
-        print(f'tempo totale = {sum}')
+        print(f'\nTempo totale di simulazione = {sum}')
+        print('='*75+'\n\n')
 
 
         return callback
