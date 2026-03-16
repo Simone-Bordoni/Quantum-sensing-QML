@@ -9,11 +9,12 @@ This class handles quantum sensing protocols with n qubits coupled to a shared c
 import warnings
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-import jax.numpy as jnp
 import numpy as np
 import qutip as qt
 import math
 import time as t
+import jax.numpy as jnp
+from jax import jit
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
@@ -138,6 +139,8 @@ class Experiment:
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_initial_state()
+        self._generate_measure_function()
+
 
     @property
     def n_qubits(self) -> int:
@@ -228,6 +231,39 @@ class Experiment:
         self.operators = generate_n_qubit_operators(
             field_levels, cavity_levels, qubit_levels, n_qubits, detection_states
         )
+
+    def _generate_measure_function(self) -> None:
+        """
+        Generate the measure and reset function
+
+        The function operates on the rho of the full system 
+        and outputs a new rho and the detection probability
+        """
+        
+        measure_reset = self.operators['measure_reset']
+        measure_reset_dag = self.operators['measure_reset_dag']
+
+        if self.detection_metric.detection_name == 'max difference':
+            def f_measure_reset(rho: qt.Qobj):
+                '''Measure probability of non detection and reset the qubit'''
+                
+                rho_reset = [op * rho * op_dag for op,op_dag in zip(measure_reset,measure_reset_dag)]
+                prob_detect = [jnp.real(x.tr()) for x in rho_reset]
+                rho_current = sum(rho_reset)
+
+                return rho_current, [jnp.array(prob_detect)]
+
+        else:
+            def f_measure_reset(rho: qt.Qobj):
+                '''Measure probability of non detection and reset the qubit'''
+
+                rho_reset = measure_reset * rho * measure_reset_dag
+                prob_no_detect = jnp.real(rho_reset.tr())
+                rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+
+                return rho_current, prob_no_detect
+
+        self.measure_reset = jit(f_measure_reset)
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
         """
@@ -533,8 +569,8 @@ class Experiment:
         detection_metric = self.detection_metric
 
         # Get measurement operators
-        measure_reset = self.operators["measure_reset"]
-        measure_reset_dag = self.operators["measure_reset_dag"]
+        # measure_reset = self.operators["measure_reset"]
+        # measure_reset_dag = self.operators["measure_reset_dag"]
 
         measurement_array = np.asarray(measurements, dtype=float)
         if measurement_array.ndim != 1 or measurement_array.size < 2:
@@ -551,7 +587,7 @@ class Experiment:
         rho_current = rho
 
         # Track cumulative probability of non-detection
-        prob = jnp.array(1.0)
+        prob = detection_metric.prob_initializer
 
         self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
         n_meas=0                      ############################
@@ -571,18 +607,21 @@ class Experiment:
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Measure probability of non detection and reset the qubit
-            rho_reset = measure_reset * rho_final * measure_reset_dag
-            prob_no_detect = jnp.real(rho_reset.tr())
-            rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+            rho_current, prob_current = self.measure_reset(rho = rho_final)
+            #rho_reset = measure_reset * rho_final * measure_reset_dag
+            #prob_no_detect = jnp.real(rho_reset.tr())
+            #rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+            
+            prob = detection_metric.measurement_aggregation(prob, prob_current)
 
-            prob = prob * prob_no_detect
+            #prob = prob * prob_no_detect
             
             n_meas+=1       ####################
 
         self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
 
 
-        return 1-prob
+        return detection_metric.post_aggregation(prob)
 
     def run_simulation(self, batch_size: int = 1, measure_qubit: Optional[Union[int,List[int]]] = None) -> OptimizationCallback:
         """
@@ -1096,10 +1135,8 @@ class Experiment:
                     )
                 )
 
-            # Average over batch
-            detect_with = jnp.mean(detect_with_batch)
-            detect_without = jnp.mean(detect_without_batch)
-            contrast = detect_with - detect_without
+            # Aggregate batch results
+            detect_with, detect_without, contrast = detection_metric.batching_logic(detect_with_batch,detect_without_batch)
             loss = detection_metric.metric(detect_with, detect_without)
 
             # Return negative for minimization
@@ -1144,7 +1181,7 @@ class Experiment:
                 header_parts.append(f"setup{i}_{setup_gates[i].__repr__(params=False):<8}")
             for i in range(n_final_show):
                 header_parts.append(f"reset{i}_{reset_gates[i].__repr__(params=False):<8}")
-            header_parts.extend([f"{'Contrast':<12}", "Grad Norm"])
+            header_parts.extend([f"{'Contrast':<12}", f"{'Grad Norm':<12}", "Time"])
             print("".join(header_parts))
             print("-" * 75)
 
@@ -1194,9 +1231,9 @@ class Experiment:
 
                 output_parts = [f"{step:<6}"]
                 for i in range(n_init_show):
-                    output_parts.append(f"{param_vals[i]:<14.6f}")
+                    output_parts.append(f"{param_vals[i]:<15.6f}")
                 for i in range(n_final_show):
-                    output_parts.append(f"{param_vals[n_initial + i]:<14.6f}")
+                    output_parts.append(f"{param_vals[n_initial + i]:<15.6f}")
                 output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}",f"{delta_t:<8.2f}"])
                 print("".join(output_parts))
 

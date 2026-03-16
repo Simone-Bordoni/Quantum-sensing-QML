@@ -137,7 +137,6 @@ def generate_n_qubit_operators(
         # Reset operators, individual qubits and global reset
         reset_q = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
         reset_all = qt.tensor([I_field, I_cavity]+ reset_q)
-        reset_all_dag = reset_all.dag()
 
         # Helper function to embed single-qubit operator in composite space
         def embed_qubit_op(op, qubit_idx):
@@ -177,16 +176,20 @@ def generate_n_qubit_operators(
         }
 
         
+        Ptemp = [P0,P1]
         
-        if detection_states == 'max difference':
+        if detection_states == 'all states':
+
+            all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
+            P_all = [qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
             
-                def f_measure_reset(rho: qt.Qobj, prob: List[jnp.array]):
-                    '''Measure probability of non detection and reset the qubit'''
-                    rho_reset = [op * rho * op_dag for op,op_dag in zip(Measure_reset,Measure_reset_dag)]
-                    prob_detect = [jnp.real(x.tr()) for x in rho_reset]
-                    rho_current = sum(rho_reset)
-                    prob.append(jnp.array(prob_detect))
-                    return rho_current, probs
+            # Insert in dictionary all states projectors
+            operators['Pall'] = P_all
+            
+            # Calculate measure reset operators
+            measure_reset = [reset_all*p for p in P_all]
+            measure_reset_dag = [x.dag() for x in measure_reset]
+
         else:
 
             # Detection and non-detection projectors using the detection states:
@@ -194,9 +197,7 @@ def generate_n_qubit_operators(
             if detection_states is None:
                 detection_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)]
 
-            Ptemp = [P0,P1]
-            qubit_reset_op = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
-            
+            # Calculate detection projectors
             P_detection = sum([ \
                 qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) \
                 for state in detection_states])
@@ -205,28 +206,17 @@ def generate_n_qubit_operators(
                     for qb,q_state in enumerate(list(map(int,format(i, f'0{n_qubits}b'))))]) \
                 for i in range(2**n_qubits) if not any(state == format(i, f'0{n_qubits}b') for state in detection_states)])
 
-            #Reset Operators
+            # Calculate measure reset operators            
             measure_reset = reset_all*P_no_detection
             measure_reset_dag = measure_reset.dag()
 
-            #detection projectors
+            # Insert in dictionary detection projectors
             operators["P_detect"] = P_detection
             operators["P_no_detect"] = P_no_detection
 
-            # Measure reset operators
-            operators["measure_reset"] = measure_reset
-            operators["measure_reset_dag"] = measure_reset_dag
-
-            def f_measure_reset(rho: qt.Qobj, prob: float):
-                '''Measure probability of non detection and reset the qubit'''
-                rho_reset = measure_reset * rho * measure_reset_dag
-                prob_no_detect = jnp.real(rho_reset.tr())
-                rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
-
-                prob = prob * prob_no_detect
-                return rho_current, prob
-
-        operators["measure_function"] = f_measure_reset
+        # Insert in dictionary measure reset operators
+        operators["measure_reset"] = measure_reset
+        operators["measure_reset_dag"] = measure_reset_dag
 
         return operators
 

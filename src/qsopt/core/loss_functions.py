@@ -5,10 +5,13 @@ This module provides utilities for defining custom detection criteria
 and computing contrast metrics from measurement probabilities.
 """
 
-from typing import Callable, Dict, Union, List, Optional
+from typing import Callable, Dict, Union, List, Optional, Tuple
 
 import jax.numpy as jnp
 from jax import jit
+
+def Aggregator(aggregated_type: type) -> type:
+    return Tuple[aggregated_type,Callable[[aggregated_type,aggregated_type],aggregated_type],Callable[aggregated_type,aggregated_type]]
 
 
 class DetectionMetric:
@@ -44,11 +47,19 @@ class DetectionMetric:
 
             - "custom states": detects states that belong to a list of states
                 Takes List[str] list of state keys, detection_param default ['00...0']
+            
+            - "max difference": maximizes the difference between the interaction and 
+            non interaction measurements in all the states
+                Doesn't take any parameter, detection_param default None
 
     detection_param : Union[int, List[str], List[int]], optional
         Parameter for the detection criterion, defaults to None
-    name : str, optional
-        Name used for logging/plotting, defaults to "1 - P_all0"
+    multiple_measurement_logic: Tuple[type,Callable[[float,float], float], optional
+        Custom function that takes probabilities of detection with and without photon and derives a loss.
+        If None, defaults to lambda x,y: -(x-y)
+    batching_logic:
+    metric_name : str, optional
+        Name used for logging/plotting
 
 
     Examples (for 2 qubits)
@@ -74,13 +85,34 @@ class DetectionMetric:
     0.6
     """
 
+ 
+
     def __init__(
         self, metric: Optional[Callable[[float,float], float]] = None, n_qubits: int=2, \
-            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None,
+            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None, \
+            multiple_measurement_logic: Optional[Union[Aggregator(float),Aggregator(list)]] = None, \
+            batching_logic: Optional[Callable[...,...]] = None, \
             metric_name: Optional[str] = 'custom metric'
     ):
         """Initialize the detection probability calculator."""
 
+        # define the multiple measurement logic. default: (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
+        if multiple_measurement_logic is None:
+            self.prob_initializer = jnp.array(1)
+            self.measurement_aggregation = lambda x,y: x*y
+            self.post_aggregation = lambda x: 1-x
+        else:
+            self.prob_initializer = jnp.array(1) if multiple_measurement_logic[0] is None else multiple_measurement_logic[0]
+            self.measurement_aggregation = lambda x,y: x*y if multiple_measurement_logic[1] is None else multiple_measurement_logic[1]
+            self.post_aggregation = lambda x: 1-x if multiple_measurement_logic[2] is None else multiple_measurement_logic[2]
+
+        # define batching logic. default
+        if batching_logic is None:
+            self.batching_logic = std_batching
+        else:
+            self.batching_logic = batching_logic
+
+        # define detection condition
         self.detection_states, self.detection_name = self.std_detection(detection_criterion, detection_param, n_qubits)
 
         if metric is None:
@@ -189,7 +221,34 @@ class DetectionMetric:
         
         elif criterion == 'max difference':
             # this criterion must measure separetly all states, it is handled inside quantum utils
-            return criterion, criterion
+            # measurement_aggregation and prob_initializer are updated to handle probability lists
+            self.prob_initializer = []
+            
+            @staticmethod
+            @jit
+            def list_aggregation(tot: List[jnp.array], new: List[jnp.array])\
+                -> List[jnp.array]:
+                return tot + new
+
+            self.measurement_aggregation = list_aggregation
+            self.post_aggregation = lambda x: x
+
+            # batching logic is updated to 
+
+            @staticmethod
+            @jit
+            def max_diff_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
+                -> (float, float, float):
+                detect_with = jnp.array(detect_with_batch)
+                detect_without = jnp.array(detect_without_batch)
+                difference = jnp.sum(jnp.abs(detect_with - detect_without))/2
+
+                return difference, 0, difference
+
+            
+            self.batching_logic = max_diff_batching
+
+            return 'all states', criterion
 
         else:
             raise ValueError(f"criterion was given the value '{criterion}'\n\
@@ -202,7 +261,7 @@ class DetectionMetric:
                 detection_param: List[int], list of qubit indexes\n\n\
             - 'custom states': detects states that belong to a list of states\n\
                 detection_param: List[str], list of state keys\n\n\
-            - 'max distance': maximizes the difference between the interaction and\n\
+            - 'max difference': maximizes the difference between the interaction and\n\
                 non interaction measurements in all the states\n\
                 detection_param: None")
 
@@ -217,3 +276,12 @@ class DetectionMetric:
 def std_metric(p_with_photon: float, p_without_photon: float)-> float:
     contrast = p_with_photon - p_without_photon
     return -contrast
+
+@staticmethod
+@jit
+def std_batching(detect_with_batch: List[float],detect_without_batch: List[float]):
+    # Average over batch
+    detect_with = jnp.mean(detect_with_batch)
+    detect_without = jnp.mean(detect_without_batch)
+    contrast = detect_with - detect_without
+    return detect_with, detect_without, contrast
