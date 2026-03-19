@@ -14,7 +14,7 @@ import qutip as qt
 import math
 import time as t
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, lax
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
@@ -93,10 +93,10 @@ class Experiment:
 
         # Create default circuits if not provided (2-qubit RY gates)
         if initial_circuit is None:
-            initial_circuit = create_ry_circuit_layer(experimental_params.n_qubits, theta_values=np.pi/2)
+            initial_circuit = create_ry_circuit(experimental_params.n_qubits, theta_values=np.pi/2)
 
         if final_circuit is None:
-            final_circuit = create_ry_circuit_layer(experimental_params.n_qubits, theta_values=-np.pi/2)
+            final_circuit = create_ry_circuit(experimental_params.n_qubits, theta_values=-np.pi/2)
 
         self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
@@ -259,7 +259,13 @@ class Experiment:
 
                 rho_reset = measure_reset * rho * measure_reset_dag
                 prob_no_detect = jnp.real(rho_reset.tr())
-                rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+                # Use lax.cond to avoid TracerBoolConversionError in JIT
+                # lax.cond works with arbitrary objects (like Qobj), unlike jnp.where
+                rho_current = lax.cond(
+                    prob_no_detect == 0,
+                    lambda: rho_reset,
+                    lambda: rho_reset / prob_no_detect
+                )
 
                 return rho_current, prob_no_detect
 
@@ -711,10 +717,10 @@ class Experiment:
 
         self.debug_times.append({ f'compute_probs' : t.time()})   ################################
 
-        # Average over batch
-        prob_with = jnp.mean(jnp.array(prob_with_list))
-        prob_without = jnp.mean(jnp.array(prob_without_list))
-        contrast = prob_with - prob_without
+        # Use detection metric's batching logic to properly handle both scalar and list results
+        prob_with, prob_without, contrast = self.detection_metric.batching_logic(
+            prob_with_list, prob_without_list
+        )
 
 
         self.debug_times.append({ f'save_callback' : t.time()})   ################################
@@ -1111,29 +1117,39 @@ class Experiment:
             if measurement_times_batch.ndim == 1:
                 measurement_times_batch = measurement_times_batch[jnp.newaxis, :]
 
-            detect_with_batch = jnp.zeros(batch_size)
-            detect_without_batch = jnp.zeros(batch_size)
+            # Initialize batch arrays based on detection criterion
+            # For 'max difference', simulation returns lists, so collect them
+            if detection_metric.detection_name == 'max difference':
+                detect_with_batch = []
+                detect_without_batch = []
+            else:
+                detect_with_batch = jnp.zeros(batch_size)
+                detect_without_batch = jnp.zeros(batch_size)
 
             for i in range(batch_size):
                 measurement_times = measurement_times_batch[i]
 
-                detect_with_batch = detect_with_batch.at[i].set(
-                    self.simulation(
-                        solver_with,
-                        rho0,
-                        measurement_times,
-                        precomputed_unitaries=circuit_unitaries
-                    )
+                sim_result_with = self.simulation(
+                    solver_with,
+                    rho0,
+                    measurement_times,
+                    precomputed_unitaries=circuit_unitaries
                 )
 
-                detect_without_batch = detect_without_batch.at[i].set(
-                    self.simulation(
-                        solver_without,
-                        rho0,
-                        measurement_times,
-                        precomputed_unitaries=circuit_unitaries
-                    )
+                sim_result_without = self.simulation(
+                    solver_without,
+                    rho0,
+                    measurement_times,
+                    precomputed_unitaries=circuit_unitaries
                 )
+
+                # Handle both scalar and list results
+                if detection_metric.detection_name == 'max difference':
+                    detect_with_batch.append(sim_result_with)
+                    detect_without_batch.append(sim_result_without)
+                else:
+                    detect_with_batch = detect_with_batch.at[i].set(sim_result_with)
+                    detect_without_batch = detect_without_batch.at[i].set(sim_result_without)
 
             # Aggregate batch results
             detect_with, detect_without, contrast = detection_metric.batching_logic(detect_with_batch,detect_without_batch)
@@ -1161,10 +1177,10 @@ class Experiment:
             for i, val in enumerate(initial_vals):
                 if i < n_initial :
                     circuit_type = "setup" 
-                    print(f"        param{(f"{i}"+"."):<3} {circuit_type}_{setup_gates[i].__repr__(params=False)}={val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
+                    print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{setup_gates[i].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
                 else:
                     circuit_type = "reset"
-                    print(f"        param{i}. {circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}={val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
+                    print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
 
             uncertainty = self.experimental_params.initial_time_uncertainty
             if uncertainty > 0:
