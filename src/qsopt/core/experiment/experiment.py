@@ -757,8 +757,8 @@ class Experiment:
             self.debug_times.append({ f'end_time' : t.time()})   ################################
 
             temp = self.debug_times[0]        #############################
-
-            print('\n'+'='*75)               ############################
+            print('Debug times for each step:')     ############################
+            print('\n'+'='*50)               ############################
             sum=0
             for time in self.debug_times[1:]:                    ###############################
                                             ######################
@@ -769,7 +769,7 @@ class Experiment:
                 temp = time                           ###########################
 
             print(f'\nTempo totale di simulazione = {sum}')
-            print('='*75+'\n\n')
+            print('='*50+'\n\n')
 
 
         return callback
