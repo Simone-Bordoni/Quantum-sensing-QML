@@ -101,7 +101,17 @@ class Experiment:
         self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
-        self.detection_metric = detection_metric if detection_metric is not None else DetectionMetric(n_qubits=experimental_params.n_qubits)
+
+        # Set detection metric, checks number of qubits given to the detection metric
+        if detection_metric is None:
+            self.detection_metric = DetectionMetric(n_qubits=experimental_params.n_qubits)
+        else:
+            if detection_metric.n_qubits != experimental_params.n_qubits:
+                raise ValueError(
+                    f"Detection metric n_qubits ({detection_metric.n_qubits}) must match experimental_params n_qubits ({experimental_params.n_qubits})"
+                )
+            self.detection_metric = detection_metric
+
 
         # Normalize qubit_levels to always be a list
         if isinstance(self.experimental_params.qubit_levels, int):
@@ -245,13 +255,22 @@ class Experiment:
 
         if self.detection_metric.detection_name == 'max difference':
             def f_measure_reset(rho: qt.Qobj):
-                '''Measure probability of non detection and reset the qubit'''
+                '''Measure probability of each qubit and reset the qubit as a mixture of all possible states'''
                 
                 rho_reset = [op * rho * op_dag for op,op_dag in zip(measure_reset,measure_reset_dag)]
-                prob_detect = [jnp.real(x.tr()) for x in rho_reset]
+                prob_list = [jnp.real(x.tr()) for x in rho_reset]
                 rho_current = sum(rho_reset)
 
-                return rho_current, [jnp.array(prob_detect)]
+                return rho_current, [jnp.array(prob_list)]
+
+        elif self.detection_metric.detection_name == 'fidelity' or self.detection_metric.detection_name == 'trace distance':
+            def f_measure_reset(rho: qt.Qobj):
+                '''Return rho and reset the qubit as a mixture of all possible states'''
+                
+                rho_reset = [op * rho * op_dag for op,op_dag in zip(measure_reset,measure_reset_dag)]
+                rho_current = sum(rho_reset)
+
+                return rho_current, [rho]              
 
         else:
             def f_measure_reset(rho: qt.Qobj):
@@ -629,7 +648,7 @@ class Experiment:
 
         return detection_metric.post_aggregation(prob)
 
-    def run_simulation(self, batch_size: int = 1, measure_qubit: Optional[Union[int,List[int]]] = None) -> OptimizationCallback:
+    def run_simulation(self, batch_size: int = 1, debug: bool=False) -> OptimizationCallback:
         """
         Run n-qubit sensing protocol with current parameters.
 
@@ -643,8 +662,7 @@ class Experiment:
             batch_size: Number of random realizations to average over for measurement
                        uncertainty (default: 1). Each realization uses a different
                        random shift in measurement times based on initial_time_uncertainty.
-            measure_qubit: Which qubit to measure (None => both jointly, index int: one qubit only, index list: qubits in the list only)
-
+                    
         Returns:
             OptimizationCallback: Callback containing simulation results with:
                 - Single epoch (epoch=1)
@@ -735,23 +753,23 @@ class Experiment:
             contrast=float(contrast),
         )
 
+        if debug:
+            self.debug_times.append({ f'end_time' : t.time()})   ################################
 
-        self.debug_times.append({ f'end_time' : t.time()})   ################################
+            temp = self.debug_times[0]        #############################
 
-        temp = self.debug_times[0]        #############################
+            print('\n'+'='*75)               ############################
+            sum=0
+            for time in self.debug_times[1:]:                    ###############################
+                                            ######################
+                sum += list(time.values())[0]-list(temp.values())[0]
+                print('{:33}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
+                                            ######################
 
-        print('\n'+'='*75)               ############################
-        sum=0
-        for time in self.debug_times[1:]:                    ###############################
-                                        ######################
-            sum += list(time.values())[0]-list(temp.values())[0]
-            print('{:33}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
-                                        ######################
+                temp = time                           ###########################
 
-            temp = time                           ###########################
-
-        print(f'\nTempo totale di simulazione = {sum}')
-        print('='*75+'\n\n')
+            print(f'\nTempo totale di simulazione = {sum}')
+            print('='*75+'\n\n')
 
 
         return callback
@@ -1119,12 +1137,9 @@ class Experiment:
 
             # Initialize batch arrays based on detection criterion
             # For 'max difference', simulation returns lists, so collect them
-            if detection_metric.detection_name == 'max difference':
-                detect_with_batch = []
-                detect_without_batch = []
-            else:
-                detect_with_batch = jnp.zeros(batch_size)
-                detect_without_batch = jnp.zeros(batch_size)
+            #if detection_metric.detection_name in ['max difference', 'fidelity', 'trace distance']:
+            detect_with_batch = []
+            detect_without_batch = []
 
             for i in range(batch_size):
                 measurement_times = measurement_times_batch[i]
@@ -1144,12 +1159,12 @@ class Experiment:
                 )
 
                 # Handle both scalar and list results
-                if detection_metric.detection_name == 'max difference':
-                    detect_with_batch.append(sim_result_with)
-                    detect_without_batch.append(sim_result_without)
-                else:
-                    detect_with_batch = detect_with_batch.at[i].set(sim_result_with)
-                    detect_without_batch = detect_without_batch.at[i].set(sim_result_without)
+                #if detection_metric.detection_name in ['max difference', 'fidelity', 'trace distance']:
+                detect_with_batch.append(sim_result_with)
+                detect_without_batch.append(sim_result_without)
+                #else:
+                 #   detect_with_batch = detect_with_batch.at[i].set(sim_result_with)
+                  #  detect_without_batch = detect_without_batch.at[i].set(sim_result_without)
 
             # Aggregate batch results
             detect_with, detect_without, contrast = detection_metric.batching_logic(detect_with_batch,detect_without_batch)

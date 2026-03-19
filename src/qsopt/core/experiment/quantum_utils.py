@@ -206,13 +206,14 @@ def generate_n_qubit_operators(
                     for qb,q_state in enumerate(list(map(int,format(i, f'0{n_qubits}b'))))]) \
                 for i in range(2**n_qubits) if not any(state == format(i, f'0{n_qubits}b') for state in detection_states)])
 
+            # Insert in dictionary detection projectors
+            operators["P_detect"] = P_detection
+            operators["P_no_detect"] = P_no_detection
+            
             # Calculate measure reset operators            
             measure_reset = reset_all*P_no_detection
             measure_reset_dag = measure_reset.dag()
 
-            # Insert in dictionary detection projectors
-            operators["P_detect"] = P_detection
-            operators["P_no_detect"] = P_no_detection
 
         # Insert in dictionary measure reset operators
         operators["measure_reset"] = measure_reset

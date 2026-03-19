@@ -7,11 +7,14 @@ and computing contrast metrics from measurement probabilities.
 
 from typing import Callable, Dict, Union, List, Optional, Tuple
 
+import qutip as qt
+from qutip.core.data.extract import extract
 import jax.numpy as jnp
 from jax import jit
+import qutip_jax
 
 def Aggregator(aggregated_type: type) -> type:
-    return Tuple[aggregated_type,Callable[[aggregated_type,aggregated_type],aggregated_type],Callable[aggregated_type,aggregated_type]]
+    return Tuple[aggregated_type,Callable[[aggregated_type,aggregated_type],aggregated_type],Callable[[aggregated_type],aggregated_type]]
 
 
 class DetectionMetric:
@@ -28,10 +31,10 @@ class DetectionMetric:
 
     Parameters
     ----------
+    n_qubits : int
     metric : Callable[[float,float], float], optional
         Custom function that takes probabilities of detection with and without photon and derives a loss.
         If None, defaults to lambda x,y: -(x-y)
-    n_qubits : int, optional
         Number of qubits, defaults to 2
     detection_criterion : str, optional
         Critirion of detection, each criterion uses differently detection_param:
@@ -84,17 +87,18 @@ class DetectionMetric:
     >>> detector(probs)
     0.6
     """
-
  
 
     def __init__(
-        self, metric: Optional[Callable[[float,float], float]] = None, n_qubits: int=2, \
+        self,  n_qubits: int, metric: Optional[Callable[[float,float], float]] = None, \
             detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator(float),Aggregator(list)]] = None, \
-            batching_logic: Optional[Callable[...,...]] = None, \
+            batching_logic: Optional[callable] = None, \
             metric_name: Optional[str] = 'custom metric'
     ):
         """Initialize the detection probability calculator."""
+
+        self.n_qubits = n_qubits
 
         # define the multiple measurement logic. default: (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
         if multiple_measurement_logic is None:
@@ -113,7 +117,7 @@ class DetectionMetric:
             self.batching_logic = batching_logic
 
         # define detection condition
-        self.detection_states, self.detection_name = self.std_detection(detection_criterion, detection_param, n_qubits)
+        self.detection_states, self.detection_name = self.std_detection(detection_criterion, detection_param)
 
         if metric is None:
             self.metric = std_metric
@@ -140,7 +144,7 @@ class DetectionMetric:
         """
         return self.metric(p_with_photon,p_without_photon)
 
-    def std_detection(self, criterion, detection_param, n_qubits):
+    def std_detection(self, criterion, detection_param):
         """Possible criterions:
 
             - any excited: detects if there is any excitation.
@@ -154,6 +158,10 @@ class DetectionMetric:
 
             - custom states: detects states that belong to a list of states
                 detection_param: List[str], list of state keys
+
+            - fidelity:
+
+            - trace distance:
             
             - max difference: maximizes the difference between the interaction and 
             non interaction measurements in all the states
@@ -162,21 +170,21 @@ class DetectionMetric:
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
 
-            non_0_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)]
+            non_0_states = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
             return non_0_states, criterion
 
         elif criterion == 'min excited':
 
             if detection_param is None:
                 detection_param = 1
-            elif (not isinstance(detection_param,int) and (0 < detection_param < n_qubits)):
-                raise ValueError(f"min excited detection expects detection_param to be an int between 1 and {n_qubits-1}.\n\
+            elif (not isinstance(detection_param,int) and (0 < detection_param < self.n_qubits)):
+                raise ValueError(f"min excited detection expects detection_param to be an int between 1 and {self.n_qubits-1}.\n\
                                    Value given: {detection_param}\n\
                                    Type given: {type(detection_param)}")
 
-            states = [format(i, f'0{n_qubits}b') \
-                for i in range(2**n_qubits) \
-                if sum(list(map(int,format(i, f'0{n_qubits}b')))) >= detection_param]
+            states = [format(i, f'0{self.n_qubits}b') \
+                for i in range(2**self.n_qubits) \
+                if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) >= detection_param]
 
             name = f'min {detection_param} excited'
 
@@ -188,14 +196,14 @@ class DetectionMetric:
                 detection_param = [0]
             elif not isinstance(detection_param,list):
                 raise ValueError("excited qubits detection expects detection_param to be a list")
-            elif not all((0 <= qubit < n_qubits) if isinstance(qubit, int) else False for qubit in detection_param):
-                raise ValueError(f"excited qubits detection expects elements of detection_param to be int qubit indexes between 0 and {n_qubits-1}.\n   \
+            elif not all((0 <= qubit < self.n_qubits) if isinstance(qubit, int) else False for qubit in detection_param):
+                raise ValueError(f"excited qubits detection expects elements of detection_param to be int qubit indexes between 0 and {self.n_qubits-1}.\n   \
                                    The following elements were given: {detection_param}\n\
                                    There are elements of types: {set([type(i) for i in detection_param])}")
 
-            states = [format(i, f'0{n_qubits}b') \
-                    for i in range(2**n_qubits) \
-                    if any([list(map(int,format(i, f'0{n_qubits}b')))[j]==1 for j in detection_param]) \
+            states = [format(i, f'0{self.n_qubits}b') \
+                    for i in range(2**self.n_qubits) \
+                    if any([list(map(int,format(i, f'0{self.n_qubits}b')))[j]==1 for j in detection_param]) \
                     ]
 
             name = f'excited qubits: {detection_param}'
@@ -204,11 +212,11 @@ class DetectionMetric:
 
         elif criterion == 'custom states':
             if detection_param is None:
-                detection_param = [format(0, f'0{n_qubits}b')]
+                detection_param = [format(0, f'0{self.n_qubits}b')]
             elif not all([isinstance(state, str) for state in detection_param]):
                 raise ValueError(f"custom states detection expects detection_param to be a list of string states")
 
-            all_possible_states = set([format(i, f'0{n_qubits}b') for i in range(n_qubits)])
+            all_possible_states = set([format(i, f'0{self.n_qubits}b') for i in range(self.n_qubits)])
             invalid_states = set(detection_param) - all_possible_states
             if len(invalid_states) != 0:
                 raise ValueError(f"{len(invalid_states)} invalid states given: {invalid_states}")
@@ -219,32 +227,83 @@ class DetectionMetric:
 
             return states, name
         
-        elif criterion == 'max difference':
-            # this criterion must measure separetly all states, it is handled inside quantum utils
+        elif criterion == 'fidelity':
+            # this criterion must measure couples of rho from the interacting and non interacting simulations,
             # measurement_aggregation and prob_initializer are updated to handle probability lists
             self.prob_initializer = []
-            
+            self.measurement_aggregation = list_aggregation
+            self.post_aggregation = lambda x: x
+
+            qutip_jax.set_as_default()
+
+            # batching logic is updated to 
             @staticmethod
             @jit
-            def list_aggregation(tot: List[jnp.array], new: List[jnp.array])\
-                -> List[jnp.array]:
-                return tot + new
+            def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
+                -> Tuple[float, float, float]:
 
+                detect_with = [item for sublist in detect_with_batch for item in sublist]
+                detect_without = [item for sublist in detect_without_batch for item in sublist]
+
+                fidelity_list = [fidelity(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
+
+                total_fidelity = jnp.mean(jnp.array(fidelity_list))
+
+                return total_fidelity, 0, total_fidelity
+            
+            self.batching_logic = fidelity_batching
+
+            return 'all states', criterion
+
+
+        elif criterion == 'trace distance':
+            # this criterion must measure couples of rho from the interacting and non interacting simulations,
+            # measurement_aggregation and prob_initializer are updated to handle probability lists
+            self.prob_initializer = []
+            self.measurement_aggregation = list_aggregation
+            self.post_aggregation = lambda x: x
+
+            qutip_jax.set_as_default()
+
+            # batching logic is updated to 
+            @staticmethod
+            @jit
+            def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
+                -> Tuple[float, float, float]:
+
+                detect_with = [item for sublist in detect_with_batch for item in sublist]
+                detect_without = [item for sublist in detect_without_batch for item in sublist]
+
+                trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
+
+                total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
+
+                return total_trace_distance, 0, total_trace_distance
+            
+            self.batching_logic = trace_distance_batching
+
+            return 'all states', criterion
+        
+        elif criterion == 'max difference':
+            # this criterion must measure separetly all states, 
+            # compute the absolute difference between the interacting and non interacting probabilities in each state and then average over states,
+            # measurement_aggregation and prob_initializer are updated to handle probability lists
+            self.prob_initializer = []
             self.measurement_aggregation = list_aggregation
             self.post_aggregation = lambda x: x
 
             # batching logic is updated to 
-
             @staticmethod
             @jit
             def max_diff_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
-                -> (float, float, float):
+                -> Tuple[float, float, float]:
                 detect_with = jnp.array(detect_with_batch)
                 detect_without = jnp.array(detect_without_batch)
-                difference = jnp.sum(jnp.abs(detect_with - detect_without))/2
+                # Shape: (batch_size, n_measurements, n_states)
+                # Sum over states (axis=-1), then average over batch and measurements
+                difference = jnp.mean(jnp.sum(jnp.abs(detect_with - detect_without), axis=-1)) / 2
 
                 return difference, 0, difference
-
             
             self.batching_logic = max_diff_batching
 
@@ -261,6 +320,10 @@ class DetectionMetric:
                 detection_param: List[int], list of qubit indexes\n\n\
             - 'custom states': detects states that belong to a list of states\n\
                 detection_param: List[str], list of state keys\n\n\
+            - 'fidelity': computes the fidelity between the interacting and non interacting states \n\
+                detection_param: None\n\n\
+            - 'trace distance': computes the trace distance between the interacting and non interacting states \n\
+                detection_param: None\n\n\
             - 'max difference': maximizes the difference between the interaction and\n\
                 non interaction measurements in all the states\n\
                 detection_param: None")
@@ -281,7 +344,39 @@ def std_metric(p_with_photon: float, p_without_photon: float)-> float:
 @jit
 def std_batching(detect_with_batch: List[float],detect_without_batch: List[float]):
     # Average over batch
-    detect_with = jnp.mean(detect_with_batch)
-    detect_without = jnp.mean(detect_without_batch)
+    detect_with = jnp.mean(jnp.array(detect_with_batch))
+    detect_without = jnp.mean(jnp.array(detect_without_batch))
     contrast = detect_with - detect_without
     return detect_with, detect_without, contrast
+
+@staticmethod
+@jit
+def list_aggregation(tot: List[jnp.array], new: List[jnp.array])\
+    -> List[jnp.array]:
+    return tot + new
+
+@staticmethod
+@jit
+def trace_distance(rho, sigma):
+    delta = rho - sigma
+    # Singular values of delta
+    s = jnp.linalg.svd(delta, compute_uv=False)
+    return 0.5 * jnp.sum(s)
+
+
+@staticmethod
+@jit
+def sqrtm_psd(mat):
+    # Assumes Hermitian PSD matrix
+    eigvals, eigvecs = jnp.linalg.eigh(mat)
+    eigvals = jnp.clip(eigvals, a_min=0.0)  # numerical safety
+    sqrt_eigvals = jnp.sqrt(eigvals)
+    return (eigvecs * sqrt_eigvals) @ eigvecs.conj().T
+
+@staticmethod
+@jit
+def fidelity(rho, sigma):
+    sqrt_rho = sqrtm_psd(rho)
+    inner = sqrt_rho @ sigma @ sqrt_rho
+    sqrt_inner = sqrtm_psd(inner)
+    return jnp.real(jnp.trace(sqrt_inner))**2
