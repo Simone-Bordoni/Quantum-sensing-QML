@@ -7,6 +7,7 @@ and computing contrast metrics from measurement probabilities.
 
 from typing import Callable, Dict, Union, List, Optional, Tuple
 
+import jax
 import qutip as qt
 from qutip.core.data.extract import extract
 import jax.numpy as jnp
@@ -334,6 +335,8 @@ class DetectionMetric:
         criterion='{self.detection_name}'\n\
         metric='{self.metric_name}'"
 
+# Support function for different metrics
+
 @staticmethod
 @jit
 def std_metric(p_with_photon: float, p_without_photon: float)-> float:
@@ -351,8 +354,8 @@ def std_batching(detect_with_batch: List[float],detect_without_batch: List[float
 
 @staticmethod
 @jit
-def list_aggregation(tot: List[jnp.array], new: List[jnp.array])\
-    -> List[jnp.array]:
+def list_aggregation(tot: list, new: list)\
+    -> list:
     return tot + new
 
 @staticmethod
@@ -379,4 +382,4 @@ def fidelity(rho, sigma):
     sqrt_rho = sqrtm_psd(rho)
     inner = sqrt_rho @ sigma @ sqrt_rho
     sqrt_inner = sqrtm_psd(inner)
-    return jnp.real(jnp.trace(sqrt_inner))**2
+    return 1-jnp.real(jnp.trace(sqrt_inner))**2
