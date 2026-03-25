@@ -160,9 +160,9 @@ class DetectionMetric:
             - custom states: detects states that belong to a list of states
                 detection_param: List[str], list of state keys
 
-            - fidelity:
+            - fidelity: doesn't detect and evolves the mixture of states, minimizes the fidelity 
 
-            - trace distance:
+            - trace distance: doesn't detect and evolves the mixture of states, maximizes the trace distance
             
             - max difference: maximizes the difference between the interaction and 
             non interaction measurements in all the states
@@ -250,7 +250,8 @@ class DetectionMetric:
 
                 total_fidelity = jnp.mean(jnp.array(fidelity_list))
 
-                return total_fidelity, 0, total_fidelity
+                #The first output is 0 and the second one is the fidelity so that the fidelity is minimized
+                return 0, total_fidelity, total_fidelity 
             
             self.batching_logic = fidelity_batching
 
@@ -268,17 +269,24 @@ class DetectionMetric:
 
             # batching logic is updated to 
             @staticmethod
-            @jit
+            #@jit
             def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
                 -> Tuple[float, float, float]:
 
                 detect_with = [item for sublist in detect_with_batch for item in sublist]
                 detect_without = [item for sublist in detect_without_batch for item in sublist]
-
+                print(f'traccia rho:\n{detect_with[0].tr()}')
+                eigvals = jnp.linalg.eigvalsh(jnp.array(detect_with[0].full()))
+                print(eigvals)
+                h, p, t = is_valid_density_matrix(detect_with[0])
+                print("Hermitian:", h, "Positive:", p, "Trace=1:", t)
+                print(f'traccia sigma:\n{detect_without[0].tr()}')
+                h, p, t = is_valid_density_matrix(detect_without[0])
+                print("Hermitian:", h, "Positive:", p, "Trace=1:", t)
                 trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
-
+                print(f'distanza: {trace_distance_list[0]}')
                 total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
-
+                print(f'distanza tot: {total_trace_distance}')
                 return total_trace_distance, 0, total_trace_distance
             
             self.batching_logic = trace_distance_batching
@@ -363,8 +371,8 @@ def list_aggregation(tot: list, new: list)\
 def trace_distance(rho, sigma):
     delta = rho - sigma
     # Singular values of delta
-    s = jnp.linalg.svd(delta, compute_uv=False)
-    return 0.5 * jnp.sum(s)
+    s = jnp.linalg.eigvalsh(delta)
+    return 0.5 * jnp.sum(jnp.abs(s))
 
 
 @staticmethod
@@ -383,3 +391,13 @@ def fidelity(rho, sigma):
     inner = sqrt_rho @ sigma @ sqrt_rho
     sqrt_inner = sqrtm_psd(inner)
     return 1-jnp.real(jnp.trace(sqrt_inner))**2
+
+def is_valid_density_matrix(rho):
+    rho_e = extract(rho.data, "JaxArray")
+    rho = jnp.array(rho.full())
+    print(f'difference extraction: {(rho-rho_e).max()}')
+    hermitian = jnp.allclose(rho, rho.conj().T)
+    eigvals = jnp.linalg.eigvalsh(rho)
+    positive = jnp.all(eigvals >= -1e-10)  # tolerance
+    trace_one = jnp.isclose(jnp.trace(rho), 1.0)
+    return hermitian, positive, trace_one
