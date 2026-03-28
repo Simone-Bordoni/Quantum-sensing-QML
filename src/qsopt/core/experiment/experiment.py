@@ -646,7 +646,7 @@ class Experiment:
         self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
 
 
-        return detection_metric.post_aggregation(prob)
+        return detection_metric.post_aggregation(prob) #rho_final
 
     def run_simulation(self, batch_size: int = 1, debug: bool=False) -> OptimizationCallback:
         """
@@ -900,6 +900,9 @@ class Experiment:
         >>> # Without cavity population (default)
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
+
+        if self.detection_metric.detection_name in ['fidelity','trace distance', 'max difference']:
+            raise NotImplementedError(f"In time_evolution the detection '{self.detection_metric.detection_name}' is not yet implemented")
 
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:

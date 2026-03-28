@@ -243,8 +243,10 @@ class DetectionMetric:
             def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
                 -> Tuple[float, float, float]:
 
-                detect_with = [item for sublist in detect_with_batch for item in sublist]
-                detect_without = [item for sublist in detect_without_batch for item in sublist]
+                n_subsystems = len(detect_with_batch[0][0].dims[0])
+                n = range(n_subsystems)
+                detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
+                detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
 
                 fidelity_list = [fidelity(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
 
@@ -269,24 +271,18 @@ class DetectionMetric:
 
             # batching logic is updated to 
             @staticmethod
-            #@jit
+            @jit
             def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
                 -> Tuple[float, float, float]:
 
-                detect_with = [item for sublist in detect_with_batch for item in sublist]
-                detect_without = [item for sublist in detect_without_batch for item in sublist]
-                print(f'traccia rho:\n{detect_with[0].tr()}')
-                eigvals = jnp.linalg.eigvalsh(jnp.array(detect_with[0].full()))
-                print(eigvals)
-                h, p, t = is_valid_density_matrix(detect_with[0])
-                print("Hermitian:", h, "Positive:", p, "Trace=1:", t)
-                print(f'traccia sigma:\n{detect_without[0].tr()}')
-                h, p, t = is_valid_density_matrix(detect_without[0])
-                print("Hermitian:", h, "Positive:", p, "Trace=1:", t)
+                n_subsystems = len(detect_with_batch[0][0].dims[0])
+                n = range(n_subsystems)
+                detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
+                detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
+              
                 trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
-                print(f'distanza: {trace_distance_list[0]}')
+               
                 total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
-                print(f'distanza tot: {total_trace_distance}')
                 return total_trace_distance, 0, total_trace_distance
             
             self.batching_logic = trace_distance_batching
