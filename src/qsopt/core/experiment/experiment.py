@@ -799,7 +799,7 @@ class Experiment:
         Example:
             >>> experiment = Experiment(exp_params)
             >>> results = experiment.run_simulation_with_probabilities()
-            >>> print(f"P(11) with photon: {results['probs_with']['p11']:.4f}")
+            >>> print(f"P(11) with photon: {results['probs_with']['11']:.4f}")
             >>> print(f"Contrast: {results['contrast']:.4f}")
         """
         # Get initial state and solvers
@@ -826,20 +826,35 @@ class Experiment:
         rho_final_without = final_unitary * rho_evolved_without * final_unitary_dag  # type: ignore
         probs_without = self.measure_all_states(rho_final_without)
 
-        # Use metric to compute detection probabilities
+        # Build detection inputs in the shape expected by the selected metric mode.
+        detection_name = self.detection_metric.detection_name
         n_qubits = self.experimental_params.n_qubits
-        detection_with = float(self.detection_metric(probs_with))
-        detection_without = float(self.detection_metric(probs_without))
 
-        # Compute contrast using metric's method
-        contrast = float(detection_with - detection_without)
+        if detection_name in ["fidelity", "trace distance"]:
+            detection_with, detection_without, contrast = self.detection_metric.batching_logic(
+                [[rho_final_with]], [[rho_final_without]]
+            )
+        elif detection_name == "max difference":
+            all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
+            probs_with_vector = jnp.array([probs_with[state] for state in all_states], dtype=float)
+            probs_without_vector = jnp.array([probs_without[state] for state in all_states], dtype=float)
+            detection_with, detection_without, contrast = self.detection_metric.batching_logic(
+                [[probs_with_vector]], [[probs_without_vector]]
+            )
+        else:
+            detection_states = self.detection_metric.detection_states
+            detect_with_prob = float(sum(probs_with[state] for state in detection_states))
+            detect_without_prob = float(sum(probs_without[state] for state in detection_states))
+            detection_with, detection_without, contrast = self.detection_metric.batching_logic(
+                [detect_with_prob], [detect_without_prob]
+            )
 
         return {
             "probs_with": probs_with,
             "probs_without": probs_without,
-            "detection_with": detection_with,
-            "detection_without": detection_without,
-            "contrast": contrast,
+            "detection_with": float(detection_with),
+            "detection_without": float(detection_without),
+            "contrast": float(contrast),
         }
 
     def time_evolution(
@@ -1745,6 +1760,9 @@ class Experiment:
 
         Note:
             For multi-qubit experiments, chi is set equal for all qubits.
+            For n_qubits >= 2, probability maps are stored for all computational
+            basis states using keys like ``p00``, ``p11`` (2 qubits) or
+            ``p000``, ``p001``, ... (n qubits).
             Experiment state is automatically restored after the sweep.
         """
         import time
@@ -1785,15 +1803,14 @@ class Experiment:
 
         # Determine number of qubits
         n_qubits = self.experimental_params.n_qubits
-        is_two_qubit = (n_qubits == 2)
+        store_state_prob_maps = n_qubits >= 2
+        all_states = [format(k, f"0{n_qubits}b") for k in range(2**n_qubits)]
 
-        # For two-qubit experiments, also track individual probabilities
-        if is_two_qubit:
+        # For n-qubit experiments (n >= 2), track probabilities for all basis states.
+        if store_state_prob_maps:
             prob_maps = {
-                "p00": np.zeros((resolution_gamma, resolution_chi)),
-                "p01": np.zeros((resolution_gamma, resolution_chi)),
-                "p10": np.zeros((resolution_gamma, resolution_chi)),
-                "p11": np.zeros((resolution_gamma, resolution_chi)),
+                f"p{state}": np.zeros((resolution_gamma, resolution_chi))
+                for state in all_states
             }
 
         start_time = time.time()
@@ -1813,8 +1830,8 @@ class Experiment:
                     self._update_chi_gamma(chi_list, gamma_val)
 
                     # Run simulation
-                    if is_two_qubit:
-                        # For two-qubit, get full probability information
+                    if store_state_prob_maps:
+                        # For n >= 2 qubits, get full basis-state probability information.
                         results = self.run_simulation_with_probabilities()
 
                         # Store detection and contrast results
@@ -1822,9 +1839,9 @@ class Experiment:
                         detection_map[j, i] = results["detection_with"]
                         detection_without_map[j, i] = results["detection_without"]
 
-                        # Store individual probability maps
-                        for key in ["p00", "p01", "p10", "p11"]:
-                            prob_maps[key][j, i] = results["probs_with"][key]
+                        # Store individual probability maps for all basis states
+                        for state in all_states:
+                            prob_maps[f"p{state}"][j, i] = results["probs_with"][state]
                     else:
                         # Run simulation with batch averaging
                         callback = self.run_simulation(batch_size=batch_size)
@@ -1859,8 +1876,8 @@ class Experiment:
             "detection_without_map": detection_without_map,
         }
 
-        # Add probability maps for two-qubit experiments
-        if is_two_qubit:
+        # Add probability maps for n-qubit experiments with n >= 2
+        if store_state_prob_maps:
             results_dict.update(prob_maps)
 
         # Prepare metadata
@@ -1911,16 +1928,18 @@ class Experiment:
 
     def measure_all_states(self, rho: qt.Qobj) -> Dict[str, float]:
         """
-        Measure probabilities for all joint qubit states.
+        Measure probabilities for all computational-basis qubit states.
 
-        Convenience method to get all joint measurement outcomes at once.
+        Convenience method to get all joint measurement outcomes at once for
+        an arbitrary number of qubits.
 
         Args:
             rho: State to measure
 
         Returns:
-            Dictionary with joint measurement probabilities:
-            {'00': p00, '01': p01, '10': p10, '11': p11}
+            Dictionary with probabilities for all $2^n$ basis states,
+            keyed by bitstrings like ``'0'``, ``'1'`` (1 qubit) or
+            ``'00'``, ``'01'``, ``'10'``, ``'11'`` (2 qubits), etc.
 
         Example:
             >>> probs = experiment.measure_all_states(rho)
@@ -1931,14 +1950,18 @@ class Experiment:
         field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
+        n_qubits = self.experimental_params.n_qubits
+        all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
 
         return {
-            "00": measure_qubits_probability(rho, [0, 1], self.operators, state="00",
-                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
-            "01": measure_qubits_probability(rho, [0, 1], self.operators, state="01",
-                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
-            "10": measure_qubits_probability(rho, [0, 1], self.operators, state="10",
-                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
-            "11": measure_qubits_probability(rho, [0, 1], self.operators, state="11",
-                                            field_levels=field_levels, cavity_levels=cavity_levels, q_levels=qubit_levels),
+            state: measure_qubits_probability(
+                rho,
+                "all",
+                self.operators,
+                state=state,
+                field_levels=field_levels,
+                cavity_levels=cavity_levels,
+                q_levels=qubit_levels,
+            )
+            for state in all_states
         }

@@ -16,8 +16,8 @@ src/qsopt/core/loss_functions.py
 src/qsopt/core/experiment/__init__.py
 src/qsopt/core/experiment/experiment.py
 src/qsopt/core/experiment/quantum_utils.py
-src/qsopt/core/experiment/single_qubit_experiment.py
-src/qsopt/core/experiment/two_qubit_experiment.py
+src/qsopt/core/experiment/old/single_qubit_experiment.py
+src/qsopt/core/experiment/old/two_qubit_experiment.py
 src/qsopt/tests/__init__.py
 src/qsopt/tests/conftest.py
 src/qsopt/tests/test_callback.py
@@ -35,13 +35,11 @@ src/qsopt/tests/test_pulse_shape_visualization.py
 src/qsopt/tests/test_quantum_utils.py
 src/qsopt/tests/test_qubit_interactions.py
 src/qsopt/tests/test_results.py
-src/qsopt/tests/test_trainable_parameters.py
 src/qsopt/tests/test_two_qubit_circuit_refactoring.py
 src/qsopt/tests/test_two_qubit_experiment.py
 src/qsopt/tests/test_visualization.py
 src/qsopt/utils/__init__.py
 src/qsopt/utils/experiment_loader.py
 src/qsopt/utils/landscape_analysis.py
-src/qsopt/utils/parameters_sweep.py
 src/qsopt/utils/results.py
 src/qsopt/utils/visualization.py

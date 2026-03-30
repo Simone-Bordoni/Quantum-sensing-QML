@@ -51,6 +51,12 @@ class DetectionMetric:
 
             - "custom states": detects states that belong to a list of states
                 Takes List[str] list of state keys, detection_param default ['00...0']
+
+            - fidelity: doesn't detect and evolves the mixture of states, minimizes the fidelity 
+                Doesn't take any parameter, detection_param default None
+
+            - trace distance: doesn't detect and evolves the mixture of states, maximizes the trace distance
+                Doesn't take any parameter, detection_param default None
             
             - "max difference": maximizes the difference between the interaction and 
             non interaction measurements in all the states
@@ -118,7 +124,7 @@ class DetectionMetric:
             self.batching_logic = batching_logic
 
         # define detection condition
-        self.detection_states, self.detection_name = self.std_detection(detection_criterion, detection_param)
+        self.detection_states, self.detection_name = self.build_detection(detection_criterion, detection_param)
 
         if metric is None:
             self.metric = std_metric
@@ -145,7 +151,7 @@ class DetectionMetric:
         """
         return self.metric(p_with_photon,p_without_photon)
 
-    def std_detection(self, criterion, detection_param):
+    def build_detection(self, criterion, detection_param):
         """Possible criterions:
 
             - any excited: detects if there is any excitation.
@@ -160,9 +166,11 @@ class DetectionMetric:
             - custom states: detects states that belong to a list of states
                 detection_param: List[str], list of state keys
 
-            - fidelity: doesn't detect and evolves the mixture of states, minimizes the fidelity 
+            - fidelity: doesn't detect and evolves the mixture of states, minimizes the fidelity
+                detection_param: None
 
             - trace distance: doesn't detect and evolves the mixture of states, maximizes the trace distance
+                detection_param: None
             
             - max difference: maximizes the difference between the interaction and 
             non interaction measurements in all the states
@@ -237,24 +245,7 @@ class DetectionMetric:
 
             qutip_jax.set_as_default()
 
-            # batching logic is updated to 
-            @staticmethod
-            @jit
-            def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
-                -> Tuple[float, float, float]:
-
-                n_subsystems = len(detect_with_batch[0][0].dims[0])
-                n = range(n_subsystems)
-                detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
-                detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
-
-                fidelity_list = [fidelity(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
-
-                total_fidelity = jnp.mean(jnp.array(fidelity_list))
-
-                #The first output is 0 and the second one is the fidelity so that the fidelity is minimized
-                return 0, total_fidelity, total_fidelity 
-            
+            # batching logic is updated to             
             self.batching_logic = fidelity_batching
 
             return 'all states', criterion
@@ -269,22 +260,7 @@ class DetectionMetric:
 
             qutip_jax.set_as_default()
 
-            # batching logic is updated to 
-            @staticmethod
-            @jit
-            def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
-                -> Tuple[float, float, float]:
-
-                n_subsystems = len(detect_with_batch[0][0].dims[0])
-                n = range(n_subsystems)
-                detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
-                detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
-              
-                trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
-               
-                total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
-                return total_trace_distance, 0, total_trace_distance
-            
+            # batching logic is updated to             
             self.batching_logic = trace_distance_batching
 
             return 'all states', criterion
@@ -297,19 +273,7 @@ class DetectionMetric:
             self.measurement_aggregation = list_aggregation
             self.post_aggregation = lambda x: x
 
-            # batching logic is updated to 
-            @staticmethod
-            @jit
-            def max_diff_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
-                -> Tuple[float, float, float]:
-                detect_with = jnp.array(detect_with_batch)
-                detect_without = jnp.array(detect_without_batch)
-                # Shape: (batch_size, n_measurements, n_states)
-                # Sum over states (axis=-1), then average over batch and measurements
-                difference = jnp.mean(jnp.sum(jnp.abs(detect_with - detect_without), axis=-1)) / 2
-
-                return difference, 0, difference
-            
+            # batching logic is updated to             
             self.batching_logic = max_diff_batching
 
             return 'all states', criterion
@@ -358,6 +322,50 @@ def std_batching(detect_with_batch: List[float],detect_without_batch: List[float
 
 @staticmethod
 @jit
+def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
+    -> Tuple[float, float, float]:
+
+    n_subsystems = len(detect_with_batch[0][0].dims[0])
+    n = range(n_subsystems)
+    detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
+    detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
+
+    fidelity_list = [fidelity(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
+
+    total_fidelity = jnp.mean(jnp.array(fidelity_list))
+
+    #The first output is 0 and the second one is the fidelity so that the fidelity is minimized
+    return 1-total_fidelity, 0, 1-total_fidelity 
+
+@staticmethod
+@jit
+def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
+    -> Tuple[float, float, float]:
+
+    n_subsystems = len(detect_with_batch[0][0].dims[0])
+    n = range(n_subsystems)
+    detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
+    detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
+    
+    trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
+    
+    total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
+    return total_trace_distance, 0, total_trace_distance
+
+@staticmethod
+@jit
+def max_diff_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
+    -> Tuple[float, float, float]:
+    detect_with = jnp.array(detect_with_batch)
+    detect_without = jnp.array(detect_without_batch)
+    # Shape: (batch_size, n_measurements, n_states)
+    # Sum over states (axis=-1), then average over batch and measurements
+    difference = jnp.mean(jnp.sum(jnp.abs(detect_with - detect_without), axis=-1)) / 2
+
+    return difference, 0, difference
+
+@staticmethod
+@jit
 def list_aggregation(tot: list, new: list)\
     -> list:
     return tot + new
@@ -370,6 +378,22 @@ def trace_distance(rho, sigma):
     s = jnp.linalg.eigvalsh(delta)
     return 0.5 * jnp.sum(jnp.abs(s))
 
+@jit
+def _hermitian_part(mat):
+    return 0.5 * (mat + mat.conj().T)
+
+@jit
+def sqrtm_psd_smooth(mat, eps=1e-8, beta=40.0):
+    # Smooth PSD projection (no hard clipping)
+    mat_h = _hermitian_part(mat)
+    d = mat_h.shape[0]
+    mat_h = mat_h + eps * jnp.eye(d, dtype=mat_h.dtype)
+
+    eigvals, eigvecs = jnp.linalg.eigh(mat_h)
+    eigvals_pos = jax.nn.softplus(beta * eigvals) / beta + eps
+    sqrt_eigvals = jnp.sqrt(eigvals_pos)
+
+    return (eigvecs * sqrt_eigvals) @ eigvecs.conj().T
 
 @staticmethod
 @jit
@@ -383,10 +407,10 @@ def sqrtm_psd(mat):
 @staticmethod
 @jit
 def fidelity(rho, sigma):
-    sqrt_rho = sqrtm_psd(rho)
+    sqrt_rho = sqrtm_psd_smooth(rho)
     inner = sqrt_rho @ sigma @ sqrt_rho
-    sqrt_inner = sqrtm_psd(inner)
-    return 1-jnp.real(jnp.trace(sqrt_inner))**2
+    sqrt_inner = sqrtm_psd_smooth(inner)
+    return jnp.real(jnp.trace(sqrt_inner))**2
 
 def is_valid_density_matrix(rho):
     rho_e = extract(rho.data, "JaxArray")

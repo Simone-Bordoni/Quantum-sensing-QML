@@ -1437,12 +1437,12 @@ def plot_sweep_results(
         >>> sweep = compute_asymmetry_coupling_sweep(exp_2q, ...)
         >>> plot_sweep_results(sweep, figsize=(10, 6), mark_optimal=True)
     """
-    # Default contour levels
-    if contour_levels is None:
-        contour_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    # Preserve explicit user levels; otherwise choose per-result defaults later.
+    user_contour_levels = contour_levels
+    user_label_levels = label_levels
 
-    if label_levels is None:
-        label_levels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+    probability_default_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+    probability_default_labels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
 
     # Determine which results to plot
     if results_to_plot is None:
@@ -1534,13 +1534,46 @@ def plot_sweep_results(
         # Transpose data to match param1-param2 orientation
         result_T = result_data.T
 
+        # Use data-aware levels for contrast so small/negative ranges are visible.
+        if user_contour_levels is None:
+            is_probability_like = result_key.startswith("p") or result_key in {
+                "detection_map",
+                "detection_without_map",
+            }
+            if is_probability_like:
+                contour_levels_local = probability_default_levels
+            else:
+                result_min = float(np.min(result_T))
+                result_max = float(np.max(result_T))
+                if np.isclose(result_min, result_max):
+                    eps = max(1e-6, abs(result_max) * 0.1 + 1e-6)
+                    result_min -= eps
+                    result_max += eps
+                contour_levels_local = np.linspace(result_min, result_max, 21)
+        else:
+            contour_levels_local = user_contour_levels
+
+        if user_label_levels is None:
+            if result_key.startswith("p") or result_key in {"detection_map", "detection_without_map"}:
+                label_levels_local = probability_default_labels
+            else:
+                label_levels_local = np.linspace(contour_levels_local[0], contour_levels_local[-1], 6)
+        else:
+            label_levels_local = user_label_levels
+
+        cmap_local = "RdBu_r" if result_key == "contrast_map" else "rainbow"
+
         # Filled contours
-        cf = ax.contourf(Param1, Param2, result_T, levels=contour_levels, cmap="rainbow")
+        cf = ax.contourf(Param1, Param2, result_T, levels=contour_levels_local, cmap=cmap_local)
         cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
-        cbar.set_label("Probability" if "p" in result_key else "Value", fontsize=10)
+        is_probability_result = result_key.startswith("p") or result_key in {
+            "detection_map",
+            "detection_without_map",
+        }
+        cbar.set_label("Probability" if is_probability_result else "Value", fontsize=10)
 
         # Line contours with labels
-        cs = ax.contour(Param1, Param2, result_T, levels=label_levels, colors="k", linewidths=0.2)
+        cs = ax.contour(Param1, Param2, result_T, levels=label_levels_local, colors="k", linewidths=0.2)
         ax.clabel(cs, inline=True, fontsize=8)
 
         # Mark optimal point
@@ -1551,13 +1584,44 @@ def plot_sweep_results(
                         np.argmax(sweep.results[result_key]), sweep.results[result_key].shape
                     )
                 ]
-                ax.plot(
-                    optimal_param1, optimal_param2, "r*", markersize=15, label=f"Max: {max_val:.4f}"
-                )
+                marker_label = f"Max: {max_val:.4f}"
             else:
-                ax.plot(
-                    optimal_param1, optimal_param2, "r*", markersize=15, label="At max contrast"
-                )
+                marker_label = "At max contrast"
+
+            # High-contrast multicolor star with thick black border.
+            ax.scatter(
+                [optimal_param1],
+                [optimal_param2],
+                marker="*",
+                s=700,
+                c="black",
+                linewidths=0,
+                zorder=9,
+                clip_on=False,
+            )
+            ax.scatter(
+                [optimal_param1],
+                [optimal_param2],
+                marker="*",
+                s=500,
+                c="#3ec1ff",
+                edgecolors="black",
+                linewidths=2.8,
+                zorder=10,
+                clip_on=False,
+            )
+            ax.scatter(
+                [optimal_param1],
+                [optimal_param2],
+                marker="*",
+                s=280,
+                c="#ff2d55",
+                edgecolors="#ffd54f",
+                linewidths=1.4,
+                zorder=11,
+                label=marker_label,
+                clip_on=False,
+            )
             ax.legend(loc="upper right", fontsize=9)
 
         # Set scales

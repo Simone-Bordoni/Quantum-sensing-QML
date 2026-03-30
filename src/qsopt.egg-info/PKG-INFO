@@ -56,7 +56,7 @@ Dynamic: requires-python
 
 # Quantum Sensing Optimization Library (qsopt)
 
-A specialized Python library for **gradient-based optimization of quantum sensing protocols** using JAX-compatible quantum circuits and automatic differentiation. Designed for optimizing dispersive qubit-cavity interactions in quantum sensing experiments, with applications to dark matter detection and quantum state preparation.
+A specialized Python library for **gradient-based optimization of quantum sensing protocols** using JAX-compatible quantum circuits and automatic differentiation. Designed for optimizing dispersive qubit-cavity interactions in quantum sensing experiments with **support for arbitrary n-qubit systems** and custom quantum circuits.
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![QuTiP](https://img.shields.io/badge/QuTiP-JAX%20compatible-green.svg)](https://qutip.org/)
@@ -65,50 +65,46 @@ A specialized Python library for **gradient-based optimization of quantum sensin
 
 ## Overview
 
-This library focuses on **quantum sensing optimization** through gradient-based parameter tuning of rotation gates and initial state preparation. The core functionality enables:
+This library focuses on **quantum sensing optimization** through gradient-based parameter tuning of quantum circuits and protocols. The unified architecture supports **any number of qubits** with flexible circuit design and comprehensive optimization capabilities:
 
+- **N-qubit sensing protocols**: Single, two, or arbitrary n-qubit quantum sensors
+- **Custom quantum circuits**: Define any parameterized circuit for state preparation and readout
 - **Protocol optimization**: Maximize photon detection sensitivity in dispersive readout schemes
 - **Noise-aware optimization**: Realistic decoherence models with relaxation and dephasing
-- **Parameter landscape analysis**: Systematic exploration of sensing contrast vs rotation angles
-- **Gradient-based state preparation**: Optimize initial quantum states for enhanced sensing
-- **Benchmarking**: Compare optimized protocols against standard approaches
+- **Parameter landscape analysis**: Systematic exploration of sensing contrast vs circuit parameters
+- **Gradient-based optimization**: Leverage JAX automatic differentiation for efficient training
+- **Flexible detection metrics**: Custom detection criteria for different sensing tasks
 
-### Supporting Infrastructure: JAX-Compatible Quantum Circuits
+### Key Features
 
-To enable gradient-based optimization of initial states and rotation protocols, the library includes a **JAX-compatible quantum circuit framework**:
-
+**JAX-Compatible Quantum Circuits:**
 - **Parameterized gates**: RX, RY, RZ with trainable rotation angles
-- **Fixed gates**: Hadamard, CNOT, CZ for state preparation
-- **Parameter management**: Automatic tracking of trainable parameters with gradient control
+- **Fixed gates**: Hadamard, CNOT, CZ, and multi-qubit operations
+- **Parameter management**: Automatic tracking of trainable parameters
 - **JAX integration**: Circuit unitaries as JAX arrays for automatic differentiation
-- **QuTiP verified**: All gates match QuTiP implementations exactly (86 tests ✓)
+- **Efficient caching**: Smart unitary caching for performance optimization
 
-This circuit infrastructure supports the main sensing optimization by providing:
-- Gradient-optimizable initial state preparation circuits
-- Differentiable rotation gate operations
-- Efficient parameter management for optimization loops
+**Unified Experiment Framework:**
+- **Single `Experiment` class**: Works with 1, 2, or n qubits automatically
+- **Circuit-based interface**: Accepts custom `QuantumCircuit` objects for complete control
+- **Default protocols**: Auto-creates standard RY circuits if none provided
+- **Flexible Hamiltonian**: Supports custom qubit interactions (dispersive, direct, cross-coupling)
+- **Multiple optimization methods**: SGD, Adam, and custom optimizers via Optax
 
 ### System Architecture
 
-**Primary: Quantum Sensing Framework** (three-subsystem composite Hilbert space):
-1. **Input Cavity Mode**: Controls photon injection with temporal pulse shaping
-2. **Resonator Cavity Mode**: Main sensing element coupled to the qubit detector  
-3. **Two-Level Qubit**: Quantum sensor subject to relaxation and dephasing noise
+**Composite Hilbert Space** (automatically sized for n qubits):
+1. **Input Field Mode**: Controls photon injection with temporal pulse shaping
+2. **Resonator Cavity Mode**: Main sensing element coupled to the qubit sensors
+3. **Qubit Sensors** (1 to n): Quantum sensors with independent or coupled interactions
 
 **Sensing Optimization Workflow:**
 ```
-Initial State |ψ₀⟩ → Ry(θ₁) → H(t) Evolution → Ry(θ₂) → Measurement → Contrast
-                ↓                                                          ↓
-         Gradient ← ← ← ← ← ← JAX Autodiff ← ← ← ← ← ← ← ← ← ← ← ← ← ←┘
-                ↓
-         Optimizer → Updated (|ψ₀⟩, θ₁, θ₂)
-```
-
-**Supporting: Quantum Circuit Framework** (for state preparation):
-```
-Gate → Matrix(θ) → JAX Array → Circuit Unitary → Initial State |ψ₀⟩
-  ↑                                                               ↓
-  └← ← ← ← Gradient ← ← JAX Autodiff ← ← Sensing Contrast ← ← ←┘
+Initial State |ψ₀⟩ → Initial Circuit → H(t) Evolution → Final Circuit → Measurement → Contrast
+                           ↓                                    ↓                        ↓
+                    Gradient ← ← ← ← ← ← ← JAX Autodiff ← ← ← ← ← ← ← ← ← ← ← ← ← ←┘
+                           ↓
+                    Optimizer → Updated Circuit Parameters
 ```
 
 ## Quick Start
@@ -141,18 +137,21 @@ pytest src/qsopt/tests/test_installation.py -v
 
 ## Usage Examples
 
-### Example 1: Quantum Sensing Optimization (Primary Use Case)
+### Example 1: Single Qubit Sensing (Simplest Case)
 
 ```python
 import numpy as np
 from qsopt.core import (
     ExperimentalParameters, PhysicalConstants, SystemDimensions,
     NoiseConfiguration, MeasurementProtocol, InitialStateConfig,
-    InitialStateType, TrainableParameters, SingleQubitExperiment
+    InitialStateType
 )
+from qsopt.core.experiment import Experiment
+from qsopt.core.circuit import create_ry_circuit_layer
 
-# Define physical system
+# Define physical system (single qubit: n_qubits=1)
 physical_constants = PhysicalConstants(
+    n_qubits=1,  # Specify number of qubits
     chi=0.5 * 0.03 * 2 * np.pi,  # Dispersive coupling
     photon_cavity_coupling=0.03 * 2 * np.pi,
     inverse_pulse_width=0.1 * 0.03 * 2 * np.pi
@@ -179,31 +178,93 @@ exp_params = ExperimentalParameters(
     noise_config=noise_config
 )
 
-# Define trainable parameters
-trainable_params = TrainableParameters()
-trainable_params.add_rotation_angles(
-    names=['theta1', 'theta2'],
-    initial_values=[np.pi/2, -np.pi/2]
+# Define circuits (or use None for default RY circuits)
+initial_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[np.pi/2])
+final_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[-np.pi/2])
+
+# Create experiment (unified interface for any n-qubit system)
+experiment = Experiment(
+    experimental_params=exp_params,
+    initial_circuit=initial_circuit,
+    final_circuit=final_circuit
 )
 
-# Create and optimize experiment
-experiment = SingleQubitExperiment(exp_params, trainable_params)
-history = experiment.optimize_rotations(num_steps=100, learning_rate=0.05, verbose=True)
+# Run single simulation
+results = experiment.run_simulation(batch_size=1)
+print(f"Detection probability with photon: {results.history['prob_with'][-1]:.6f}")
+print(f"Sensing contrast: {results.history['contrast'][-1]:.6f}")
 
-print(f"Final contrast: {history['contrast'][-1]:.6f}")
-print(f"Optimized θ₁: {trainable_params.parameters[0].value:.3f}")
-print(f"Optimized θ₂: {trainable_params.parameters[1].value:.3f}")
+# Optimize circuit parameters
+history = experiment.optimize_rotations(
+    initial_values=[1.0, -1.0],  # Initial guesses for circuit parameters
+    num_steps=100,
+    verbose=True,
+    batch_size=1
+)
+
+print(f"\nFinal optimized contrast: {history.best_metrics['contrast']:.6f}")
 ```
 
-### Example 2: Building Quantum Circuits for State Preparation
+### Example 2: Two-Qubit Sensing with Custom Circuits
 
 ```python
-import numpy as np
+from qsopt.core.circuit import QuantumCircuit
+from qsopt.core.gates import RYGate, CNOTGate
+
+# Define custom 2-qubit circuit with entanglement
+initial_circuit = QuantumCircuit(n_qubits=2)
+
+# Qubit 0: RY gate with trainable parameter
+ry0 = RYGate(theta=np.pi/4, trainable=True, name="theta0")
+ry0.target = 0
+initial_circuit.add_gate(ry0)
+
+# Qubit 1: RY gate with trainable parameter
+ry1 = RYGate(theta=np.pi/3, trainable=True, name="theta1")
+ry1.target = 1
+initial_circuit.add_gate(ry1)
+
+# Add CNOT for entanglement
+cnot = CNOTGate()
+cnot.target = (0, 1)  # Control qubit 0, target qubit 1
+initial_circuit.add_gate(cnot)
+
+# Create final circuit similarly
+final_circuit = QuantumCircuit(n_qubits=2)
+ry0_final = RYGate(theta=-np.pi/4, trainable=True, name="theta2")
+ry0_final.target = 0
+final_circuit.add_gate(ry0_final)
+
+ry1_final = RYGate(theta=-np.pi/3, trainable=True, name="theta3")
+ry1_final.target = 1
+final_circuit.add_gate(ry1_final)
+
+# Update physical constants for 2 qubits
+physical_constants = PhysicalConstants(
+    n_qubits=2,
+    chi=[0.5 * 0.03 * 2 * np.pi, 0.4 * 0.03 * 2 * np.pi],  # Different χ per qubit
+    photon_cavity_coupling=0.03 * 2 * np.pi,
+    inverse_pulse_width=0.1 * 0.03 * 2 * np.pi
+)
+
+# ... (rest of parameters similar to Example 1) ...
+
+# Create and optimize 2-qubit experiment
+experiment = Experiment(exp_params, initial_circuit, final_circuit)
+history = experiment.optimize_rotations(
+    initial_values=[1.0, 0.8, -1.0, -0.8],  # 4 trainable parameters
+    num_steps=100
+)
+```
+
+### Example 3: Building Complex Quantum Circuits
+
+```python
 import jax.numpy as jnp
 from qsopt.core.circuit import QuantumCircuit
-from qsopt.core.gates import RXGate, RYGate, CNOTGate, HadamardGate
+from qsopt.core.gates import RXGate, RYGate, RZGate, CNOTGate, HadamardGate
 
-# Create a 2-qubit parameterized quantum circuit
+# Create a 3-qubit parameterized quantum circuit
 circuit = QuantumCircuit(num_qubits=2)
 
 # Add gates with target qubits
@@ -597,6 +658,43 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"  # Use CPU backend
 - Single-qubit gate optimization: ~50 iterations in <1 second
 - Multi-gate circuit gradients: Computed in milliseconds
 - Circuit unitaries: Cached and reused during optimization
+
+## Performance
+
+The library is optimized for production use with JAX JIT compilation and smart caching:
+
+### Benchmarks (Single Qubit System)
+
+| Operation | First Run | Subsequent Runs | Speedup |
+|-----------|-----------|-----------------|---------|
+| **Simulation** | 1346 ms | 68 ms | **19.8x** |
+| **Optimization Step** | 774 ms | 68 ms | **11.4x** |
+| **Time Evolution (100 pts)** | 438 ms | 438 ms | - |
+
+**Key Findings:**
+- **First-run overhead**: ~1.2s due to JAX JIT compilation (one-time per session)
+- **Warm performance**: 64-68ms per simulation - excellent for quantum sensing
+- **Time evolution**: ~4.5ms per time point (for grids ≥100 points)
+- **Caching**: Circuit unitaries cached when parameters unchanged
+
+### Optimization Tips
+
+1. **Expect first-run slowdown**: Initial simulation includes JIT compilation
+2. **Use larger time grids**: ≥100 points for time evolution to amortize overhead
+3. **Batch simulations**: Run multiple evaluations to benefit from cached compilation
+4. **Parameter sweeps**: Compiled functions reused across sweep, very efficient
+
+See [PERFORMANCE_ANALYSIS.md](./PERFORMANCE_ANALYSIS.md) for detailed profiling results.
+
+## Migration from Old API
+
+If you are upgrading from the previous version that used `TrainableParameters` and `SingleQubitExperiment`/`TwoQubitExperiment`, see the **[API Migration Guide](./docs/API_MIGRATION.md)** for step-by-step instructions.
+
+**Quick Summary:**
+- `SingleQubitExperiment` → `Experiment` (unified class for any n-qubit)
+- `TrainableParameters` → `QuantumCircuit` with trainable gates
+- Manual circuits now supported with complete control over gate sequences
+- Explicit optimizers via `optax` (was implicit with `learning_rate`)
 
 ## Contributing
 
