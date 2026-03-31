@@ -18,8 +18,18 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Import qsopt modules
-from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType, PhysicalConstants, SystemDimensions, MeasurementProtocol, NoiseConfiguration, InitialStateConfig
-from qsopt.utils import compute_theta1_theta2_landscape, plot_parameter_landscape
+from qsopt.core.circuit import create_ry_circuit
+from qsopt.core.experiment import Experiment
+from qsopt.core.experimental_parameters import (
+    ExperimentalParameters,
+    InitialStateType,
+    PhysicalConstants,
+    SystemDimensions,
+    MeasurementProtocol,
+    NoiseConfiguration,
+    InitialStateConfig,
+)
+from qsopt.utils import plot_parameter_landscape
 
 gm = 0.03 * 2 * np.pi
 inverse_pulse_width = 0.1 * gm
@@ -69,14 +79,39 @@ exp_parameters = ExperimentalParameters(
     random_seed=42
 )
 
-data_theta12 = compute_theta1_theta2_landscape(
-    exp_parameters,
-    resolution=30,
-    center_theta1=np.pi/2,
-    center_theta2=-np.pi/2,
-    param_range=np.pi/8,
-    verbose=True
-)
+resolution = 30
+center_theta1 = np.pi / 2
+center_theta2 = -np.pi / 2
+param_range = np.pi / 8
+
+theta1_vals = np.linspace(center_theta1 - param_range, center_theta1 + param_range, resolution)
+theta2_vals = np.linspace(center_theta2 - param_range, center_theta2 + param_range, resolution)
+
+initial_circuit = create_ry_circuit(n_qubits=1, theta_values=center_theta1)
+final_circuit = create_ry_circuit(n_qubits=1, theta_values=center_theta2)
+experiment = Experiment(exp_parameters, initial_circuit, final_circuit)
+
+contrast_map = np.zeros((resolution, resolution))
+detection_map = np.zeros((resolution, resolution))
+
+for i, theta1 in enumerate(theta1_vals):
+    for j, theta2 in enumerate(theta2_vals):
+        experiment.initial_circuit.set_trainable_parameters([theta1])
+        experiment.final_circuit.set_trainable_parameters([theta2])
+        callback = experiment.run_simulation(batch_size=1)
+
+        # Keep the same orientation expected by plot_parameter_landscape.
+        contrast_map[j, i] = callback.history["contrast"][-1]
+        detection_map[j, i] = callback.history["prob_with"][-1]
+
+data_theta12 = {
+    "theta1_vals": theta1_vals,
+    "theta2_vals": theta2_vals,
+    "contrast_map": contrast_map,
+    "detection_map": detection_map,
+    "center_theta1": center_theta1,
+    "center_theta2": center_theta2,
+}
 
 fig = plot_parameter_landscape(
     data_theta12,

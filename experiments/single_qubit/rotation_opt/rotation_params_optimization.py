@@ -1,7 +1,19 @@
-from qsopt import * 
 import numpy as np
-import jax.numpy as jnp
 import optax
+from pathlib import Path
+
+from qsopt.core.circuit import create_ry_circuit
+from qsopt.core.experiment import Experiment
+from qsopt.core.experimental_parameters import (
+    ExperimentalParameters,
+    InitialStateConfig,
+    InitialStateType,
+    MeasurementProtocol,
+    NoiseConfiguration,
+    PhysicalConstants,
+    SystemDimensions,
+)
+from qsopt.utils.visualization import plot_optimization_dashboard
 
 gm = 0.03 * 2 * np.pi
 
@@ -45,19 +57,21 @@ exp_parameters = ExperimentalParameters(
     noise_config=noise_config
 )
 
-parameters = TrainableParameters()
-parameters.add_rotation_angles(['ry1', 'ry2'], [np.pi/2, -np.pi/2], optimizer=optax.sgd(0.3))
+initial_circuit = create_ry_circuit(n_qubits=1, theta_values=np.pi / 2)
+final_circuit = create_ry_circuit(n_qubits=1, theta_values=-np.pi / 2)
 
-experiment = SingleQubitExperiment(exp_parameters, parameters)
+experiment = Experiment(exp_parameters, initial_circuit, final_circuit)
 
 benchmark_results = experiment.run_simulation()
 
 history = experiment.optimize_rotations(
-    theta_init=[1.4, -1.4],
+    initial_values=[1.4, -1.4],
     num_steps=200,
+    batch_size=1,
     verbose=True,
     verbose_step=20,
-    tolerance=1e-9
+    tolerance=1e-9,
+    optimizer=optax.sgd(learning_rate=0.3),
 )
 
 fig = plot_optimization_dashboard(
@@ -66,4 +80,4 @@ fig = plot_optimization_dashboard(
     save_path='experiments/single_qubit/rotation_opt/results/opt_dashboard_1.pdf'
 )
 
-experiment.save_experiment_report(save_path='experiments/single_qubit/rotation_opt/results/experiment_report_1.json')
+history.save(str(Path("experiments/single_qubit/rotation_opt/results/optimization_history_1.npz")))

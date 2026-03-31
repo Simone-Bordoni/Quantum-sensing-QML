@@ -1,19 +1,19 @@
 import numpy as np
 import optax
 import matplotlib.pyplot as plt
+from pathlib import Path
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     PhysicalConstants,
     SystemDimensions,
     MeasurementProtocol,
-    InteractionType,
-    QubitInteraction,
     InitialStateConfig,
     InitialStateType,
     NoiseConfiguration
 )
-from qsopt.core.trainable_parameters import TrainableParameters
-from qsopt.core.experiment.old.two_qubit_experiment import TwoQubitExperiment
+from qsopt.core.circuit import create_ry_circuit
+from qsopt.core.experiment import Experiment
+from qsopt.core.loss_functions import DetectionMetric
 from qsopt.utils.visualization import plot_optimization_dashboard
 
 # Suppress warnings for cleaner output
@@ -54,16 +54,12 @@ exp_params = ExperimentalParameters(
 )
 
 
-trainable_params = TrainableParameters()
-optimizer = optax.sgd(learning_rate=5.)
+initial_circuit = create_ry_circuit(n_qubits=2, theta_values=np.pi / 2)
+final_circuit = create_ry_circuit(n_qubits=2, theta_values=-np.pi / 2)
+detection_metric = DetectionMetric(n_qubits=2, detection_criterion='max distance')
+optimizer = optax.sgd(learning_rate=5.0)
 
-trainable_params.add_rotation_angles(
-    names=["theta1_q1", "theta2_q1", "theta1_q2", "theta2_q2"],
-    initial_values=[np.pi/2, -np.pi/2, np.pi/2, -np.pi/2],
-
-)
-
-experiment = TwoQubitExperiment(exp_params, trainable_params)
+experiment = Experiment(exp_params, initial_circuit, final_circuit, detection_metric=detection_metric)
 
 benchmark_results = experiment.run_simulation()
 
@@ -73,7 +69,8 @@ history = experiment.optimize_rotations(
     tolerance=1e-8,
     verbose=True,
     verbose_step=50,
-    theta_init=[np.pi/3, -np.pi/3, np.pi/4, -np.pi]
+    initial_values=[np.pi/3, -np.pi/3, np.pi/4, -np.pi],
+    optimizer=optimizer,
 )
 
 fig = plot_optimization_dashboard(
@@ -82,4 +79,4 @@ fig = plot_optimization_dashboard(
     save_path='experiments/two_qubits/rotation_opt/results/opt_dashboard.png'
 )
 
-experiment.save_experiment_report(save_path='experiments/two_qubits/rotation_opt/results/experiment_report.json')
+history.save(str(Path('experiments/two_qubits/rotation_opt/results/optimization_history.npz')))

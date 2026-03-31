@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     PhysicalConstants,
@@ -7,17 +8,16 @@ from qsopt.core.experimental_parameters import (
     NoiseConfiguration,
     MeasurementProtocol,
     InitialStateConfig,
-    InteractionType,
     InitialStateType
 )
-from qsopt.core.trainable_parameters import TrainableParameters
-from qsopt.core.experiment import SingleQubitExperiment
+from qsopt.core.circuit import create_ry_circuit
+from qsopt.core.experiment import Experiment
 from qsopt.utils import plot_sweep_results
 
 # Single Qubit Experiment Setup
 phys_const_1q = PhysicalConstants(
     n_qubits=1,
-    chi=[5.0],  # Dispersive coupling
+    chi=5.0,  # Dispersive coupling
     photon_cavity_coupling=10.0,  # gamma
     inverse_pulse_width=1.0  # sigma (pulse width parameter)
 )
@@ -25,7 +25,7 @@ phys_const_1q = PhysicalConstants(
 sys_dims_1q = SystemDimensions(
     field_levels=2,
     cavity_levels=2,
-    qubit_levels=[2]
+    qubit_levels=2
 )
 
 noise = NoiseConfiguration(
@@ -49,11 +49,11 @@ exp_params_1q = ExperimentalParameters(
     noise_config=noise
 )
 
-train_params_1q = TrainableParameters()
-train_params_1q.add_rotation_angles(['ry1', 'ry2'], [np.pi/2, -np.pi/2])
+initial_circuit = create_ry_circuit(n_qubits=1, theta_values=np.pi / 2)
+final_circuit = create_ry_circuit(n_qubits=1, theta_values=-np.pi / 2)
 
 # Create experiment
-exp_1q = SingleQubitExperiment(exp_params_1q, train_params_1q)
+exp_1q = Experiment(exp_params_1q, initial_circuit, final_circuit)
 
 results_1q_sweep = exp_1q.sweep_chi_gamma(
     chi_interval=[0.1, 15.0],
@@ -70,12 +70,14 @@ plot_sweep_results(
     results_1q_sweep,
     results_to_plot=['contrast_map'],
     mark_optimal=True,
-    save_path="experiments/single_qubit/chi_gamma_sweep/contrast_map_noise.png"
+    save_path=str(Path("experiments/single_qubit/chi_gamma_sweep/contrast_map_noise.png"))
 )
 
 plot_sweep_results(
     results_1q_sweep,
     results_to_plot=['detection_map', 'detection_without_map'],
     mark_optimal=True,
-    save_path="experiments/single_qubit/chi_gamma_sweep/detection_map_noise.png"
+    save_path=str(Path("experiments/single_qubit/chi_gamma_sweep/detection_map_noise.png"))
 )
+
+plt.show()

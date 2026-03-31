@@ -253,7 +253,7 @@ class Experiment:
         measure_reset = self.operators['measure_reset']
         measure_reset_dag = self.operators['measure_reset_dag']
 
-        if self.detection_metric.detection_name == 'max difference':
+        if self.detection_metric.detection_name == 'max distance':
             def f_measure_reset(rho: qt.Qobj):
                 '''Measure probability of each qubit and reset the qubit as a mixture of all possible states'''
                 
@@ -263,7 +263,7 @@ class Experiment:
 
                 return rho_current, [jnp.array(prob_list)]
 
-        elif self.detection_metric.detection_name == 'fidelity' or self.detection_metric.detection_name == 'trace distance':
+        elif self.detection_metric.detection_name in ['min fidelity', 'max trace distance']:
             def f_measure_reset(rho: qt.Qobj):
                 '''Return rho and reset the qubit as a mixture of all possible states'''
                 
@@ -648,6 +648,96 @@ class Experiment:
 
         return detection_metric.post_aggregation(prob) #rho_final
 
+
+    def debug_simulation(
+        self,
+        solver: qt.MESolver,
+        rho: qt.Qobj,
+        measurements: Union[List[float], np.ndarray],
+        args: Optional[Dict] = None,
+        precomputed_unitaries: Optional[tuple] = None,
+    ) -> jnp.ndarray:
+        """
+        JAX-compatible simulation for n-qubit system with customizable detection.
+
+        Args:
+            solver: Configured quantum evolution solver
+            rho: Initial density matrix
+            measurements: Array of measurement times (sorted)
+            args: System parameters (optional)
+            precomputed_unitaries: Optional tuple (U_initial, U_initial_dag, U_final, U_final_dag)
+                                  to avoid recomputation
+
+        Returns:
+            Detection probability as JAX array
+        """
+
+        if  not hasattr(self,'debug_times'):          #####################################
+            self.debug_times = []
+            self.step=0
+        self.debug_times.append({ f'load_cached_parameters{self.step}' : t.time()})   ################################
+
+        if args is None:
+            args = {"sigma": self.experimental_params.inverse_pulse_width}
+
+        # Get detection metric
+        detection_metric = self.detection_metric
+
+        # Get measurement operators
+        # measure_reset = self.operators["measure_reset"]
+        # measure_reset_dag = self.operators["measure_reset_dag"]
+
+        measurement_array = np.asarray(measurements, dtype=float)
+        if measurement_array.ndim != 1 or measurement_array.size < 2:
+            raise ValueError("measurements must be a 1D array with at least 2 time points")
+
+        # Get circuit unitaries (precomputed or compute from circuits)
+        # precomputed_unitaries are already QuTiP objects for efficiency
+        if precomputed_unitaries is None:
+            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
+        else:
+            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
+
+        # Initial state
+        rho_current = rho
+
+        # Track cumulative probability of non-detection
+        prob = detection_metric.prob_initializer
+
+        self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
+        n_meas=0                      ############################
+
+        # Loop over measurement intervals
+        for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
+
+            rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
+            
+            self.debug_times.append({ f'measurement{n_meas}:solver_{self.step}' : t.time()})   ################################
+
+            evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
+            
+            self.debug_times.append({ f'measurement{n_meas}:measure_{self.step}' : t.time()})   ################################
+           
+            rho_evolved = evolution_result.states[-1]
+            rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
+
+            # Measure probability of non detection and reset the qubit
+            rho_current, prob_current = self.measure_reset(rho = rho_final)
+            #rho_reset = measure_reset * rho_final * measure_reset_dag
+            #prob_no_detect = jnp.real(rho_reset.tr())
+            #rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+            
+            prob = detection_metric.measurement_aggregation(prob, prob_current)
+
+            #prob = prob * prob_no_detect
+            
+            n_meas+=1       ####################
+
+        self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
+
+
+        return detection_metric.post_aggregation(prob) #rho_final
+
     def run_simulation(self, batch_size: int = 1, debug: bool=False) -> OptimizationCallback:
         """
         Run n-qubit sensing protocol with current parameters.
@@ -711,9 +801,9 @@ class Experiment:
         for measurement_times in measurement_sequences:
 
             self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})   ################################
-
+    
             # Simulation with photon interaction
-            prob_with = self.simulation(
+            prob_with = self.debug_simulation(
                 solver=solver_with,
                 rho=rho0,
                 measurements=measurement_times,
@@ -724,7 +814,7 @@ class Experiment:
             self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})   ################################
 
             # Simulation without photon interaction (reference)
-            prob_without = self.simulation(
+            prob_without = self.debug_simulation(
                 solver=solver_without,
                 rho=rho0,
                 measurements=measurement_times,
@@ -830,11 +920,11 @@ class Experiment:
         detection_name = self.detection_metric.detection_name
         n_qubits = self.experimental_params.n_qubits
 
-        if detection_name in ["fidelity", "trace distance"]:
+        if detection_name in ["min fidelity", "max trace distance"]:
             detection_with, detection_without, contrast = self.detection_metric.batching_logic(
                 [[rho_final_with]], [[rho_final_without]]
             )
-        elif detection_name == "max difference":
+        elif detection_name == "max distance":
             all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
             probs_with_vector = jnp.array([probs_with[state] for state in all_states], dtype=float)
             probs_without_vector = jnp.array([probs_without[state] for state in all_states], dtype=float)
@@ -916,7 +1006,7 @@ class Experiment:
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
 
-        if self.detection_metric.detection_name in ['fidelity','trace distance', 'max difference']:
+        if self.detection_metric.detection_name in ['min fidelity','max trace distance', 'max distance']:
             raise NotImplementedError(f"In time_evolution the detection '{self.detection_metric.detection_name}' is not yet implemented")
 
         # Use provided measurement protocol or default from experimental parameters
@@ -1087,7 +1177,7 @@ class Experiment:
         import jax
         import optax
 
-        time = t.time()
+        start_time = t.time()
 
         # Use provided callback or default
         if callback is None:
@@ -1154,8 +1244,8 @@ class Experiment:
                 measurement_times_batch = measurement_times_batch[jnp.newaxis, :]
 
             # Initialize batch arrays based on detection criterion
-            # For 'max difference', simulation returns lists, so collect them
-            #if detection_metric.detection_name in ['max difference', 'fidelity', 'trace distance']:
+            # For 'max distance', simulation returns lists, so collect them
+            #if detection_metric.detection_name in ['max distance', 'min fidelity', 'max trace distance']:
             detect_with_batch = []
             detect_without_batch = []
 
@@ -1177,7 +1267,7 @@ class Experiment:
                 )
 
                 # Handle both scalar and list results
-                #if detection_metric.detection_name in ['max difference', 'fidelity', 'trace distance']:
+                #if detection_metric.detection_name in ['max distance', 'min fidelity', 'max trace distance']:
                 detect_with_batch.append(sim_result_with)
                 detect_without_batch.append(sim_result_without)
                 #else:
@@ -1270,9 +1360,7 @@ class Experiment:
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
-                temp = t.time()
-                delta_t = temp-time
-                time = temp
+                new_time = t.time() - start_time
                 # Build parameter display (up to 4 each)
                 n_init_show = min(n_initial, 4)
                 n_final_show = min(n_final, 4)
@@ -1283,7 +1371,7 @@ class Experiment:
                     output_parts.append(f"{param_vals[i]:<15.6f}")
                 for i in range(n_final_show):
                     output_parts.append(f"{param_vals[n_initial + i]:<15.6f}")
-                output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}",f"{delta_t:<8.2f}"])
+                output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}",f"{t.strftime("%Hh%Mm%Ss", t.gmtime(new_time))}"])
                 print("".join(output_parts))
 
             # Convergence check

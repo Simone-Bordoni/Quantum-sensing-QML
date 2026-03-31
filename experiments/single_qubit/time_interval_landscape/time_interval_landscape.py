@@ -14,8 +14,10 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Import qsopt modules
+from qsopt.core.circuit import create_ry_circuit
+from qsopt.core.experiment import Experiment
 from qsopt.core.experimental_parameters import ExperimentalParameters, InitialStateType, PhysicalConstants, SystemDimensions, MeasurementProtocol, NoiseConfiguration, InitialStateConfig
-from qsopt.utils import compute_time_interval_landscape, plot_time_interval_landscape
+from qsopt.utils import plot_time_interval_landscape
 
 gm = 0.03 * 2 * np.pi
 inverse_pulse_width = 0.1 * gm
@@ -83,10 +85,11 @@ def main():
     #theta2 = -np.pi / 2  # -90 degrees
     theta2 = -1.5556073614887143
 
-    data = compute_time_interval_landscape(
-        exp_params,
-        theta1=theta1,
-        theta2=theta2,
+    initial_circuit = create_ry_circuit(n_qubits=1, theta_values=theta1)
+    final_circuit = create_ry_circuit(n_qubits=1, theta_values=theta2)
+    experiment = Experiment(exp_params, initial_circuit, final_circuit)
+
+    data = experiment.compute_time_interval_landscape(
         resolution=7,
         min_interval=40,
         max_interval=150,
@@ -101,6 +104,7 @@ def main():
         save_path=str(output_dir / 'time_interval_landscape_theta_optimized.png'),
         show_measurement_count=True
     )
+    plt.show()
 
 
 if __name__ == "__main__":

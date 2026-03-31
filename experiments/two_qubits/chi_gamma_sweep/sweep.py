@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     PhysicalConstants,
@@ -11,8 +12,8 @@ from qsopt.core.experimental_parameters import (
     InteractionType,
     InitialStateType
 )
-from qsopt.core.trainable_parameters import TrainableParameters
-from qsopt.core.experiment import TwoQubitExperiment
+from qsopt.core.circuit import create_ry_circuit
+from qsopt.core.experiment import Experiment
 from qsopt.utils import plot_sweep_results
 
 np.random.seed(42)
@@ -59,15 +60,11 @@ exp_params_2q = ExperimentalParameters(
     noise_config=noise
 )
 
-# Rotation parameters for both qubits (theta1_q1, theta2_q1, theta1_q2, theta2_q2)
-train_params_2q = TrainableParameters()
-train_params_2q.add_rotation_angles(
-    ["theta1_q1", "theta2_q1", "theta1_q2", "theta2_q2"],
-    [np.pi/2, -np.pi/2, np.pi/2, -np.pi/2]
-)
+initial_circuit = create_ry_circuit(n_qubits=2, theta_values=np.pi / 2)
+final_circuit = create_ry_circuit(n_qubits=2, theta_values=-np.pi / 2)
 
 # Create experiment with default detector (1-P(00))
-exp_2q = TwoQubitExperiment(exp_params_2q, train_params_2q)
+exp_2q = Experiment(exp_params_2q, initial_circuit, final_circuit)
 
 results_2q_sweep = exp_2q.sweep_chi_gamma(
     chi_interval=[0.1, 40.0],
@@ -83,12 +80,14 @@ results_2q_sweep = exp_2q.sweep_chi_gamma(
 plot_sweep_results(
     results_2q_sweep,
     results_to_plot=['p00', 'p01', 'p10', 'p11'],
-    save_path='experiments/two_qubits/chi_gamma_sweep/coupledxx_qubits_probability_maps.png'
+    save_path=str(Path('experiments/two_qubits/chi_gamma_sweep/coupledxx_qubits_probability_maps.png'))
 )
 
 plot_sweep_results(
     results_2q_sweep,
     results_to_plot=['contrast_map', 'detection_map', 'detection_without_map'],
     mark_optimal=True,
-    save_path='experiments/two_qubits/chi_gamma_sweep/coupledxx_qubits_detection_maps.png'
+    save_path=str(Path('experiments/two_qubits/chi_gamma_sweep/coupledxx_qubits_detection_maps.png'))
 )
+
+plt.show()
