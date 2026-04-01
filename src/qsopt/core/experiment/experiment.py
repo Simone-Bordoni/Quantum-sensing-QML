@@ -14,6 +14,7 @@ import qutip as qt
 import math
 import time as t
 import jax.numpy as jnp
+import equinox
 from jax import jit, lax
 
 from qsopt.core.callback import OptimizationCallback
@@ -563,7 +564,7 @@ class Experiment:
         self,
         solver: qt.MESolver,
         rho: qt.Qobj,
-        measurements: Union[List[float], np.ndarray],
+        measurements: Union[List[float], np.ndarray, jnp.ndarray],
         args: Optional[Dict] = None,
         precomputed_unitaries: Optional[tuple] = None,
     ) -> jnp.ndarray:
@@ -582,31 +583,14 @@ class Experiment:
             Detection probability as JAX array
         """
 
-        if  not hasattr(self,'debug_times'):          #####################################
-            self.debug_times = []
-            self.step=0
-        self.debug_times.append({ f'load_cached_parameters{self.step}' : t.time()})   ################################
-
         if args is None:
             args = {"sigma": self.experimental_params.inverse_pulse_width}
 
         # Get detection metric
         detection_metric = self.detection_metric
 
-        # Get measurement operators
-        # measure_reset = self.operators["measure_reset"]
-        # measure_reset_dag = self.operators["measure_reset_dag"]
-
-        measurement_array = np.asarray(measurements, dtype=float)
-        if measurement_array.ndim != 1 or measurement_array.size < 2:
-            raise ValueError("measurements must be a 1D array with at least 2 time points")
-
-        # Get circuit unitaries (precomputed or compute from circuits)
-        # precomputed_unitaries are already QuTiP objects for efficiency
-        if precomputed_unitaries is None:
-            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
-        else:
-            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
+        # Get circuit unitaries
+        initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
         # Initial state
         rho_current = rho
@@ -614,37 +598,20 @@ class Experiment:
         # Track cumulative probability of non-detection
         prob = detection_metric.prob_initializer
 
-        self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
-        n_meas=0                      ############################
-
         # Loop over measurement intervals
-        for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
+        for t0, t1 in zip(measurements[:-1], measurements[1:]):
 
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
-            
-            self.debug_times.append({ f'measurement{n_meas}:solver_{self.step}' : t.time()})   ################################
 
             evolution_result = solver.run(rho_after_circuit, [t0, t1], args=args)
-            
-            self.debug_times.append({ f'measurement{n_meas}:measure_{self.step}' : t.time()})   ################################
            
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Measure probability of non detection and reset the qubit
             rho_current, prob_current = self.measure_reset(rho = rho_final)
-            #rho_reset = measure_reset * rho_final * measure_reset_dag
-            #prob_no_detect = jnp.real(rho_reset.tr())
-            #rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
             
             prob = detection_metric.measurement_aggregation(prob, prob_current)
-
-            #prob = prob * prob_no_detect
-            
-            n_meas+=1       ####################
-
-        self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
-
 
         return detection_metric.post_aggregation(prob) #rho_final
 
@@ -691,12 +658,8 @@ class Experiment:
         if measurement_array.ndim != 1 or measurement_array.size < 2:
             raise ValueError("measurements must be a 1D array with at least 2 time points")
 
-        # Get circuit unitaries (precomputed or compute from circuits)
-        # precomputed_unitaries are already QuTiP objects for efficiency
-        if precomputed_unitaries is None:
-            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
-        else:
-            initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
+        # Get circuit unitaries
+        initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
         # Initial state
         rho_current = rho
@@ -765,10 +728,10 @@ class Experiment:
         """
         # Get initial state and solvers
 
-        self.debug_times = []
-        self.step=0
-
-        self.debug_times.append({ f'initialize_solvers' : t.time()})   ################################
+        if debug:
+            self.debug_times = []
+            self.step=0
+            self.debug_times.append({ f'initialize_solvers' : t.time()})
  
         rho0 = self._cached_initial_state
         if rho0 is None:
@@ -776,18 +739,22 @@ class Experiment:
         solver_with = self.get_solver_with_interaction()
         solver_without = self.get_solver_no_interaction()
 
-        self.debug_times.append({ f'get_measurements' : t.time()})   ################################
+        if debug:
+            self.debug_times.append({ f'get_measurements' : t.time()})
  
         # Prepare measurement time realizations for batch averaging
         measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(
             batch_size
         )
+        
         if measurement_times_batch.ndim == 1:
             measurement_sequences = [measurement_times_batch]
         else:
             measurement_sequences = [measurement_times_batch[i, :] for i in range(batch_size)]
 
-        self.debug_times.append({ f'get_circuits' : t.time()})   ################################
+
+        if debug:
+            self.debug_times.append({ f'get_circuits' : t.time()})
  
         # Prepare circuit unitaries once for the entire batch
         circuit_unitaries = self._prepare_circuit_unitaries()
@@ -796,14 +763,17 @@ class Experiment:
         prob_with_list = []
         prob_without_list = []
 
-        self.debug_times.append({ f'start_measurement_loop' : t.time()})   ################################
+        if debug:
+            self.debug_times.append({ f'start_measurement_loop' : t.time()})
+
+        simulation_fn = self.debug_simulation if debug else self.simulation
  
         for measurement_times in measurement_sequences:
-
-            self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})   ################################
+            if debug:
+                self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})
     
             # Simulation with photon interaction
-            prob_with = self.debug_simulation(
+            prob_with = simulation_fn(
                 solver=solver_with,
                 rho=rho0,
                 measurements=measurement_times,
@@ -811,19 +781,22 @@ class Experiment:
             )
             prob_with_list.append(prob_with)
 
-            self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})   ################################
+            if debug:
+                self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})
 
             # Simulation without photon interaction (reference)
-            prob_without = self.debug_simulation(
+            prob_without = simulation_fn(
                 solver=solver_without,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
             prob_without_list.append(prob_without)
-            self.step += 1
+            if debug:
+                self.step += 1
 
-        self.debug_times.append({ f'compute_probs' : t.time()})   ################################
+        if debug:
+            self.debug_times.append({ f'compute_probs' : t.time()})
 
         # Use detection metric's batching logic to properly handle both scalar and list results
         prob_with, prob_without, contrast = self.detection_metric.batching_logic(
@@ -831,7 +804,8 @@ class Experiment:
         )
 
 
-        self.debug_times.append({ f'save_callback' : t.time()})   ################################
+        if debug:
+            self.debug_times.append({ f'save_callback' : t.time()})
 
         # Create callback with single epoch for simulation results
         callback = OptimizationCallback(save_every=1, save_best=True)
@@ -844,7 +818,7 @@ class Experiment:
         )
 
         if debug:
-            self.debug_times.append({ f'end_time' : t.time()})   ################################
+            self.debug_times.append({ f'end_time' : t.time()})
 
             temp = self.debug_times[0]        #############################
             print('\nDebug times for each step:')     ############################
@@ -1134,6 +1108,7 @@ class Experiment:
         callback: Optional[OptimizationCallback] = None,
         initial_values: Optional[List[float]] = None,
         optimizer = None,
+        optimize_measurement_times: bool = False,
         renormalize_grad: Optional[Union[bool,float]] = False,
     ) -> OptimizationCallback:
         """
@@ -1194,6 +1169,9 @@ class Experiment:
         if n_total == 0:
             raise ValueError("No trainable parameters found in circuits")
 
+        if self.experimental_params.measurement_times.ndim != 1 or self.experimental_params.measurement_times.size < 2:
+            raise ValueError("measurement_times must be a 1D array with at least 2 time points")
+
         # Initialize parameter vector
         if initial_values is not None:
             if len(initial_values) != n_total:
@@ -1224,64 +1202,95 @@ class Experiment:
         solver_without = self.get_solver_no_interaction()
         detection_metric = self.detection_metric
 
-        # Define objective function
-        def objective_function(opt_params):
-            """Negative sensing contrast for minimization with batch averaging."""
+        # Define objective function with explicit uncertainty input.
+        # Signature order is kept future-proof for optional optimization over times.
+        def coupled_simulation(circuit_unitaries, measurement_times, measurement_noise):
+            """Single-realization of the two simulations with the same parameters and noise."""
 
-            self.initial_circuit.set_trainable_parameters(opt_params[:n_initial])
-            self.final_circuit.set_trainable_parameters(opt_params[n_initial:])
+            noisy_measurement_times = measurement_times + measurement_noise
 
-            # Compute circuit unitaries
-            circuit_unitaries = self._prepare_circuit_unitaries()
-
-            # Get measurement times batch
-            measurement_times_batch = (
-                self.experimental_params.get_measurement_times_with_uncertainty(batch_size)
+            result_with = self.simulation(
+                solver_with,
+                rho0,
+                noisy_measurement_times,
+                precomputed_unitaries=circuit_unitaries,
             )
 
-            # Handle both single and multiple realizations uniformly
-            if measurement_times_batch.ndim == 1:
-                measurement_times_batch = measurement_times_batch[jnp.newaxis, :]
+            result_without = self.simulation(
+                solver_without,
+                rho0,
+                noisy_measurement_times,
+                precomputed_unitaries=circuit_unitaries,
+            )
 
-            # Initialize batch arrays based on detection criterion
-            # For 'max distance', simulation returns lists, so collect them
-            #if detection_metric.detection_name in ['max distance', 'min fidelity', 'max trace distance']:
-            detect_with_batch = []
-            detect_without_batch = []
+            return result_with, result_without
 
-            for i in range(batch_size):
-                measurement_times = measurement_times_batch[i]
 
-                sim_result_with = self.simulation(
-                    solver_with,
-                    rho0,
-                    measurement_times,
-                    precomputed_unitaries=circuit_unitaries
+        static_args = []
+        time_uncertainty = float(self.experimental_params.initial_time_uncertainty)
+        base_measurement_times = jnp.asarray(self.experimental_params.measurement_times, dtype=float)
+
+        if not optimize_measurement_times:
+            static_args.append(1)  # objective_function arg: measurement_times
+            base_measurement_times = tuple(
+                float(x) for x in np.asarray(self.experimental_params.measurement_times, dtype=float)
+            )
+        else:
+            base_measurement_times = jnp.asarray(self.experimental_params.measurement_times, dtype=float)
+
+        if time_uncertainty == 0:
+            static_args.append(2)  # objective_function arg: measurement_noise_batch
+            zero_uncertainty_batch = tuple(0.0 for _ in range(batch_size))
+
+            def objective_function(circuit_params, measurement_times, measurement_noise_batch):
+                """Objective with no uncertainty."""
+
+                measurement_times = np.asarray(measurement_times, dtype=float)
+                measurement_noise_batch = np.asarray(measurement_noise_batch, dtype=float)
+
+                # Compute circuit unitaries
+                self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
+                self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
+                circuit_unitaries = self._prepare_circuit_unitaries()
+
+                batch_result_with, batch_result_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
+
+                detect_with, detect_without, contrast = detection_metric.batching_logic(
+                    batch_result_with,
+                    batch_result_without,
                 )
 
-                sim_result_without = self.simulation(
-                    solver_without,
-                    rho0,
-                    measurement_times,
-                    precomputed_unitaries=circuit_unitaries
+                metric = detection_metric.metric(detect_with, detect_without)
+
+                return metric, (detect_with, detect_without, contrast)
+
+        else:
+            zero_uncertainty_batch = jnp.zeros((batch_size,), dtype=float)
+
+            def objective_function(circuit_params, measurement_times, measurement_noise_batch):
+                """Batch vmapped objective where vectorization happens only over uncertainty."""
+
+                # Compute circuit unitaries
+                self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
+                self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
+                circuit_unitaries = self._prepare_circuit_unitaries()
+
+                batch_result_with, batch_result_without = jax.vmap(
+                    coupled_simulation,
+                    in_axes=(None, None, 0),
+                )(circuit_unitaries, measurement_times, measurement_noise_batch)
+
+                detect_with, detect_without, contrast = detection_metric.batching_logic(
+                    batch_result_with,
+                    batch_result_without,
                 )
 
-                # Handle both scalar and list results
-                #if detection_metric.detection_name in ['max distance', 'min fidelity', 'max trace distance']:
-                detect_with_batch.append(sim_result_with)
-                detect_without_batch.append(sim_result_without)
-                #else:
-                 #   detect_with_batch = detect_with_batch.at[i].set(sim_result_with)
-                  #  detect_without_batch = detect_without_batch.at[i].set(sim_result_without)
+                metric = detection_metric.metric(detect_with, detect_without)
 
-            # Aggregate batch results
-            detect_with, detect_without, contrast = detection_metric.batching_logic(detect_with_batch,detect_without_batch)
-            loss = detection_metric.metric(detect_with, detect_without)
+                return metric, (detect_with, detect_without, contrast)
 
-            # Return negative for minimization
-            return loss, (detect_with, detect_without, contrast)
+        jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 
-        jitted_objective = jax.jit(objective_function)
 
         # Get detection description for verbose output
         detection_protocol_name = detection_metric.protocol_name
@@ -1307,13 +1316,12 @@ class Experiment:
                     circuit_type = "reset"
                     print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
 
-            uncertainty = self.experimental_params.initial_time_uncertainty
+            uncertainty = time_uncertainty
             if uncertainty > 0:
                 spec = self.experimental_params.initial_time_uncertainty_spec
                 extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
                 print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
 
-            print("=" * 75)
             # Build header based on number of parameters (up to 4 each)
             header_parts = [f"{'Step':<6}"]
             n_init_show = min(n_initial, 4)
@@ -1323,8 +1331,11 @@ class Experiment:
             for i in range(n_final_show):
                 header_parts.append(f"reset{i}_{reset_gates[i].__repr__(params=False):<8}")
             header_parts.extend([f"{'Contrast':<12}", f"{'Grad Norm':<12}", "Time"])
-            print("".join(header_parts))
-            print("-" * 75)
+
+            header = "".join(header_parts)
+            print("=" * (5+len(header)))
+            print(header)
+            print("-" * (5+len(header)))
 
         best_contrast = -np.inf
         best_params = jnp.array(params)
@@ -1334,10 +1345,18 @@ class Experiment:
         grad_norm = float("inf")
 
         for step in range(num_steps):
+            if time_uncertainty > 0:
+                measurement_uncertainty_batch = jnp.asarray(
+                    np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
+                    dtype=float,
+                )
+            else:
+                measurement_uncertainty_batch = zero_uncertainty_batch
+
             # Compute gradients using JAX autodiff
             grads, (prob_with, prob_without, sensing_contrast) = jax.grad(
                 jitted_objective, has_aux=True
-            )(params)
+            )(params, base_measurement_times, measurement_uncertainty_batch)
 
             # Track best parameters
             if sensing_contrast > best_contrast:
@@ -1392,7 +1411,7 @@ class Experiment:
         self.final_circuit.set_trainable_parameters(best_final)
 
         if verbose:
-            print("=" * 75)
+            print("=" * (5+len(header)))
             print(f"Final gradient norm: {grad_norm:.2e}")
             print(f"Best sensing contrast: {best_contrast:.6f}")
             print(f"Best parameters:")

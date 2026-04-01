@@ -174,10 +174,13 @@ class RXGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         theta = self.get_parameter()
-        # Get Pauli X matrix as JAX array
-        sx_data = jnp.array([[0, 1], [1, 0]], dtype=jnp.complex128)
-        # Compute rotation: exp(-i theta sx / 2)
-        matrix_data = jax.scipy.linalg.expm(-1j * theta * sx_data / 2)
+        half_theta = theta / 2.0
+        c = jnp.cos(half_theta)
+        s = jnp.sin(half_theta)
+        matrix_data = jnp.array(
+            [[c, -1j * s], [-1j * s, c]],
+            dtype=jnp.complex128,
+        )
         # Return JAX array or wrap in Qobj
         return qt.Qobj(matrix_data, dims=[[2],[2]]) if qutip else matrix_data
 
@@ -214,10 +217,13 @@ class RYGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         theta = self.get_parameter()
-        # Get Pauli Y matrix as JAX array
-        sy_data = jnp.array([[0, -1j], [1j, 0]], dtype=jnp.complex128)
-        # Compute rotation: exp(-i theta sy / 2)
-        matrix_data = jax.scipy.linalg.expm(-1j * theta * sy_data / 2)
+        half_theta = theta / 2.0
+        c = jnp.cos(half_theta)
+        s = jnp.sin(half_theta)
+        matrix_data = jnp.array(
+            [[c, -s], [s, c]],
+            dtype=jnp.complex128,
+        )
         # Return JAX array or wrap in Qobj
         return qt.Qobj(matrix_data, dims=[[2],[2]]) if qutip else matrix_data
 
@@ -254,10 +260,12 @@ class RZGate(Gate):
             qutip: If True, return QuTiP Qobj; if False, return JAX array
         """
         theta = self.get_parameter()
-        # Get Pauli Z matrix as JAX array
-        sz_data = jnp.array([[1, 0], [0, -1]], dtype=jnp.complex128)
-        # Compute rotation: exp(-i theta sz / 2)
-        matrix_data = jax.scipy.linalg.expm(-1j * theta * sz_data / 2)
+        phase_minus = jnp.exp(-0.5j * theta)
+        phase_plus = jnp.exp(0.5j * theta)
+        matrix_data = jnp.array(
+            [[phase_minus, 0.0], [0.0, phase_plus]],
+            dtype=jnp.complex128,
+        )
         # Return JAX array or wrap in Qobj
         return qt.Qobj(matrix_data, dims=[[2],[2]]) if qutip else matrix_data
 
