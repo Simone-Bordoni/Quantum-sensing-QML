@@ -1281,6 +1281,8 @@ class Experiment:
             # Return negative for minimization
             return loss, (detect_with, detect_without, contrast)
 
+        jitted_objective = jax.jit(objective_function)
+
         # Get detection description for verbose output
         detection_desc = detection_metric.detection_name
 
@@ -1334,7 +1336,7 @@ class Experiment:
         for step in range(num_steps):
             # Compute gradients using JAX autodiff
             grads, (prob_with, prob_without, sensing_contrast) = jax.grad(
-                objective_function, has_aux=True
+                jitted_objective, has_aux=True
             )(params)
 
             # Track best parameters
