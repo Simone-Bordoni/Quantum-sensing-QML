@@ -1284,14 +1284,14 @@ class Experiment:
         jitted_objective = jax.jit(objective_function)
 
         # Get detection description for verbose output
-        detection_desc = detection_metric.detection_name
+        detection_protocol_name = detection_metric.protocol_name
 
         if verbose:
             print(f"Configuration:")
             print(f"    Max iterations: {num_steps}")
             print(f"    Batch size: {batch_size}")
             print(f"    Convergence tolerance: {tolerance:.2e}")
-            print(f"    Detection criterion: {detection_desc}")
+            print(f"    Detection metric: {detection_protocol_name}")
             print(f"    Trainable parameters: {n_total} ({n_initial} initial circuit + {n_final} final circuit)")
             print(f"    Initial parameter values:")
 

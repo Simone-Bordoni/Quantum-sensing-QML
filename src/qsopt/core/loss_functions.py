@@ -105,6 +105,7 @@ class DetectionMetric:
             detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator[Array], Aggregator[list]]] = None, \
             batching_logic: Optional[Callable[...,Tuple[float]]] = None, \
+            protocol_name: Optional[str] = None, \
             metric_name: Optional[str] = 'custom metric', \
             multiple_measurement_name: Optional[str] = 'custom multiple measurement logic', \
             batching_name: Optional[str] = 'custom batching'
@@ -150,6 +151,11 @@ class DetectionMetric:
 
         # define detection condition
         self.detection_states, self.detection_name = self.build_detection(detection_criterion, detection_param)
+
+        if protocol_name is not None:
+            self.protocol_name = protocol_name
+        else:
+            self.protocol_name = self.detection_name + ' with ' + self.metric_name
 
         
 
@@ -274,7 +280,7 @@ class DetectionMetric:
             if not self.custom_metric:      
                 self.metric_name = 'fidelity'
 
-            return 'all states', criterion
+            return 'all states', 'no detection'
 
 
         elif criterion == 'max trace distance':
@@ -295,7 +301,7 @@ class DetectionMetric:
             if not self.custom_metric:      
                 self.metric_name = 'trace distance'
 
-            return 'all states', criterion
+            return 'all states', 'no detection'
         
         elif criterion == 'max distance':
             # this criterion must measure separetly all states, 
@@ -352,12 +358,12 @@ class DetectionMetric:
 
     def __repr__(self) -> str:
         """String representation of the detector."""
-        return f"\nDetectionMetric\n\
-criterion:\n\
+        return f"\nDetectionMetric: {self.protocol_name}\n\
+detection criterion:\n\
   '{self.detection_name}'\n\
 metric:\n\
   '{self.metric_name}'\n\
-batching:\n\
+batching logic:\n\
   '{self.batching_name}'\n\
 multiple measurement logic:\n\
   '{self.multiple_measurement_name}'\n"
