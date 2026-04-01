@@ -70,14 +70,14 @@ plot_sweep_results(
     results_1q_sweep,
     results_to_plot=['contrast_map'],
     mark_optimal=True,
-    save_path=str(Path("experiments/single_qubit/chi_gamma_sweep/contrast_map_noise.png"))
+    save_path=str(Path("experiments/single_qubit/chi_gamma_sweep/contrast_map.png"))
 )
 
 plot_sweep_results(
     results_1q_sweep,
     results_to_plot=['detection_map', 'detection_without_map'],
     mark_optimal=True,
-    save_path=str(Path("experiments/single_qubit/chi_gamma_sweep/detection_map_noise.png"))
+    save_path=str(Path("experiments/single_qubit/chi_gamma_sweep/detection_map.png"))
 )
 
 plt.show()
