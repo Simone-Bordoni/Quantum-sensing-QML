@@ -327,7 +327,7 @@ class DetectionMetric:
                 self.batching_name = 'max distance batching'
 
             # since the metric is used in batching, the global metric is updated to function as the identity
-            self.metric = lambda x,y: x-y
+            self.metric = lambda x,y: y-x
 
             return 'all states', criterion
 
