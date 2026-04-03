@@ -1,7 +1,7 @@
 # Core dependencies for Quantum Sensing Optimization Library
-numpy==2.3.4
-jax==0.4.35
-jaxlib==0.4.35
+numpy==2.3.5
+jax==0.9.2
+jaxlib==0.9.2
 qutip==5.2.2
 qutip-jax==0.1.1
 qutip-qip==0.3.1

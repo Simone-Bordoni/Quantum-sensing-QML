@@ -26,7 +26,7 @@ Example:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp

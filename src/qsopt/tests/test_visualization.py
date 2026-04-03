@@ -246,7 +246,7 @@ def test_plot_time_interval_landscape_with_measurement_count():
 
 def test_plot_optimization_dashboard_basic():
     """Test basic optimization dashboard creation."""
-    from qsopt import OptimizationCallback, TrainableParameters
+    from qsopt import OptimizationCallback
     from qsopt.utils import plot_optimization_dashboard
 
     # Create mock optimization callback
@@ -254,10 +254,9 @@ def test_plot_optimization_dashboard_basic():
 
     # Add some history
     for i in range(5):
-        params = TrainableParameters()
-        params.add_rotation_angles(["theta1", "theta2"], [0.5 + i * 0.1, 1.0 + i * 0.1])
         callback(
-            trainable_params=params,
+            trainable_params_initial=[0.5 + i * 0.1],
+            trainable_params_final=[1.0 + i * 0.1],
             prob_with=0.6 + i * 0.05,
             prob_without=0.3,
             contrast=0.3 + i * 0.05,
@@ -273,23 +272,25 @@ def test_plot_optimization_dashboard_basic():
 
 def test_plot_optimization_dashboard_with_reference():
     """Test optimization dashboard with reference callback."""
-    from qsopt import OptimizationCallback, TrainableParameters
+    from qsopt import OptimizationCallback
     from qsopt.utils import plot_optimization_dashboard
 
     # Create optimization callback
     opt_callback = OptimizationCallback(save_every=1, save_best=True)
     for i in range(3):
-        params = TrainableParameters()
-        params.add_rotation_angles("theta", 0.5 + i * 0.1)
         opt_callback(
-            trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4
+            trainable_params_initial=[0.5 + i * 0.1],
+            trainable_params_final=[],
+            prob_with=0.7, prob_without=0.3, contrast=0.4
         )
 
     # Create reference callback
     ref_callback = OptimizationCallback(save_every=1, save_best=False)
-    params = TrainableParameters()
-    params.add_rotation_angles("theta", 1.5)
-    ref_callback(trainable_params=params, prob_with=0.8, prob_without=0.2, contrast=0.6)
+    ref_callback(
+        trainable_params_initial=[1.5],
+        trainable_params_final=[],
+        prob_with=0.8, prob_without=0.2, contrast=0.6
+    )
 
     # Create dashboard with reference
     fig = plot_optimization_dashboard(opt_callback, reference_callback=ref_callback)
@@ -300,13 +301,15 @@ def test_plot_optimization_dashboard_with_reference():
 
 def test_plot_optimization_dashboard_selective_plots():
     """Test optimization dashboard with selective plot types."""
-    from qsopt import OptimizationCallback, TrainableParameters
+    from qsopt import OptimizationCallback
     from qsopt.utils import plot_optimization_dashboard
 
     callback = OptimizationCallback(save_every=1, save_best=True)
-    params = TrainableParameters()
-    params.add_rotation_angles("theta", 1.0)
-    callback(trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4)
+    callback(
+        trainable_params_initial=[1.0],
+        trainable_params_final=[0.5],
+        prob_with=0.7, prob_without=0.3, contrast=0.4
+    )
 
     # Test with only contrast plot
     fig1 = plot_optimization_dashboard(
@@ -335,13 +338,15 @@ def test_plot_optimization_dashboard_selective_plots():
 
 def test_plot_optimization_dashboard_no_plots_raises():
     """Test that dashboard raises error when no plots enabled."""
-    from qsopt import OptimizationCallback, TrainableParameters
+    from qsopt import OptimizationCallback
     from qsopt.utils import plot_optimization_dashboard
 
     callback = OptimizationCallback(save_every=1, save_best=True)
-    params = TrainableParameters()
-    params.add_rotation_angles("theta", 1.0)
-    callback(trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4)
+    callback(
+        trainable_params_initial=[1.0],
+        trainable_params_final=[],
+        prob_with=0.7, prob_without=0.3, contrast=0.4
+    )
 
     # Should raise ValueError when all plots disabled
     with pytest.raises(ValueError, match="At least one plot type must be enabled"):

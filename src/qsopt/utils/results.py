@@ -69,13 +69,33 @@ class TimeEvolutionResults:
         lines.append(f"  Time interval: [{self.times.min():.3g}, {self.times.max():.3g}]")
         lines.append(f"  Number of time points: {len(self.times)}")
 
-        n_qubits = self.metadata["n_qubits"]
-        detection_criterion = self.metadata["detection_criterion"]
+        # Infer n_qubits from metadata or from probability keys
+        n_qubits = self.metadata.get("n_qubits")
+        if n_qubits is None and self.probabilities:
+            # Infer from the length of the binary suffix of the first probability key
+            # e.g. "prob_0" -> 1 qubit, "prob_00" -> 2 qubits
+            first_key = next(iter(self.probabilities))
+            suffix = first_key.split("_")[-1]
+            if suffix.isdigit() and all(c in "01" for c in suffix):
+                n_qubits = len(suffix)
+            else:
+                n_qubits = 1
+
+        detection_criterion = self.metadata.get("detection_criterion", "N/A")
 
         # Detect system type
-        system_type = f"{n_qubits} qubit"
+        if n_qubits == 1:
+            system_type = "Single-qubit"
+        elif n_qubits == 2:
+            system_type = "Two-qubit"
+        else:
+            system_type = f"{n_qubits}-qubit"
         lines.append(f"  System type: {system_type}")
         lines.append(f"  Detection Criterion: {detection_criterion}")
+
+        # List probability keys
+        if self.probabilities:
+            lines.append(f"  Probabilities: {list(self.probabilities.keys())}")
 
         # Pulse and measurements info
         lines.append(
@@ -270,64 +290,65 @@ def load_results(filepath: Union[str, Path]) -> Union[TimeEvolutionResults, Swee
         raise FileNotFoundError(f"File not found: {filepath}")
 
     # Load data
-    with np.load(filepath, allow_pickle=True) as data:
-        result_type = str(data["_type"][0])
+    with np.load(filepath, allow_pickle=True) as raw:
+        data: dict = dict(raw)  # convert NpzFile to dict for type safety
+    result_type = str(data["_type"][0])
 
-        if result_type == "TimeEvolutionResults":
-            # Extract times
-            times = data["times"]
+    if result_type == "TimeEvolutionResults":
+        # Extract times
+        times = data["times"]
 
-            # Extract probabilities
-            probabilities = {}
-            for key in data.files:
-                if key.startswith("prob_"):
-                    prob_key = key[5:]  # Remove 'prob_' prefix
-                    probabilities[prob_key] = data[key]
+        # Extract probabilities
+        probabilities = {}
+        for key in data.keys():
+            if key.startswith("prob_"):
+                prob_key = key[5:]  # Remove 'prob_' prefix
+                probabilities[prob_key] = data[key]
 
-            # Extract optional fields
-            pulse_shape = data["pulse_shape"] if "pulse_shape" in data else None
-            measurement_times = data["measurement_times"] if "measurement_times" in data else None
+        # Extract optional fields
+        pulse_shape = data["pulse_shape"] if "pulse_shape" in data else None
+        measurement_times = data["measurement_times"] if "measurement_times" in data else None
 
-            # Extract metadata
-            metadata = json.loads(str(data["metadata"][0])) if "metadata" in data else {}
+        # Extract metadata
+        metadata = json.loads(str(data["metadata"][0])) if "metadata" in data else {}
 
-            return TimeEvolutionResults(
-                times=times,
-                probabilities=probabilities,
-                pulse_shape=pulse_shape,
-                measurement_times=measurement_times,
-                metadata=metadata,
-            )
+        return TimeEvolutionResults(
+            times=times,
+            probabilities=probabilities,
+            pulse_shape=pulse_shape,
+            measurement_times=measurement_times,
+            metadata=metadata,
+        )
 
-        elif result_type == "SweepResults":
-            # Extract parameters
-            param1_name = str(data["param1_name"][0])
-            param1_vals = data["param1_vals"]
-            param1_scale = str(data["param1_scale"][0])
-            param2_name = str(data["param2_name"][0])
-            param2_vals = data["param2_vals"]
-            param2_scale = str(data["param2_scale"][0])
+    elif result_type == "SweepResults":
+        # Extract parameters
+        param1_name = str(data["param1_name"][0])
+        param1_vals = data["param1_vals"]
+        param1_scale = str(data["param1_scale"][0])
+        param2_name = str(data["param2_name"][0])
+        param2_vals = data["param2_vals"]
+        param2_scale = str(data["param2_scale"][0])
 
-            # Extract results
-            results = {}
-            for key in data.files:
-                if key.startswith("result_"):
-                    result_key = key[7:]  # Remove 'result_' prefix
-                    results[result_key] = data[key]
+        # Extract results
+        results = {}
+        for key in data.keys():
+            if key.startswith("result_"):
+                result_key = key[7:]  # Remove 'result_' prefix
+                results[result_key] = data[key]
 
-            # Extract metadata
-            metadata = json.loads(str(data["metadata"][0])) if "metadata" in data else {}
+        # Extract metadata
+        metadata = json.loads(str(data["metadata"][0])) if "metadata" in data else {}
 
-            return SweepResults(
-                param1_name=param1_name,
-                param1_vals=param1_vals,
-                param1_scale=param1_scale,
-                param2_name=param2_name,
-                param2_vals=param2_vals,
-                param2_scale=param2_scale,
-                results=results,
-                metadata=metadata,
-            )
+        return SweepResults(
+            param1_name=param1_name,
+            param1_vals=param1_vals,
+            param1_scale=param1_scale,
+            param2_name=param2_name,
+            param2_vals=param2_vals,
+            param2_scale=param2_scale,
+            results=results,
+            metadata=metadata,
+        )
 
-        else:
-            raise ValueError(f"Unknown result type: {result_type}")
+    else:
+        raise ValueError(f"Unknown result type: {result_type}")

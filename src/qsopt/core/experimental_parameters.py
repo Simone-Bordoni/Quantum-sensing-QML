@@ -7,7 +7,7 @@ physical constants, system dimensions, measurement protocols, and initial states
 """
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -199,7 +199,6 @@ class SystemDimensions:
         """Store original input and convert qubit_levels to list format if necessary."""
         # We need n_qubits from PhysicalConstants, but we can't access it here
         # So we'll handle this in the ExperimentalParameters.__init__
-        pass
 
     def _normalize_qubit_levels(self, n_qubits: int):
         """
@@ -306,7 +305,8 @@ class NoiseConfiguration:
                     raise ValueError(
                         f"{attr} list length ({len(value)}) must match n_qubits ({n_qubits})"
                     )
-                setattr(self, attr, [float(v) for v in value])
+                value_list = list(value)  # narrow type for pylint
+                setattr(self, attr, [float(v) for v in value_list])
             else:
                 raise TypeError(f"{attr} must be a float or a list of floats")
 
@@ -920,18 +920,6 @@ class ExperimentalParameters:
         lines.append(f"  Field levels:         {self.system_dims.field_levels:>6}")
         lines.append(f"  Total dimension:      {total_dim:>6}")
 
-        # Validation flags for dimensions
-        if isinstance(qubit_levels_list, list):
-            qubit_valid = all(q >= 2 for q in qubit_levels_list)
-        else:
-            qubit_valid = qubit_levels_list >= 2
-
-        dim_valid = (
-            self.system_dims.cavity_levels >= 2
-            and qubit_valid
-            and self.system_dims.field_levels >= 2
-        )
-
         # Physical Constants Group
         lines.append("PHYSICAL CONSTANTS")
         lines.append(f"  Chi:                  {self.physical_constants.chi}")
@@ -952,19 +940,6 @@ class ExperimentalParameters:
                 )
         else:
             lines.append("  Qubit interactions:   None")
-
-        # Validation flags for constants
-        chi_list = self.physical_constants.chi
-        if isinstance(chi_list, list):
-            chi_valid = all(c >= 0 for c in chi_list)
-        else:
-            chi_valid = chi_list >= 0
-
-        const_valid = (
-            chi_valid
-            and self.physical_constants.photon_cavity_coupling >= 0
-            and self.physical_constants.inverse_pulse_width > 0
-        )
 
         # Measurement Protocol Group
         lines.append("MEASUREMENT PROTOCOL")

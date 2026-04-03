@@ -249,9 +249,9 @@ class DetectionMetric:
             if detection_param is None:
                 detection_param = [format(0, f'0{self.n_qubits}b')]
             elif not all([isinstance(state, str) for state in detection_param]):
-                raise ValueError(f"custom states detection expects detection_param to be a list of string states")
+                raise ValueError("custom states detection expects detection_param to be a list of string states")
 
-            all_possible_states = set([format(i, f'0{self.n_qubits}b') for i in range(self.n_qubits)])
+            all_possible_states = set([format(i, f'0{self.n_qubits}b') for i in range(2**self.n_qubits)])
             invalid_states = set(detection_param) - all_possible_states
             if len(invalid_states) != 0:
                 raise ValueError(f"{len(invalid_states)} invalid states given: {invalid_states}")

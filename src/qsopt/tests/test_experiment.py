@@ -233,8 +233,8 @@ class TestExperiment:
         P0 = experiment.operators["P0_q"][0]
         P1 = experiment.operators["P1_q"][0]
 
-        p0 = float((P0 * rho0).tr())
-        p1 = float((P1 * rho0).tr())
+        p0 = float((P0 * rho0).tr().real)
+        p1 = float((P1 * rho0).tr().real)
 
         assert abs(p0 + p1 - 1.0) < 1e-10, f"Probabilities don't sum to 1: {p0} + {p1} = {p0 + p1}"
 

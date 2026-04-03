@@ -1,0 +1,50 @@
+[MASTER]
+# Ignore test files - tests use deprecated APIs by design and are verified by pytest
+ignore-paths = src/qsopt/tests
+
+# Use multiple processes to speed up pylint
+jobs = 0
+
+[MESSAGES CONTROL]
+# Disable style/refactoring checks that are too strict for scientific code
+disable =
+    C0301,  # line-too-long (scientific variable names and formulas are long)
+    C0302,  # too-many-lines (experiment module is large by design)
+    C0303,  # trailing-whitespace (auto-formatted)
+    C0304,  # missing-final-newline
+    C0411,  # wrong-import-order
+    C0415,  # import-outside-toplevel (used for lazy imports in circuit)
+    R0902,  # too-many-instance-attributes (physics classes have many attrs)
+    R0911,  # too-many-return-statements (build_detection has many cases)
+    R0912,  # too-many-branches (physics dispatch logic)
+    R0913,  # too-many-arguments
+    R0914,  # too-many-locals
+    R0915,  # too-many-statements
+    R0917,  # too-many-positional-arguments
+    R1705,  # no-else-return (style preference)
+    R1710,  # inconsistent-return-statements
+    R1714,  # consider-using-in
+    R1715,  # consider-using-get
+    R1718,  # consider-using-set-comprehension
+    R1720,  # no-else-raise
+    R1729,  # use-a-generator
+    W0107,  # unnecessary-pass
+    W0212,  # protected-access (scientific internal state access patterns)
+    W0511,  # fixme (TODOs are informational)
+    W0611,  # unused-import (handled per-file where needed)
+    W1309,  # f-string-without-interpolation
+
+[FORMAT]
+# Allow longer lines for scientific code
+max-line-length = 120
+
+[DESIGN]
+# Relaxed thresholds for scientific computation classes
+max-args = 15
+max-attributes = 20
+max-bool-expr = 10
+max-branches = 30
+max-locals = 25
+max-public-methods = 40
+max-returns = 10
+max-statements = 80

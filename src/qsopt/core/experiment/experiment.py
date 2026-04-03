@@ -590,6 +590,8 @@ class Experiment:
         detection_metric = self.detection_metric
 
         # Get circuit unitaries
+        if precomputed_unitaries is None:
+            precomputed_unitaries = self._prepare_circuit_unitaries()
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
         # Initial state

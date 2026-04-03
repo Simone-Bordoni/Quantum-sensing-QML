@@ -33,7 +33,6 @@ from typing import List, Union, Optional
 import jax.numpy as jnp
 import qutip as qt
 from .gates import Gate
-import math
 
 
 class QuantumCircuit:
@@ -364,7 +363,7 @@ class QuantumCircuit:
         else:
             
             if parameters is None:
-                parameters = [np.pi / 2] * len(targets)
+                parameters = [jnp.pi / 2] * len(targets)
             elif isinstance(parameters,float):
                 parameters = [parameters] * len(targets)
 
@@ -471,3 +470,45 @@ def create_ry_circuit(
     circuit.add_layer(RYGate, parameters=theta_values, trainable=trainable)
 
     return circuit
+
+
+# Alias for backward compatibility
+create_ry_circuit_layer = create_ry_circuit
+
+
+def create_layer(
+    circuit: QuantumCircuit,
+    gate_type: type,
+    params: List[float],
+    trainable: bool = True,
+    qubits: Optional[List[int]] = None,
+) -> None:
+    """
+    Add a rotation layer to a circuit.
+
+    Args:
+        circuit: Target QuantumCircuit
+        gate_type: Single-qubit gate class (e.g., RXGate, RYGate)
+        params: List of rotation angles, one per qubit
+        trainable: Whether parameters are trainable
+        qubits: Qubit indices to target (None = all qubits)
+    """
+    circuit.add_layer(gate_type, parameters=params, targets=qubits, trainable=trainable)
+
+
+def create_entangling_layer(
+    circuit: QuantumCircuit,
+    gate_type: type,
+    pattern: str = "linear",
+    qubits: Optional[List[int]] = None,
+) -> None:
+    """
+    Add an entangling layer to a circuit.
+
+    Args:
+        circuit: Target QuantumCircuit
+        gate_type: Two-qubit gate class (e.g., CNOTGate, CZGate)
+        pattern: Connectivity pattern - "linear" or "circular"
+        qubits: Ordered list of qubit indices (None = all qubits)
+    """
+    circuit.add_entangling_layer(gate_type, pattern=pattern, targets=qubits)

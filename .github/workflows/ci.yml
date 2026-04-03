@@ -8,106 +8,109 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint-and-format-check:
+  lint:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Set up Python 3.13
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
-    
-    - name: Install linting tools
-      run: |
-        pip install black isort pylint
-    
-    - name: Check code formatting with black
-      run: |
-        black --check src/ --line-length 100
-      continue-on-error: true
-    
-    - name: Check import sorting with isort
-      run: |
-        isort --check-only --profile black src/
-      continue-on-error: true
 
-  test-multi-platform:
-    needs: lint-and-format-check
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: lint-${{ hashFiles('requirements-dev.txt') }}
+
+    - name: Install linting tools
+      run: pip install pylint==$(grep 'pylint==' requirements-dev.txt | cut -d= -f3)
+
+    - name: Run pylint on source (errors only, using .pylintrc)
+      run: |
+        python -m pylint src/qsopt/core src/qsopt/utils src/qsopt/__init__.py \
+          --disable=C,R,W \
+          --score=no
+
+  test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ['3.13']
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    
-    - name: Display system information
-      run: |
-        python --version
-        pip --version
-    
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pip
+          ~/AppData/Local/pip/Cache
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
     - name: Upgrade pip
-      run: |
-        python -m pip install --upgrade pip
-    
-    - name: Install package with test dependencies
-      run: |
-        pip install -e ".[test]"
-    
+      run: python -m pip install --upgrade pip
+
+    - name: Install package and test dependencies
+      run: pip install -e ".[test]"
+
     - name: Verify core dependencies
       run: |
-        python -c "import qsopt; print(f'qsopt: {qsopt.__version__}')"
         python -c "import jax; print(f'JAX: {jax.__version__}')"
         python -c "import qutip; print(f'QuTiP: {qutip.__version__}')"
         python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
         python -c "import optax; print(f'Optax: {optax.__version__}')"
-    
-    - name: Run tests
-      run: |
-        pytest src/qsopt/tests/ -v --tb=short
+        python -c "import qsopt; print('qsopt import OK')"
 
-  test-coverage:
-    needs: test-multi-platform
-    runs-on: windows-latest
-    
+    - name: Run all tests
+      run: pytest src/qsopt/tests/ -v --tb=short
+
+  coverage:
+    needs: test
+    runs-on: ubuntu-latest
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+
     - name: Set up Python 3.13
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
-    
-    - name: Install package with coverage tools
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: coverage-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+
+    - name: Install package with test dependencies
       run: |
-        pip install --upgrade pip
+        python -m pip install --upgrade pip
         pip install -e ".[test]"
-        pip install pytest-cov coverage
-    
-    - name: Run tests with coverage
+
+    - name: Run all tests with coverage
       run: |
-        pytest src/qsopt/tests/test_installation.py src/qsopt/tests/test_gates.py src/qsopt/tests/test_circuit.py --cov=src/qsopt --cov-report=term --cov-report=xml --cov-report=html
-      continue-on-error: true
-    
-    - name: Display coverage report
-      if: always()
-      run: |
-        coverage report
-      continue-on-error: true
-    
-    - name: Upload coverage to artifacts
+        pytest src/qsopt/tests/ \
+          --cov=src/qsopt \
+          --cov-report=term-missing \
+          --cov-report=xml \
+          --cov-report=html \
+          -q
+
+    - name: Upload coverage report
       if: always()
       uses: actions/upload-artifact@v4
       with:
@@ -116,4 +119,3 @@ jobs:
           htmlcov/
           coverage.xml
         retention-days: 14
-      continue-on-error: true

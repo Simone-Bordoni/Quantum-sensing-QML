@@ -130,13 +130,15 @@ def compute_theta1_theta2_landscape(
 
 
 def compute_time_interval_landscape(
-    experiment: "Experiment",
+    experiment: Union["Experiment", ExperimentalParameters],
     resolution: int = 50,
     mode: str = "continuous",
     batch_size: int = 1,
     verbose: bool = True,
     min_interval: Optional[float] = None,
     max_interval: Optional[float] = None,
+    theta1: Optional[float] = None,
+    theta2: Optional[float] = None,
 ) -> Dict[str, Union[np.ndarray, float, str, int]]:
     """
     Compute contrast landscape vs measurement time interval.
@@ -149,13 +151,15 @@ def compute_time_interval_landscape(
     in a future release. Please update your code to use the Experiment method.
 
     Args:
-        experiment: Experiment instance with configured circuits and parameters.
+        experiment: Experiment instance (or ExperimentalParameters for backward compat).
         resolution: Number of time interval values to evaluate. Default: 50.
         mode: Computation mode - either 'continuous' or 'discrete'.
         batch_size: Number of random realizations to average over. Default: 1.
         verbose: Print progress information. Default: True.
         min_interval: Minimum interval to consider. Default: auto-determined.
         max_interval: Maximum interval to consider. Default: total_time.
+        theta1: Initial rotation angle (for ExperimentalParameters backward compat).
+        theta2: Final rotation angle (for ExperimentalParameters backward compat).
 
     Returns:
         Dictionary containing interval sweep results.
@@ -164,13 +168,28 @@ def compute_time_interval_landscape(
         :meth:`qsopt.core.experiment.Experiment.compute_time_interval_landscape`:
             The new method location.
     """
+    import numpy as _np
     warnings.warn(
         "compute_time_interval_landscape() has been moved to Experiment.compute_time_interval_landscape(). "
         "This standalone function is deprecated and will be removed in a future release.",
         DeprecationWarning,
         stacklevel=2
     )
-    return experiment.compute_time_interval_landscape(
+
+    # Backward compatibility: accept ExperimentalParameters and build an Experiment
+    if isinstance(experiment, ExperimentalParameters):
+        from qsopt.core.experiment import Experiment
+        from qsopt.core.circuit import create_ry_circuit_layer
+        import numpy as _np2
+
+        _theta1 = theta1 if theta1 is not None else _np2.pi / 2
+        _theta2 = theta2 if theta2 is not None else -_np2.pi / 2
+        n_qubits = experiment.n_qubits
+        initial_circuit = create_ry_circuit_layer(n_qubits=n_qubits, theta_values=[_theta1] * n_qubits)
+        final_circuit = create_ry_circuit_layer(n_qubits=n_qubits, theta_values=[_theta2] * n_qubits)
+        experiment = Experiment(experiment, initial_circuit=initial_circuit, final_circuit=final_circuit)
+
+    result = experiment.compute_time_interval_landscape(
         resolution=resolution,
         mode=mode,
         batch_size=batch_size,
@@ -178,3 +197,11 @@ def compute_time_interval_landscape(
         min_interval=min_interval,
         max_interval=max_interval,
     )
+
+    # Add theta1/theta2 to the result for backward compat
+    if theta1 is not None:
+        result["theta1"] = theta1
+    if theta2 is not None:
+        result["theta2"] = theta2
+
+    return result

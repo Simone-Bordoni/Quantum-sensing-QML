@@ -203,8 +203,8 @@ def plot_optimization_dashboard(
         plot_idx += 1
 
         # Use different color schemes for initial vs final circuit parameters
-        colors_init = plt.cm.Blues(np.linspace(0.4, 0.9, max(1, n_initial_params)))
-        colors_final = plt.cm.Oranges(np.linspace(0.4, 0.9, max(1, n_final_params)))
+        colors_init = plt.cm.Blues(np.linspace(0.4, 0.9, max(1, n_initial_params)))  # pylint: disable=no-member
+        colors_final = plt.cm.Oranges(np.linspace(0.4, 0.9, max(1, n_final_params)))  # pylint: disable=no-member
 
         for i, name in enumerate(param_names):
             # Choose color based on whether it's initial or final circuit parameter
@@ -267,7 +267,7 @@ def plot_optimization_dashboard(
         ax.grid(True, alpha=0.3)
 
     # Plot 5: Parameter Trajectory
-    if show_trajectory and len(param_arrays) >= 2:
+    if show_trajectory and len(param_arrays) >= 2 and n_total_params >= 2:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
         plot_idx += 1

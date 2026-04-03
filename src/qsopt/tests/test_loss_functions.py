@@ -1,32 +1,216 @@
 """
 Tests for loss functions and detection probability definitions.
 
-This module tests the DetectionFromProbabilities class and predefined
-detection criteria for quantum sensing experiments.
-
-.. deprecated::
-    DetectionFromProbabilities has been removed.
+Tests for DetectionMetric class and associated detection criteria.
 """
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-pytestmark = pytest.mark.skip(reason="DetectionFromProbabilities has been removed")
-
-# from qsopt.core.loss_functions import (
-#     DetectionFromProbabilities,
-#     detection_11,
-#     detection_any_excited,
-#     detection_both_excited,
-#     detection_not_00,
-#     detection_qubit1,
-#     detection_qubit2,
-#     detection_xor,
-# )
+from qsopt.core.loss_functions import DetectionMetric, std_metric, std_batching
 
 
+class TestDetectionMetricInit:
+    """Test DetectionMetric initialization with various criteria."""
+
+    def test_default_any_excited(self):
+        """Test default 'any excited' criterion for 1 qubit."""
+        dm = DetectionMetric(n_qubits=1)
+        assert dm.n_qubits == 1
+        assert "any excited" in dm.detection_name
+        states = dm.detection_states
+        assert isinstance(states, list)
+        assert "1" in states  # single qubit: |1⟩ is excited
+
+    def test_any_excited_2qubits(self):
+        """Test 'any excited' for 2 qubits."""
+        dm = DetectionMetric(n_qubits=2)
+        states = dm.detection_states
+        # Should include 01, 10, 11 - all except 00
+        assert "01" in states
+        assert "10" in states
+        assert "11" in states
+        assert "00" not in states
+
+    def test_min_excited_default(self):
+        """Test 'min excited' with default param (1 excitation)."""
+        dm = DetectionMetric(n_qubits=2, detection_criterion="min excited")
+        states = dm.detection_states
+        # Should include all states with at least 1 excitation
+        assert "01" in states
+        assert "10" in states
+        assert "11" in states
+        assert "00" not in states
+
+    def test_min_excited_custom_param(self):
+        """Test 'min excited' with custom detection_param."""
+        dm = DetectionMetric(n_qubits=2, detection_criterion="min excited", detection_param=2)
+        states = dm.detection_states
+        # Only |11⟩ has 2 excitations for 2-qubit system
+        assert "11" in states
+        assert "01" not in states
+        assert "10" not in states
+
+    def test_excited_qubits_default(self):
+        """Test 'excited qubits' with default param (qubit 0)."""
+        dm = DetectionMetric(n_qubits=2, detection_criterion="excited qubits")
+        states = dm.detection_states
+        # States where qubit 0 is excited: 10, 11
+        assert "10" in states
+        assert "11" in states
+        assert "01" not in states
+
+    def test_excited_qubits_custom(self):
+        """Test 'excited qubits' with specific qubit list."""
+        dm = DetectionMetric(n_qubits=2, detection_criterion="excited qubits", detection_param=[1])
+        states = dm.detection_states
+        # States where qubit 1 is excited: 01, 11
+        assert "01" in states
+        assert "11" in states
+        assert "10" not in states
+
+    def test_custom_states(self):
+        """Test 'custom states' criterion."""
+        dm = DetectionMetric(
+            n_qubits=2, detection_criterion="custom states", detection_param=["11"]
+        )
+        assert dm.detection_states == ["11"]
+
+    def test_min_fidelity(self):
+        """Test 'min fidelity' criterion changes aggregation logic."""
+        dm = DetectionMetric(n_qubits=1, detection_criterion="min fidelity")
+        # Should use list aggregation
+        assert dm.multiple_measurement_name == "list aggregation"
+        assert dm.batching_name == "fidelity batching"
+
+    def test_max_trace_distance(self):
+        """Test 'max trace distance' criterion."""
+        dm = DetectionMetric(n_qubits=1, detection_criterion="max trace distance")
+        assert dm.multiple_measurement_name == "list aggregation"
+        assert dm.batching_name == "trace distance batching"
+
+    def test_max_distance(self):
+        """Test 'max distance' criterion."""
+        dm = DetectionMetric(n_qubits=2, detection_criterion="max distance")
+        assert dm.detection_name == "max distance"
+        assert dm.multiple_measurement_name == "list aggregation"
+
+    def test_invalid_criterion_raises(self):
+        """Test that invalid criterion raises ValueError."""
+        with pytest.raises(ValueError, match="criterion"):
+            DetectionMetric(n_qubits=1, detection_criterion="invalid_criterion")
+
+    def test_custom_metric(self):
+        """Test custom metric function."""
+        custom_metric = lambda x, y: x + y
+        dm = DetectionMetric(n_qubits=1, metric=custom_metric, metric_name="sum")
+        assert dm.custom_metric is True
+        assert dm.metric_name == "sum"
+
+    def test_custom_multiple_measurement_logic(self):
+        """Test custom multiple measurement logic."""
+        custom_logic = (jnp.array(0.0), lambda x, y: x + y, lambda x: x)
+        dm = DetectionMetric(n_qubits=1, multiple_measurement_logic=custom_logic)
+        assert dm.custom_multiple_measurement_logic is True
+
+    def test_protocol_name_custom(self):
+        """Test custom protocol name."""
+        dm = DetectionMetric(n_qubits=1, protocol_name="my_protocol")
+        assert dm.protocol_name == "my_protocol"
+
+    def test_protocol_name_auto(self):
+        """Test automatically generated protocol name."""
+        dm = DetectionMetric(n_qubits=1)
+        assert "any excited" in dm.protocol_name
+        assert "contrast" in dm.protocol_name
+
+    def test_repr(self):
+        """Test string representation."""
+        dm = DetectionMetric(n_qubits=2)
+        repr_str = repr(dm)
+        assert "DetectionMetric" in repr_str
+        assert "any excited" in repr_str
+
+
+class TestDetectionMetricCall:
+    """Test DetectionMetric __call__ method."""
+
+    def test_call_contrast(self):
+        """Test calling metric computes contrast."""
+        dm = DetectionMetric(n_qubits=1)
+        # Default metric: -(p_with - p_without) = -(0.7 - 0.3) = -0.4
+        result = dm(0.7, 0.3)
+        # std_metric returns negative contrast
+        assert float(result) == pytest.approx(-0.4, abs=1e-6)
+
+    def test_call_zero_contrast(self):
+        """Test contrast is zero when both probabilities equal."""
+        dm = DetectionMetric(n_qubits=1)
+        result = dm(0.5, 0.5)
+        assert float(result) == pytest.approx(0.0, abs=1e-6)
+
+
+class TestStdFunctions:
+    """Test standalone std metric/batching functions."""
+
+    def test_std_metric(self):
+        """Test std_metric returns negative contrast."""
+        result = std_metric(0.8, 0.3)
+        assert float(result) == pytest.approx(-0.5, abs=1e-6)
+
+    def test_std_batching(self):
+        """Test std_batching aggregates over batch."""
+        detect_with = [0.6, 0.8]
+        detect_without = [0.3, 0.4]
+        p_with, p_without, contrast = std_batching(detect_with, detect_without)
+        assert float(p_with) == pytest.approx(0.7, abs=1e-5)
+        assert float(p_without) == pytest.approx(0.35, abs=1e-5)
+        assert float(contrast) == pytest.approx(0.35, abs=1e-5)
+
+    def test_prob_initializer(self):
+        """Test default prob_initializer is 1."""
+        dm = DetectionMetric(n_qubits=1)
+        assert float(dm.prob_initializer) == 1.0
+
+    def test_measurement_aggregation_multiplies(self):
+        """Test default measurement_aggregation multiplies probabilities."""
+        dm = DetectionMetric(n_qubits=1)
+        result = dm.measurement_aggregation(jnp.array(0.8), jnp.array(0.9))
+        assert float(result) == pytest.approx(0.72, abs=1e-6)
+
+    def test_post_aggregation_complements(self):
+        """Test default post_aggregation returns 1 - x."""
+        dm = DetectionMetric(n_qubits=1)
+        result = dm.post_aggregation(jnp.array(0.3))
+        assert float(result) == pytest.approx(0.7, abs=1e-6)
+
+
+class TestDetectionMetricValidationErrors:
+    """Test validation errors in DetectionMetric."""
+
+    def test_excited_qubits_non_list_param(self):
+        """Test excited_qubits requires list param."""
+        with pytest.raises(ValueError):
+            DetectionMetric(n_qubits=2, detection_criterion="excited qubits", detection_param=1)
+
+    def test_custom_states_non_string_param(self):
+        """Test custom_states requires list of strings."""
+        with pytest.raises(ValueError):
+            DetectionMetric(n_qubits=2, detection_criterion="custom states", detection_param=[1, 2])
+
+
+@pytest.mark.skip(reason="DetectionFromProbabilities has been removed")
 class TestDetectionFromProbabilities:
-    """Test suite for DetectionFromProbabilities class."""
+    """Legacy test suite - skipped since DetectionFromProbabilities has been removed."""
+
+    def test_placeholder(self):
+        pass
+
+
+@pytest.mark.skip(reason="Predefined detection functions have been removed")
+class TestPredefinedDetectionCriteria:
+    """Legacy test suite - skipped since predefined detection functions have been removed."""
 
     @pytest.fixture
     def sample_probs(self):
@@ -124,6 +308,7 @@ class TestDetectionFromProbabilities:
         assert jnp.isclose(result, 1.0)
 
 
+@pytest.mark.skip(reason="predefined detection functions have been removed")
 class TestPredefinedDetectionCriteria:
     """Test suite for predefined detection functions."""
 
@@ -206,6 +391,7 @@ class TestPredefinedDetectionCriteria:
         assert jnp.isclose(detection_11(sample_probs), detection_both_excited(sample_probs))
 
 
+@pytest.mark.skip(reason="DetectionFromProbabilities has been removed")
 class TestContrastMetrics:
     """Test suite for contrast computation."""
 
@@ -253,6 +439,7 @@ class TestContrastMetrics:
         assert jnp.isclose(contrast, 0.6)
 
 
+@pytest.mark.skip(reason="DetectionFromProbabilities has been removed")
 class TestIntegrationScenarios:
     """Integration tests for realistic sensing scenarios."""
 
