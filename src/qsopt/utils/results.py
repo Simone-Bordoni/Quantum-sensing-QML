@@ -102,8 +102,8 @@ class TimeEvolutionResults:
             f"  Pulse shape: {'Available' if self.pulse_shape is not None else 'Not available'}"
         )
         if self.measurement_times is not None:
-            meas_times = np.asarray(self.measurement_times)
-            lines.append(f"  Measurement times: {list(meas_times)}")
+            meas_times = list(np.asarray(self.measurement_times))
+            lines.append(f"  Measurement times: {[ float(i) for i in meas_times]}")
         else:
             lines.append(f"  Measurement times: Not specified")
 
