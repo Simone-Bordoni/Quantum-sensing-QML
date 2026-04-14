@@ -53,14 +53,25 @@ Initial State |ψ₀⟩ → Initial Circuit → H(t) Evolution → Final Circuit
 
 ## Installation
 
-**Quick Start:**
+**Quick Start (only CPU):**
 ```bash
 pip install -e .
 ```
 
+**With GPU Support (NVIDIA CUDA 12.x - recommended):**
+```bash
+pip install -e ".[cuda12]"
+```
+
+**Alternative GPU Option (CUDA 11.x):**
+```bash
+pip install -e ".[cuda11]"
+```
+
 **With development tools:**
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[cuda12,dev]"      # GPU + dev tools
+pip install -e ".[dev]"              # CPU + dev tools
 ```
 
 **Using Poetry:**
@@ -68,7 +79,7 @@ pip install -e ".[dev]"
 poetry install
 ```
 
-For detailed installation instructions, troubleshooting, and requirements verification, see **[INSTALLATION.md](./INSTALLATION.md)**.
+For detailed installation instructions, GPU setup, and troubleshooting, see **[INSTALLATION.md](./INSTALLATION.md)**.
 
 ### Verification
 
@@ -473,6 +484,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 Email: simone.bordoni@uniroma1.it  
 GitHub: [@Simone-Bordoni](https://github.com/Simone-Bordoni)
 
+**Nathan Campioni**  
+Email: nathan.campioni@gmail.com
+GitHub: [@DiagnosiZucchero](https://github.com/DiagnosiZucchero)
+
 ## Citation
 
 If you use this library in your research, please cite:
@@ -480,7 +495,7 @@ If you use this library in your research, please cite:
 ```bibtex
 @software{quantum_sensing_qml_2025,
   title={Quantum Sensing \& QML Library (qsopt)},
-  author={Bordoni, Simone},
+    author={Bordoni, Simone and Campioni, Nathan},
   year={2025},
   url={https://github.com/Simone-Bordoni/Quantum-sensing-QML},
   note={JAX-compatible quantum circuits and sensing optimization}

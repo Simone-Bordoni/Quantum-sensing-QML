@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Quantum Sensing Optimization Library using JAX and QuTiP"
 authors = [
     "Simone Bordoni <simone.bordoni@uniroma1.it>",
-    "Nathan Gargioni"
+    "Nathan Campioni <nathan.campioni@gmail.com>"
 ]
 readme = "README.md"
 license = "MIT"

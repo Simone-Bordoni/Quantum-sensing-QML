@@ -4,18 +4,54 @@
 
 ### Using pip (recommended)
 
-```bash
-# Install from source (editable mode)
-pip install -e .
+By default, the library installs with **CPU-based JAX**, which works on any system. Optionally, you can add GPU support or development tools.
 
-# Install with development dependencies
+#### Basic Installation (CPU - works everywhere)
+```bash
+pip install -e .
+```
+
+#### Add GPU Support (pick one)
+```bash
+# For NVIDIA GPUs with CUDA 12.x (recommended for most modern setups)
+pip install -e ".[cuda12]"
+
+# For NVIDIA GPUs with CUDA 11.x
+pip install -e ".[cuda11]"
+```
+
+
+#### Other Extras (without GPU)
+```bash
+# Development tools (testing, formatting, linting)
 pip install -e ".[dev]"
 
-# Install with test dependencies only
+# Testing only
 pip install -e ".[test]"
 
-# Install with Jupyter support
+# Jupyter notebook support
 pip install -e ".[jupyter]"
+```
+
+
+#### Combine Options (mix and match as needed)
+Extras are composable—combine GPU, development tools, testing, Jupyter, etc. with commas:
+
+```bash
+# GPU + development tools
+pip install -e ".[cuda12,dev]"
+
+# GPU + testing
+pip install -e ".[cuda12,test]"
+
+# development + Jupyter (on CPU)
+pip install -e ".[dev,jupyter]"
+
+# GPU + all optional tools
+pip install -e ".[cuda12,dev,test,jupyter]"
+
+# Multiple non-GPU extras
+pip install -e ".[dev,jupyter]"
 ```
 
 ### Using Poetry (alternative)

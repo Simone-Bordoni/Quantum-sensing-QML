@@ -11,7 +11,7 @@ requires-python = ">=3.13"
 license = {text = "MIT"}
 authors = [
     {name = "Simone Bordoni", email = "simone.bordoni@uniroma1.it"},
-    {name = "Nathan Gargioni"}
+    {name = "Nathan Campioni", email = "nathan.campioni@gmail.com"}
 ]
 keywords = ["quantum", "sensing", "optimization", "quantum optics", "jax", "qutip"]
 classifiers = [
@@ -41,6 +41,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# GPU acceleration extras (mutually exclusive with each other)
+cuda12 = [
+    "jax[cuda12]==0.9.2",
+]
+
+cuda11 = [
+    "jax[cuda11]==0.9.2",
+]
+
+# Development and testing extras (mix and match as needed)
 dev = [
     "pytest==9.0.2",
     "pytest-cov==7.1.0",

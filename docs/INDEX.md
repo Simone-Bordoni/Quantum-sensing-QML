@@ -977,7 +977,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 ```bibtex
 @software{qsopt2025,
   title={Quantum Sensing Optimization Library},
-  author={Bordoni, Simone and Gargioni, Nathan},
+  author={Bordoni, Simone and Campioni, Nathan},
   year={2025},
   url={https://github.com/Simone-Bordoni/Quantum-sensing-QML}
 }
