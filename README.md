@@ -145,11 +145,11 @@ experiment = Experiment(
 # Run single simulation
 callback = experiment.run_simulation(batch_size=1)
 print(f"Detection probability with photon: {callback.history['prob_with'][-1]:.6f}")
-print(f"Sensing contrast: {callback.history['contrast'][-1]:.6f}")
+print(f"Sensing metric: {callback.history['metric'][-1]:.6f}")
 
 # Optimize circuit parameters
 callback = experiment.optimize_rotations(num_steps=100, verbose=True)
-print(f"\nFinal optimized contrast: {callback.best_metrics['contrast']:.6f}")
+print(f"\nFinal optimized metric: {callback.best_metrics['metric']:.6f}")
 ```
 
 ### Example 2: Two-Qubit Sensing with Custom Circuits

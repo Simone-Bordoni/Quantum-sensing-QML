@@ -75,7 +75,7 @@ history = experiment.optimize_rotations(
     learning_rate=0.05,
     verbose=True
 )
-print(f"Optimized contrast: {history['contrast'][-1]:.6f}")
+print(f"Optimized metric: {history['metric'][-1]:.6f}")
 ```
 
 ---
@@ -337,10 +337,10 @@ history = experiment.optimize_rotations(
 )
 
 # Returns dictionary with:
-history['contrast']       # Contrast at each step
+history['metric']         # Metric at each step
 history['parameters']     # Parameter trajectory
 history['gradients']      # Gradient magnitudes
-history['loss']          # Loss values (1 - contrast)
+history['loss']          # Loss values (1 - metric)
 ```
 
 **Example: Standard optimization**
@@ -352,10 +352,10 @@ history = experiment.optimize_rotations(
 )
 
 import matplotlib.pyplot as plt
-plt.plot(history['contrast'])
+plt.plot(history['metric'])
 plt.xlabel('Optimization Step')
-plt.ylabel('Sensing Contrast')
-plt.title('Contrast Evolution')
+plt.ylabel('Sensing Metric')
+plt.title('Metric Evolution')
 plt.show()
 ```
 
@@ -374,8 +374,8 @@ results = experiment.optimize_measurement_times(
 
 # Returns dictionary:
 results['optimal_times']      # Best measurement times found
-results['best_contrast']      # Contrast at optimal times
-results['contrast_landscape'] # Full landscape grid
+results['best_metric']        # Metric at optimal times
+results['metric_landscape']   # Full landscape grid
 results['computation_time']   # Search duration
 ```
 
@@ -388,7 +388,7 @@ results = experiment.optimize_measurement_times(
 )
 
 print(f"Optimal times: {results['optimal_times']}")
-print(f"Best contrast: {results['best_contrast']:.6f}")
+print(f"Best metric: {results['best_metric']:.6f}")
 ```
 
 ### Computing Sensing Contrast
@@ -453,7 +453,7 @@ time_results = experiment.optimize_measurement_times(
     resolution=40
 )
 
-print(f"Final contrast: {time_results['best_contrast']:.6f}")
+print(f"Final metric: {time_results['best_metric']:.6f}")
 ```
 
 ### Parameter Sweep
@@ -477,14 +477,14 @@ for init_angles in initial_angles:
     
     results_sweep.append({
         'initial': init_angles,
-        'final_contrast': history['contrast'][-1],
+        'final_metric': history['metric'][-1],
         'final_params': history['parameters'][-1]
     })
 
 # Find best initialization
-best_result = max(results_sweep, key=lambda x: x['final_contrast'])
+best_result = max(results_sweep, key=lambda x: x['final_metric'])
 print(f"Best initialization: {best_result['initial']}")
-print(f"Best contrast: {best_result['final_contrast']:.6f}")
+print(f"Best metric: {best_result['final_metric']:.6f}")
 ```
 
 ---
@@ -514,16 +514,16 @@ for rate in relaxation_rates:
     
     results_noise.append({
         'relaxation_rate': rate,
-        'final_contrast': history['contrast'][-1]
+        'final_metric': history['metric'][-1]
     })
 
 # Plot noise sensitivity
 rates = [r['relaxation_rate'] for r in results_noise]
-contrasts = [r['final_contrast'] for r in results_noise]
+metric_values = [r['final_metric'] for r in results_noise]
 
-plt.semilogx(rates, contrasts, 'o-')
+plt.semilogx(rates, metric_values, 'o-')
 plt.xlabel('Relaxation Rate (rad/s)')
-plt.ylabel('Optimized Contrast')
+plt.ylabel('Optimized Metric')
 plt.title('Noise Sensitivity')
 plt.grid(True)
 plt.show()
@@ -592,7 +592,7 @@ for epoch in range(10):
     circuit_params = circuit.get_trainable_parameters()
     # ... gradient update logic ...
     
-    print(f"Epoch {epoch}, Contrast: {history['contrast'][-1]:.6f}")
+    print(f"Epoch {epoch}, Metric: {history['metric'][-1]:.6f}")
 ```
 
 ---

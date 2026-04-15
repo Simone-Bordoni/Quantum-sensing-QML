@@ -96,12 +96,6 @@ class QuantumCircuit:
                 params.append(gate.get_parameter())
         return params
 
-        #params = {}
-        #for gate in self._gates:
-        #    if gate.has_parameter() and gate._parameter.trainable:
-        #        params[gate._parameter.name] = gate.get_parameter())
-        #return params
-
     def count_trainable_parameters(self) -> int:
         """
         Count the number of trainable parameters in the circuit.

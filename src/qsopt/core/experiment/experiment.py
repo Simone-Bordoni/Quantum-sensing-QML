@@ -31,9 +31,6 @@ from qsopt.utils.results import SweepResults
 if TYPE_CHECKING:
     from qsopt.utils.results import TimeEvolutionResults
 
-# Import qutip_jax to enable JAX backend
-import qutip_jax  # pylint: disable=unused-import
-
 from .quantum_utils import (
     apply_qubit_rotation,
     build_qubit_noise_operators,
@@ -44,6 +41,9 @@ from .quantum_utils import (
     measure_qubits_probability,
     u0,
 )
+
+# Import qutip_jax to enable JAX backend
+import qutip_jax  # pylint: disable=unused-import
 
 # Suppress Diffrax complex dtype warning
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
@@ -598,7 +598,7 @@ class Experiment:
         rho_current = rho
 
         # Track cumulative probability of non-detection
-        prob = detection_metric.prob_initializer
+        aggregate_measure = detection_metric.aggregate_init
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurements[:-1], measurements[1:]):
@@ -611,11 +611,11 @@ class Experiment:
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Measure probability of non detection and reset the qubit
-            rho_current, prob_current = self.measure_reset(rho = rho_final)
+            rho_current, detection_measure = self.measure_reset(rho = rho_final)
             
-            prob = detection_metric.measurement_aggregation(prob, prob_current)
+            aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, detection_measure)
 
-        return detection_metric.post_aggregation(prob) #rho_final
+        return detection_metric.post_aggregation(aggregate_measure) #rho_final
 
 
     def debug_simulation(
@@ -667,7 +667,7 @@ class Experiment:
         rho_current = rho
 
         # Track cumulative probability of non-detection
-        prob = detection_metric.prob_initializer
+        aggregate_measure = detection_metric.aggregate_init
 
         self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
         n_meas=0                      ############################
@@ -687,12 +687,12 @@ class Experiment:
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Measure probability of non detection and reset the qubit
-            rho_current, prob_current = self.measure_reset(rho = rho_final)
+            rho_current, measurement_data = self.measure_reset(rho = rho_final)
             #rho_reset = measure_reset * rho_final * measure_reset_dag
             #prob_no_detect = jnp.real(rho_reset.tr())
             #rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
             
-            prob = detection_metric.measurement_aggregation(prob, prob_current)
+            aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, measurement_data)
 
             #prob = prob * prob_no_detect
             
@@ -701,7 +701,7 @@ class Experiment:
         self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
 
 
-        return detection_metric.post_aggregation(prob) #rho_final
+        return detection_metric.post_aggregation(aggregate_measure) #rho_final
 
     def run_simulation(self, batch_size: int = 1, debug: bool=False) -> OptimizationCallback:
         """
@@ -723,7 +723,7 @@ class Experiment:
                 - Single epoch (epoch=1)
                 - Current parameter values
                 - Detection probabilities (prob_with, prob_without) averaged over batch
-                - Sensing contrast averaged over batch
+                - Metric value averaged over batch
 
         Raises:
             ValueError: If initial state cache is not initialized
@@ -800,10 +800,13 @@ class Experiment:
         if debug:
             self.debug_times.append({ f'compute_probs' : t.time()})
 
-        # Use detection metric's batching logic to properly handle both scalar and list results
-        prob_with, prob_without, contrast = self.detection_metric.batching_logic(
+        # Use detection metric's batching logic and then evaluate the configured metric.
+        # With the default setup this metric can coincide with contrast, but custom
+        # detection metrics may define any scalar objective.
+        detect_with, detect_without = self.detection_metric.batching_logic(
             prob_with_list, prob_without_list
         )
+        metric_value = self.detection_metric.metric(detect_with, detect_without)
 
 
         if debug:
@@ -814,9 +817,9 @@ class Experiment:
         callback(
             trainable_params_initial=self.trainable_params_initial,
             trainable_params_final=self.trainable_params_final,
-            prob_with=float(prob_with),
-            prob_without=float(prob_without),
-            contrast=float(contrast),
+            prob_with=float(detect_with),
+            prob_without=float(detect_without),
+            metric=float(metric_value),
         )
 
         if debug:
@@ -847,7 +850,7 @@ class Experiment:
         Run simulation and return all final state probabilities and detection metrics.
 
         This method computes final state probabilities after evolution, then uses
-        the configured metric to compute detection probabilities and contrast.
+        the configured metric to compute detection measures and the metric.
         Useful for parameter sweeps and reproducing notebook experiments.
 
         Args:
@@ -858,15 +861,15 @@ class Experiment:
             Dictionary containing:
                 - 'probs_with': probability of finding the qubit in excited state with photon interaction
                 - 'probs_without': probability of finding the qubit in excited state without photon interaction
-                - 'detection_with': Detection probability with photon
-                - 'detection_without': Detection probability without photon
-                - 'contrast': Sensing contrast
+                - 'detection_with': Detection measure with photon
+                - 'detection_without': Detection measure without photon
+                - 'metric': Value of the configured optimization metric
 
         Example:
             >>> experiment = Experiment(exp_params)
             >>> results = experiment.run_simulation_with_probabilities()
             >>> print(f"P(11) with photon: {results['probs_with']['11']:.4f}")
-            >>> print(f"Contrast: {results['contrast']:.4f}")
+            >>> print(f"Metric: {results['metric']:.4f}")
         """
         # Get initial state and solvers
         rho0 = self._cached_initial_state
@@ -897,30 +900,32 @@ class Experiment:
         n_qubits = self.experimental_params.n_qubits
 
         if detection_name in ["min fidelity", "max trace distance"]:
-            detection_with, detection_without, contrast = self.detection_metric.batching_logic(
+            detection_with, detection_without = self.detection_metric.batching_logic(
                 [[rho_final_with]], [[rho_final_without]]
             )
         elif detection_name == "max distance":
             all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
             probs_with_vector = jnp.array([probs_with[state] for state in all_states], dtype=float)
             probs_without_vector = jnp.array([probs_without[state] for state in all_states], dtype=float)
-            detection_with, detection_without, contrast = self.detection_metric.batching_logic(
+            detection_with, detection_without = self.detection_metric.batching_logic(
                 [[probs_with_vector]], [[probs_without_vector]]
             )
         else:
             detection_states = self.detection_metric.detection_states
             detect_with_prob = float(sum(probs_with[state] for state in detection_states))
             detect_without_prob = float(sum(probs_without[state] for state in detection_states))
-            detection_with, detection_without, contrast = self.detection_metric.batching_logic(
+            detection_with, detection_without = self.detection_metric.batching_logic(
                 [detect_with_prob], [detect_without_prob]
             )
+
+        metric = self.detection_metric.metric(detection_with, detection_without)
 
         return {
             "probs_with": probs_with,
             "probs_without": probs_without,
             "detection_with": float(detection_with),
             "detection_without": float(detection_without),
-            "contrast": float(contrast),
+            "metric": float(metric),
         }
 
     def time_evolution(
@@ -1114,7 +1119,7 @@ class Experiment:
         renormalize_grad: Optional[Union[bool,float]] = False,
     ) -> OptimizationCallback:
         """
-        Optimize rotation angles to maximize sensing contrast.
+        Optimize rotation angles to maximize the detection metric.
 
         This method performs JAX-based gradient descent over rotation angles
         using the sequential measurement protocol.
@@ -1137,7 +1142,8 @@ class Experiment:
                     If False (0), does not renormalize the gradients.
 
         Returns:
-            OptimizationCallback with full optimization history
+            OptimizationCallback with full optimization history, including
+            per-step metric values and detection measures.
 
         Example:
         >>> # Optimize with default 1-P(00) detection
@@ -1257,14 +1263,14 @@ class Experiment:
 
                 batch_result_with, batch_result_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
 
-                detect_with, detect_without, contrast = detection_metric.batching_logic(
+                detect_with, detect_without = detection_metric.batching_logic(
                     batch_result_with,
                     batch_result_without,
                 )
 
                 metric = detection_metric.metric(detect_with, detect_without)
 
-                return metric, (detect_with, detect_without, contrast)
+                return metric, (detect_with, detect_without, metric)
 
         else:
             zero_uncertainty_batch = jnp.zeros((batch_size,), dtype=float)
@@ -1282,14 +1288,14 @@ class Experiment:
                     in_axes=(None, None, 0),
                 )(circuit_unitaries, measurement_times, measurement_noise_batch)
 
-                detect_with, detect_without, contrast = detection_metric.batching_logic(
+                detect_with, detect_without = detection_metric.batching_logic(
                     batch_result_with,
                     batch_result_without,
                 )
 
                 metric = detection_metric.metric(detect_with, detect_without)
 
-                return metric, (detect_with, detect_without, contrast)
+                return metric, (detect_with, detect_without, metric)
 
         jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 
@@ -1332,14 +1338,14 @@ class Experiment:
                 header_parts.append(f"setup{i}_{setup_gates[i].__repr__(params=False):<8}")
             for i in range(n_final_show):
                 header_parts.append(f"reset{i}_{reset_gates[i].__repr__(params=False):<8}")
-            header_parts.extend([f"{'Contrast':<12}", f"{'Grad Norm':<12}", "Time"])
+            header_parts.extend([f"{'Metric':<12}", f"{'Grad Norm':<12}", "Time"])
 
             header = "".join(header_parts)
             print("=" * (5+len(header)))
             print(header)
             print("-" * (5+len(header)))
 
-        best_contrast = -np.inf
+        best_metric = -np.inf
         best_params = jnp.array(params)
 
         # Initialize variables
@@ -1356,13 +1362,13 @@ class Experiment:
                 measurement_uncertainty_batch = zero_uncertainty_batch
 
             # Compute gradients using JAX autodiff
-            grads, (prob_with, prob_without, sensing_contrast) = jax.grad(
+            grads, (prob_with, prob_without, step_metric) = jax.grad(
                 jitted_objective, has_aux=True
             )(params, base_measurement_times, measurement_uncertainty_batch)
 
             # Track best parameters
-            if sensing_contrast > best_contrast:
-                best_contrast = sensing_contrast
+            if step_metric > best_metric:
+                best_metric = step_metric
                 best_params = jnp.array(params)
 
             # Call callback to track progress
@@ -1371,7 +1377,7 @@ class Experiment:
                 trainable_params_final=params[n_initial:], #self.final_circuit.get_trainable_parameters(),
                 prob_with=float(prob_with),
                 prob_without=float(prob_without),
-                contrast=float(sensing_contrast),
+                metric=float(step_metric),
             )
 
             #Renormalize gradient to be between [-1,+1]
@@ -1394,7 +1400,7 @@ class Experiment:
                     output_parts.append(f"{param_vals[i]:<15.6f}")
                 for i in range(n_final_show):
                     output_parts.append(f"{param_vals[n_initial + i]:<15.6f}")
-                output_parts.extend([f"{float(sensing_contrast):<12.6f}", f"{grad_norm:<12.2e}",f"{t.strftime("%Hh%Mm%Ss", t.gmtime(new_time))}"])
+                output_parts.extend([f"{float(step_metric):<12.6f}", f"{grad_norm:<12.2e}",f"{t.strftime("%Hh%Mm%Ss", t.gmtime(new_time))}"])
                 print("".join(output_parts))
 
             # Convergence check
@@ -1415,7 +1421,7 @@ class Experiment:
         if verbose:
             print("=" * (5+len(header)))
             print(f"Final gradient norm: {grad_norm:.2e}")
-            print(f"Best sensing contrast: {best_contrast:.6f}")
+            print(f"Best metric: {best_metric:.6f}")
             print(f"Best parameters:")
             for i, val in enumerate(best_values):
                 if i < n_initial:
@@ -1463,8 +1469,8 @@ class Experiment:
 
         Returns:
             Dictionary returned by :meth:`compute_time_interval_landscape` with additional keys:
-                - ``'best_interval'``: Interval delivering the highest contrast.
-                - ``'best_contrast'``: Maximum contrast observed.
+                - ``'best_interval'``: Interval delivering the highest metric.
+                - ``'best_metric'``: Maximum metric observed.
                 - ``'best_index'``: Index of the optimal interval in the sampled array.
 
         Example:
@@ -1475,7 +1481,7 @@ class Experiment:
             ...     batch_size=10
             ... )
             >>> print(f"Best interval: {time_callback['best_interval']:.3f}")
-            >>> print(f"Best contrast: {time_callback['best_contrast']:.6f}")
+            >>> print(f"Best metric: {time_callback['best_metric']:.6f}")
         """
 
         # Set default resolution
@@ -1507,11 +1513,11 @@ class Experiment:
         )
 
         # Find best interval
-        contrast_vals_np = np.asarray(results["contrast_vals"], dtype=float)
+        metric_vals_np = np.asarray(results["metric_vals"], dtype=float)
         interval_vals_np = np.asarray(results["interval_vals"], dtype=float)
-        best_index = int(np.argmax(contrast_vals_np))
+        best_index = int(np.argmax(metric_vals_np))
         best_interval = float(interval_vals_np[best_index])
-        best_contrast = float(contrast_vals_np[best_index])
+        best_metric = float(metric_vals_np[best_index])
 
         # Apply best interval to experimental parameters
         self.experimental_params.measurement.time_interval = best_interval
@@ -1521,14 +1527,14 @@ class Experiment:
         # Add best results to output
         results_with_best = dict(results)
         results_with_best["best_interval"] = best_interval
-        results_with_best["best_contrast"] = best_contrast
+        results_with_best["best_metric"] = best_metric
         results_with_best["best_index"] = best_index
 
         if verbose:
             n_measurements = np.asarray(results["n_measurements"], dtype=int)
             print(f"\nOptimization complete:")
             print(f"  Best interval: {best_interval:.4f}")
-            print(f"  Best contrast: {best_contrast:.6f}")
+            print(f"  Best metric: {best_metric:.6f}")
             print(f"  Number of measurements: {n_measurements[best_index]}")
 
         return results_with_best
@@ -1543,9 +1549,9 @@ class Experiment:
         max_interval: Optional[float] = None,
     ) -> Dict[str, Union[np.ndarray, float, str, int]]:
         """
-        Compute contrast landscape vs measurement time interval.
+        Compute detection metric landscape vs measurement time interval.
 
-        This method evaluates how sensing contrast varies with the time interval
+        This method evaluates how the detection metric varies with the time interval
         between measurements, keeping circuit parameters fixed. Two modes
         are supported:
 
@@ -1562,7 +1568,7 @@ class Experiment:
             1. Set time_interval in experimental_params
             2. Recompute measurement times based on initial_time, final_time, interval
             3. Run quantum simulation with batch averaging (if batch_size > 1)
-            4. Calculate average sensing contrast across realizations
+            4. Calculate average metric value across realizations
             5. Store results in 1D array
 
         Args:
@@ -1585,9 +1591,9 @@ class Experiment:
         Returns:
             Dictionary containing:
                 - 'interval_vals': 1D array of time interval values (shape: [resolution])
-                - 'contrast_vals': 1D array of sensing contrast (shape: [resolution])
-                - 'detection_with': 1D array of detection prob with photon (shape: [resolution])
-                - 'detection_without': 1D array of detection prob without photon (shape: [resolution])
+                - 'metric_vals': 1D array of metric values (shape: [resolution])
+                - 'detection_with': 1D array of detection measures with photon (shape: [resolution])
+                - 'detection_without': 1D array of detection measures without photon (shape: [resolution])
                 - 'n_measurements': 1D array of number of measurements per interval (shape: [resolution])
                 - 'mode': Computation mode used (str)
                 - 'batch_size': Batch size used (int)
@@ -1618,7 +1624,7 @@ class Experiment:
             ... )
             >>>
             >>> # Find optimal interval
-            >>> optimal_idx = np.argmax(data['contrast_vals'])
+            >>> optimal_idx = np.argmax(data['metric_vals'])
             >>> optimal_interval = data['interval_vals'][optimal_idx]
             >>> print(f"Optimal interval: {optimal_interval:.4f}")
 
@@ -1755,7 +1761,7 @@ class Experiment:
             interval_vals = _sample_uniform(candidate_intervals, resolution)
 
         # Initialize result arrays
-        contrast_vals = np.zeros(resolution)
+        metric_vals = np.zeros(resolution)
         detection_with = np.zeros(resolution)
         detection_without = np.zeros(resolution)
         n_measurements = np.zeros(resolution, dtype=int)
@@ -1778,7 +1784,7 @@ class Experiment:
 
             # Store results (averaged over batch)
             # Clip values to ensure they're in valid ranges (handle numerical precision issues)
-            contrast_vals[i] = np.clip(callback.history["contrast"][-1], 0.0, 1.0)
+            metric_vals[i] = np.clip(callback.history["metric"][-1], 0.0, 1.0)
             detection_with[i] = np.clip(callback.history["prob_with"][-1], 0.0, 1.0)
             detection_without[i] = np.clip(callback.history["prob_without"][-1], 0.0, 1.0)
 
@@ -1788,7 +1794,7 @@ class Experiment:
                 print(
                     f"  Progress: {progress:.1f}% "
                     f"(interval={interval:.4f}, n_meas={n_measurements[i]}, "
-                    f"contrast={contrast_vals[i]:.6f})",
+                    f"metric={metric_vals[i]:.6f})",
                     end="\r",
                 )
 
@@ -1802,18 +1808,18 @@ class Experiment:
             print(f"\nCompleted in {elapsed:.1f}s " f"({elapsed/resolution:.3f}s per point)")
 
             # Report optimal interval
-            optimal_idx = np.argmax(contrast_vals)
+            optimal_idx = np.argmax(metric_vals)
             optimal_interval = interval_vals[optimal_idx]
-            optimal_contrast = contrast_vals[optimal_idx]
+            optimal_metric = metric_vals[optimal_idx]
             optimal_n_meas = n_measurements[optimal_idx]
             print(
                 f"  Optimal interval: {optimal_interval:.4f} "
-                f"(n_meas={optimal_n_meas}, contrast={optimal_contrast:.6f})"
+                f"(n_meas={optimal_n_meas}, metric={optimal_metric:.6f})"
             )
 
         return {
             "interval_vals": interval_vals,
-            "contrast_vals": contrast_vals,
+            "metric_vals": metric_vals,
             "detection_with": detection_with,
             "detection_without": detection_without,
             "n_measurements": n_measurements,
@@ -1853,7 +1859,7 @@ class Experiment:
             verbose: Print progress information. Default: True.
 
         Returns:
-            SweepResults object containing chi_vals, gamma_vals, contrast_map,
+            SweepResults object containing chi_vals, gamma_vals, metric_map,
             detection_map, detection_without_map, and metadata.
 
         Example:
@@ -1864,8 +1870,8 @@ class Experiment:
             ...     chi_scale='log'
             ... )
             >>> max_idx = np.unravel_index(
-            ...     np.argmax(results['contrast_map']),
-            ...     results['contrast_map'].shape
+            ...     np.argmax(results['metric_map']),
+            ...     results['metric_map'].shape
             ... )
             >>> print(f"Optimal chi: {results['chi_vals'][max_idx[1]]:.3f}")
 
@@ -1908,7 +1914,7 @@ class Experiment:
             gamma_vals = np.linspace(gamma_interval[0], gamma_interval[1], resolution_gamma)
 
         # Initialize result arrays
-        contrast_map = np.zeros((resolution_gamma, resolution_chi))
+        metric_map = np.zeros((resolution_gamma, resolution_chi))
         detection_map = np.zeros((resolution_gamma, resolution_chi))
         detection_without_map = np.zeros((resolution_gamma, resolution_chi))
 
@@ -1945,8 +1951,8 @@ class Experiment:
                         # For n >= 2 qubits, get full basis-state probability information.
                         results = self.run_simulation_with_probabilities()
 
-                        # Store detection and contrast results
-                        contrast_map[j, i] = results["contrast"]
+                        # Store detection and metric results
+                        metric_map[j, i] = results["metric"]
                         detection_map[j, i] = results["detection_with"]
                         detection_without_map[j, i] = results["detection_without"]
 
@@ -1958,7 +1964,7 @@ class Experiment:
                         callback = self.run_simulation(batch_size=batch_size)
 
                         # Store results (j,i indexing for correct orientation in plots)
-                        contrast_map[j, i] = callback.history["contrast"][-1]
+                        metric_map[j, i] = callback.history["metric"][-1]
                         detection_map[j, i] = callback.history["prob_with"][-1]
                         detection_without_map[j, i] = callback.history["prob_without"][-1]
 
@@ -1975,14 +1981,14 @@ class Experiment:
         if verbose:
             total_time = time.time() - start_time
             print(f"Sweep completed in {total_time:.1f}s")
-            print(f"  Max contrast: {np.max(contrast_map):.6f}")
-            max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+            print(f"  Max metric: {np.max(metric_map):.6f}")
+            max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
             print(f"  Optimal χ: {chi_vals[max_idx[1]]:.3f}")
             print(f"  Optimal γ: {gamma_vals[max_idx[0]]:.3f}")
 
         # Prepare results dictionary
         results_dict = {
-            "contrast_map": contrast_map,
+            "metric_map": metric_map,
             "detection_map": detection_map,
             "detection_without_map": detection_without_map,
         }
@@ -1992,7 +1998,7 @@ class Experiment:
             results_dict.update(prob_maps)
 
         # Prepare metadata
-        max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+        max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
 
         # Get measurement times, handling None case
         meas_times = self.experimental_params.measurement.measurement_times
@@ -2009,7 +2015,7 @@ class Experiment:
         metadata = {
             "optimal_chi": chi_vals[max_idx[1]],
             "optimal_gamma": gamma_vals[max_idx[0]],
-            "max_contrast": contrast_map[max_idx],
+            "max_metric": metric_map[max_idx],
             "optimal_idx": max_idx,
             # System characteristics
             "n_qubits": n_qubits,

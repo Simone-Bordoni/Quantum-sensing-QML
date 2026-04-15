@@ -176,7 +176,7 @@ def test_two_qubit_single_shot_with_circuits(two_qubit_experimental_params):
     # Verify callback has results
     assert len(callback.history["prob_with"]) > 0
     assert len(callback.history["prob_without"]) > 0
-    assert len(callback.history["contrast"]) > 0
+    assert len(callback.history["metric"]) > 0
 
     # Get the latest results
     prob_with = callback.history["prob_with"][-1]
@@ -202,7 +202,7 @@ def test_two_qubit_optimization_step(two_qubit_experimental_params):
     assert not np.allclose(initial_params, final_params), "Parameters should change after optimization"
 
     # Verify history was recorded
-    assert len(callback.history["contrast"]) == 1
+    assert len(callback.history["metric"]) == 1
 
 
 def test_two_qubit_multi_gate_circuits(two_qubit_experimental_params):
@@ -242,7 +242,7 @@ def test_two_qubit_callback_integration(two_qubit_experimental_params):
     result_callback = experiment.optimize_rotations(num_steps=3, callback=callback, verbose=False, tolerance=0.0)
 
     # Verify callback recorded history (may terminate early if converged)
-    num_steps = len(result_callback.history["contrast"])
+    num_steps = len(result_callback.history["metric"])
     assert num_steps >= 1, "Should have at least one optimization step"
     assert num_steps <= 3, "Should not exceed requested steps"
 
@@ -315,7 +315,7 @@ if __name__ == "__main__":
     callback = exp.run_simulation(batch_size=1)
     prob_with = callback.history["prob_with"][-1]
     prob_without = callback.history["prob_without"][-1]
-    contrast = callback.history["contrast"][-1]
+    contrast = callback.history["metric"][-1]
     print(f"   Detection with photon: {prob_with:.6f}")
     print(f"   Detection without photon: {prob_without:.6f}")
     print(f"   Sensing contrast: {contrast:.6f}")
@@ -331,9 +331,9 @@ if __name__ == "__main__":
         print(f"   Final loss: {result_callback.history['loss'][-1]:.6f}")
         print(f"   Loss improved: {result_callback.history['loss'][0] > result_callback.history['loss'][-1]}")
     else:
-        # Fallback to contrast if loss not available
-        print(f"   Initial contrast: {result_callback.history['contrast'][0]:.6f}")
-        print(f"   Final contrast: {result_callback.history['contrast'][-1]:.6f}")
-        print(f"   Contrast improved: {result_callback.history['contrast'][0] < result_callback.history['contrast'][-1]}")
+        # Fallback to metric (contrast for this legacy experiment)
+        print(f"   Initial contrast: {result_callback.history['metric'][0]:.6f}")
+        print(f"   Final contrast: {result_callback.history['metric'][-1]:.6f}")
+        print(f"   Contrast improved: {result_callback.history['metric'][0] < result_callback.history['metric'][-1]}")
 
     print("\n✅ All manual tests passed!")

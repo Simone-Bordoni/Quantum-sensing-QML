@@ -2,8 +2,8 @@
 Visualization utilities for quantum sensing optimization results.
 
 This module provides functions for creating comprehensive optimization dashboards
-that display key metrics including sensing contrast, gradient evolution, parameter
-trajectories, and detection probabilities.
+that display key data including the detection metric, gradient evolution,
+parameter trajectories, and detection measures.
 """
 
 from pathlib import Path
@@ -22,7 +22,7 @@ from qsopt.utils.results import SweepResults, TimeEvolutionResults
 def plot_optimization_dashboard(
     optimization_callback: OptimizationCallback,
     reference_callback: Optional[OptimizationCallback] = None,
-    show_contrast: bool = True,
+    show_metric: bool = True,
     show_gradients: bool = True,
     show_parameters: bool = True,
     show_trajectory: bool = True,
@@ -35,17 +35,17 @@ def plot_optimization_dashboard(
     Create a comprehensive optimization dashboard with multiple subplots.
 
     This function generates a multi-panel visualization showing:
-    - Sensing contrast evolution (with optional reference benchmark)
+    - Metric evolution (with optional reference benchmark)
     - Gradient magnitude evolution (log scale)
     - Parameter evolution over epochs (initial and final circuit parameters)
-    - Detection probabilities (with and without photon)
+    - Detection measures (with and without photon)
 
     Args:
         optimization_callback: OptimizationCallback from ``optimize_rotations()``
-            Contains history of epochs, contrast, probabilities, and parameters
+            Contains history of epochs, metric values, detection measures, and parameters
         reference_callback: Optional SimulationCallback from ``run_simulation()``
             If provided, reference values are shown as horizontal benchmark lines
-        show_contrast: Display sensing contrast evolution plot when True
+        show_metric: Display detection metric evolution plot when True
         show_gradients: Display gradient magnitude evolution plot when True
         show_parameters: Display parameter evolution plot when True
         show_probabilities: Display detection probabilities plot
@@ -75,7 +75,7 @@ def plot_optimization_dashboard(
     """
     # Count active plots to determine layout
     active_plots = [
-        show_contrast,
+        show_metric,
         show_gradients,
         show_trajectory,
         show_parameters,
@@ -97,7 +97,7 @@ def plot_optimization_dashboard(
     # Extract history data
     history = optimization_callback.get_history()
     epochs = np.array(history["epochs"])
-    contrast = np.array(history["contrast"])
+    metric_values = np.array(history["metric"])
     prob_with = np.array(history["prob_with"])
     prob_without = np.array(history["prob_without"])
 
@@ -125,7 +125,7 @@ def plot_optimization_dashboard(
     param_arrays = np.array(param_arrays)
     n_total_params = len(param_names)
 
-    # Calculate gradients (approximate from contrast differences)
+    # Calculate gradients (approximate from metric differences)
     gradients = np.zeros_like(param_arrays)
     if len(param_arrays) > 1:
         # Central differences for interior points
@@ -138,15 +138,15 @@ def plot_optimization_dashboard(
     grad_norms = np.linalg.norm(gradients, axis=1) if len(gradients) > 0 else np.array([])
 
     # Extract reference values if provided
-    reference_contrast = None
+    reference_metric = None
     reference_prob_with = None
     reference_prob_without = None
     reference_params = None
 
     if reference_callback is not None:
         ref_history = reference_callback.get_history()
-        if ref_history["contrast"]:
-            reference_contrast = ref_history["contrast"][0]
+        if ref_history["metric"]:
+            reference_metric = ref_history["metric"][0]
             reference_prob_with = ref_history["prob_with"][0]
             reference_prob_without = ref_history["prob_without"][0]
 
@@ -160,17 +160,17 @@ def plot_optimization_dashboard(
     axes = []
     plot_idx = 0
 
-    # Plot 1: Sensing Contrast Evolution
-    if show_contrast:
+    # Plot 1: Metric Evolution
+    if show_metric:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
         plot_idx += 1
 
-        ax.plot(epochs, contrast, "g-", linewidth=2, alpha=0.8, label="Optimized")
+        ax.plot(epochs, metric_values, "g-", linewidth=2, alpha=0.8, label="Optimized")
 
-        if reference_contrast is not None:
+        if reference_metric is not None:
             ax.axhline(
-                y=reference_contrast,
+                y=reference_metric,
                 color="red",
                 linestyle="--",
                 linewidth=2,
@@ -179,8 +179,8 @@ def plot_optimization_dashboard(
             )
 
         ax.set_xlabel("Epoch", fontsize=12)
-        ax.set_ylabel("Sensing Contrast", fontsize=12)
-        ax.set_title("Sensing Contrast Evolution", fontsize=14)
+        ax.set_ylabel("Metric", fontsize=12)
+        ax.set_title("Metric Evolution", fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 
@@ -359,7 +359,7 @@ def plot_contrast_evolution(
     dpi: int = 300,
 ) -> Figure:
     """
-    Create a standalone plot of sensing contrast evolution.
+    Create a standalone plot of the metric'sevolution.
 
     Args:
         optimization_callback: OptimizationCallback from ``optimize_rotations()``
@@ -373,13 +373,13 @@ def plot_contrast_evolution(
     """
     history = optimization_callback.get_history()
     epochs = np.array(history["epochs"])
-    contrast = np.array(history["contrast"])
+    metric_values = np.array(history["metric"])
 
     fig, ax = plt.subplots(figsize=figsize)
 
     ax.plot(
         epochs,
-        contrast,
+        metric_values,
         "g-",
         linewidth=2.5,
         alpha=0.8,
@@ -390,10 +390,10 @@ def plot_contrast_evolution(
 
     if reference_callback is not None:
         ref_history = reference_callback.get_history()
-        if ref_history["contrast"]:
-            reference_contrast = ref_history["contrast"][0]
+        if ref_history["metric"]:
+            reference_metric = ref_history["metric"][0]
             ax.axhline(
-                y=reference_contrast,
+                y=reference_metric,
                 color="red",
                 linestyle="--",
                 linewidth=2,
@@ -402,8 +402,8 @@ def plot_contrast_evolution(
             )
 
     ax.set_xlabel("Epoch", fontsize=14)
-    ax.set_ylabel("Sensing Contrast", fontsize=14)
-    ax.set_title("Sensing Contrast Evolution", fontsize=16)
+    ax.set_ylabel("Metric", fontsize=14)
+    ax.set_title("Metric Evolution", fontsize=16)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.3)
 
@@ -558,8 +558,8 @@ def plot_parameter_landscape(
     Plot parameter space landscape with system information.
 
     Creates a two-panel visualization showing:
-    1. Sensing contrast landscape as a 2D heatmap
-    2. Detection probability landscape as a 2D heatmap
+    1. Detection metric landscape as a 2D heatmap
+    2. Detection measure landscape as a 2D heatmap
 
     Includes a comprehensive system information box showing:
     - Physical constants (coupling strengths, pulse widths)
@@ -571,8 +571,8 @@ def plot_parameter_landscape(
         landscape_data: Dictionary from compute_theta1_theta2_landscape() containing:
             - 'theta1_vals': Array of θ₁ values
             - 'theta2_vals': Array of θ₂ values
-            - 'contrast_map': 2D array of contrast values
-            - 'detection_map': 2D array of detection probabilities
+            - 'metric_map': 2D array of metric values
+            - 'detection_map': 2D array of detection measures
             - 'center_theta1': Center θ₁ value
             - 'center_theta2': Center θ₂ value
         exp_params: ExperimentalParameters instance with system configuration
@@ -600,7 +600,7 @@ def plot_parameter_landscape(
     Notes:
         - The figure includes comprehensive system information at the bottom
         - Optimal parameter locations are marked with symbols
-        - Color maps: 'viridis' for contrast, 'plasma' for detection
+        - Color maps: 'viridis' for the metric, 'plasma' for detection
         - Layout is optimized for publication-quality output
     """
     # Create figure with two subplots
@@ -609,7 +609,7 @@ def plot_parameter_landscape(
     # Extract data
     theta1_vals = landscape_data["theta1_vals"]
     theta2_vals = landscape_data["theta2_vals"]
-    contrast_map = np.asarray(landscape_data["contrast_map"])
+    metric_map = np.asarray(landscape_data["metric_map"])
     detection_map = np.asarray(landscape_data["detection_map"])
     center_theta1 = landscape_data["center_theta1"]
     center_theta2 = landscape_data["center_theta2"]
@@ -623,21 +623,21 @@ def plot_parameter_landscape(
     center_x = np.degrees(center_theta1)
     center_y = np.degrees(center_theta2)
 
-    # Plot 1: Contrast landscape
-    im1 = ax1.contourf(P1_deg, P2_deg, contrast_map, levels=30, cmap="viridis")
+    # Plot 1: Metric landscape
+    im1 = ax1.contourf(P1_deg, P2_deg, metric_map, levels=30, cmap="viridis")
     ax1.set_xlabel("θ₁ (degrees)", fontsize=12)
     ax1.set_ylabel("θ₂ (degrees)", fontsize=12)
-    ax1.set_title("Sensing Contrast Landscape", fontsize=14)
+    ax1.set_title("Detection Metric Landscape", fontsize=14)
     ax1.grid(True, alpha=0.3)
-    cbar1 = plt.colorbar(im1, ax=ax1, label="Contrast")
+    cbar1 = plt.colorbar(im1, ax=ax1, label="Metric")
 
-    # Find and mark maximum contrast
-    max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+    # Find and mark maximum metric
+    max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
     max_x = P1_deg[max_idx]
     max_y = P2_deg[max_idx]
-    max_contrast = contrast_map[max_idx]
+    max_metric = metric_map[max_idx]
 
-    # Mark points on contrast plot
+    # Mark points on metric plot
     ax1.plot(
         center_x, center_y, "w+", markersize=15, markeredgewidth=3, label="Center point", zorder=10
     )
@@ -649,7 +649,7 @@ def plot_parameter_landscape(
         markerfacecolor="red",
         markeredgecolor="white",
         markeredgewidth=2,
-        label=f"Max = {max_contrast:.6f}",
+        label=f"Max = {max_metric:.6f}",
         zorder=10,
     )
     ax1.legend(loc="upper right", fontsize=10)
@@ -742,9 +742,9 @@ Measurement Protocol:
 Initial State:  {exp_params.initial_state.state_type.value}
 
 Landscape Statistics:
-  • Contrast range:     [{contrast_map.min():.6f}, {contrast_map.max():.6f}]  |  Variation:  {contrast_map.max() - contrast_map.min():.2e}
+    • Metric range:       [{metric_map.min():.6f}, {metric_map.max():.6f}]  |  Variation:  {metric_map.max() - metric_map.min():.2e}
   • Detection range:    [{detection_map.min():.6f}, {detection_map.max():.6f}]  |  Variation:  {detection_map.max() - detection_map.min():.2e}
-  • Maximum at:         θ₁ = {max_x:.2f}°,  θ₂ = {max_y:.2f}°,  Contrast = {max_contrast:.8f}
+    • Maximum at:         θ₁ = {max_x:.2f}°,  θ₂ = {max_y:.2f}°,  Metric = {max_metric:.8f}
 """
 
     # Add text box below plots
@@ -779,7 +779,7 @@ def plot_time_interval_landscape(
     Plot time interval landscape with system information.
 
     Creates a comprehensive visualization showing:
-    1. Sensing contrast vs time interval
+    1. Detection metric vs time interval
     2. Detection probabilities (with and without photon) vs time interval
     3. (Optional) Number of measurements vs time interval
 
@@ -792,7 +792,7 @@ def plot_time_interval_landscape(
     Args:
         landscape_data: Dictionary from ``compute_time_interval_landscape()`` containing:
             - 'interval_vals': Array of time interval values
-            - 'contrast_vals': Array of contrast values
+            - 'metric_vals': Array of metric values
             - 'detection_with': Array of detection probabilities with photon
             - 'detection_without': Array of detection probabilities without photon
             - 'n_measurements': Array of number of measurements per interval
@@ -844,7 +844,7 @@ def plot_time_interval_landscape(
 
     # Extract data
     interval_vals = np.asarray(landscape_data["interval_vals"])
-    contrast_vals = np.asarray(landscape_data["contrast_vals"])
+    metric_vals = np.asarray(landscape_data["metric_vals"])
     detection_with = np.asarray(landscape_data["detection_with"])
     detection_without = np.asarray(landscape_data["detection_without"])
     n_measurements = np.asarray(landscape_data["n_measurements"])
@@ -854,22 +854,22 @@ def plot_time_interval_landscape(
     uncertainty_spec = landscape_data.get("initial_time_uncertainty_spec")
 
     # Find optimal interval
-    optimal_idx = np.argmax(contrast_vals)
+    optimal_idx = np.argmax(metric_vals)
     optimal_interval = interval_vals[optimal_idx]
-    optimal_contrast = contrast_vals[optimal_idx]
+    optimal_metric = metric_vals[optimal_idx]
     optimal_n_meas = n_measurements[optimal_idx]
 
-    # Plot 1: Sensing contrast vs time interval
+    # Plot 1: Detection metric vs time interval
     if mode == "discrete":
-        ax1.plot(interval_vals, contrast_vals, "bo-", linewidth=2, markersize=6, label="Contrast")
+        ax1.plot(interval_vals, metric_vals, "bo-", linewidth=2, markersize=6, label="Metric")
     else:
-        ax1.plot(interval_vals, contrast_vals, "b-", linewidth=2, label="Contrast")
+        ax1.plot(interval_vals, metric_vals, "b-", linewidth=2, label="Metric")
 
     # Mark optimal point
     ax1.axvline(optimal_interval, color="red", linestyle="--", alpha=0.7, linewidth=1.5)
     ax1.plot(
         optimal_interval,
-        optimal_contrast,
+        optimal_metric,
         "ro",
         markersize=10,
         markerfacecolor="red",
@@ -880,8 +880,8 @@ def plot_time_interval_landscape(
     )
 
     ax1.set_xlabel("Time Interval (Δt)", fontsize=12)
-    ax1.set_ylabel("Sensing Contrast", fontsize=12)
-    ax1.set_title(f"Sensing Contrast vs Time Interval ({mode} mode)", fontsize=14)
+    ax1.set_ylabel("Metric", fontsize=12)
+    ax1.set_title(f"Detection Metric vs Time Interval ({mode} mode)", fontsize=14)
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="best", fontsize=10)
 
@@ -1022,8 +1022,8 @@ Measurement Protocol:
   • Computation mode: {mode}
 
 Landscape Statistics:
-  • Contrast range:     [{contrast_vals.min():.6f}, {contrast_vals.max():.6f}]  |  Variation:  {contrast_vals.max() - contrast_vals.min():.2e}
-  • Optimal interval:   {optimal_interval:.6f}  |  N_measurements:  {optimal_n_meas}  |  Contrast:  {optimal_contrast:.8f}
+    • Metric range:       [{metric_vals.min():.6f}, {metric_vals.max():.6f}]  |  Variation:  {metric_vals.max() - metric_vals.min():.2e}
+    • Optimal interval:   {optimal_interval:.6f}  |  N_measurements:  {optimal_n_meas}  |  Metric:  {optimal_metric:.8f}
   • Interval range:     [{interval_vals.min():.6f}, {interval_vals.max():.6f}]
 """
 
@@ -1412,11 +1412,11 @@ def plot_sweep_results(
     Args:
         sweep: SweepResults object from any compute_*_sweep function
         results_to_plot: Optional list of result keys to plot. If None, plots all results.
-            Common keys: 'contrast_map', 'detection_map', 'detection_without_map'
+            Common keys: 'metric_map', 'detection_map', 'detection_without_map'
         figsize: Figure size (width, height) in inches. If None, automatically sized
         contour_levels: Levels for filled contours. Default: [0, 0.1, 0.2, ..., 1.0]
         label_levels: Levels for labeled line contours. Default: [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
-        mark_optimal: If True and contrast_map exists, mark the optimal point
+        mark_optimal: If True and metric_map exists, mark the optimal point
         save_path: Optional path to save the figure
         dpi: Resolution for saved figure
         aspect: Aspect ratio for subplots. 'auto' (default) uses figsize, 'equal' forces square plots
@@ -1427,7 +1427,7 @@ def plot_sweep_results(
     Example:
         >>> # Chi-gamma sweep
         >>> sweep = compute_chi_gamma_sweep(exp, chi_interval=[0.1, 50], gamma_interval=[0.1, 30])
-        >>> plot_sweep_results(sweep)  # Plots all results (contrast, detection maps)
+        >>> plot_sweep_results(sweep)  # Plots all results (metric, detection maps)
         >>>
         >>> # Two-qubit sweep - plot only probabilities
         >>> sweep = compute_chi_gamma_sweep(exp_2q, ...)
@@ -1461,9 +1461,9 @@ def plot_sweep_results(
 
     # Determine optimal point if available
     optimal_param1, optimal_param2 = None, None
-    if mark_optimal and "contrast_map" in sweep.results:
-        contrast_map = sweep.results["contrast_map"]
-        max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+    if mark_optimal and "metric_map" in sweep.results:
+        metric_map = sweep.results["metric_map"]
+        max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
         # max_idx[0] is row index (param1), max_idx[1] is column index (param2)
         optimal_param1 = sweep.param1_vals[max_idx[0]]
         optimal_param2 = sweep.param2_vals[max_idx[1]]
@@ -1507,7 +1507,7 @@ def plot_sweep_results(
 
     # Title mapping for common result types
     title_map = {
-        "contrast_map": "Sensing Contrast",
+        "metric_map": "Detection Metric",
         "detection_map": "P(detection | with photon)",
         "detection_without_map": "P(detection | without photon)",
     }
@@ -1534,7 +1534,7 @@ def plot_sweep_results(
         # Transpose data to match param1-param2 orientation
         result_T = result_data.T
 
-        # Use data-aware levels for contrast so small/negative ranges are visible.
+        # Use data-aware levels for metric values so small/negative ranges are visible.
         if user_contour_levels is None:
             is_probability_like = result_key.startswith("p") or result_key in {
                 "detection_map",
@@ -1561,7 +1561,7 @@ def plot_sweep_results(
         else:
             label_levels_local = user_label_levels
 
-        cmap_local = "RdBu_r" if result_key == "contrast_map" else "rainbow"
+        cmap_local = "RdBu_r" if result_key == "metric_map" else "rainbow"
 
         # Filled contours
         cf = ax.contourf(Param1, Param2, result_T, levels=contour_levels_local, cmap=cmap_local)
@@ -1578,7 +1578,7 @@ def plot_sweep_results(
 
         # Mark optimal point
         if optimal_param1 is not None and optimal_param2 is not None:
-            if result_key == "contrast_map":
+            if result_key == "metric_map":
                 max_val = sweep.results[result_key][
                     np.unravel_index(
                         np.argmax(sweep.results[result_key]), sweep.results[result_key].shape
@@ -1586,9 +1586,9 @@ def plot_sweep_results(
                 ]
                 marker_label = f"Max: {max_val:.4f}"
             else:
-                marker_label = "At max contrast"
+                marker_label = "At max metric"
 
-            # High-contrast multicolor star with thick black border.
+            # High-visibility multicolor star with thick black border.
             ax.scatter(
                 [optimal_param1],
                 [optimal_param2],
@@ -1703,12 +1703,12 @@ def plot_sweep_results(
     if (
         optimal_param1 is not None
         and optimal_param2 is not None
-        and "max_contrast" in sweep.metadata
+        and "max_metric" in sweep.metadata
     ):
         summary_text = f"""OPTIMAL PARAMETERS
 {param2_label}: {optimal_param2:.3f}
 {param1_label}: {optimal_param1:.3f}
-Contrast: {sweep.metadata['max_contrast']:.6f}"""
+Metric: {sweep.metadata['max_metric']:.6f}"""
 
         fig.text(
             0.5,

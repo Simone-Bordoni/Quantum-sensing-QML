@@ -32,7 +32,7 @@ history = experiment.optimize_rotations(num_steps=100, learning_rate=0.05, verbo
 # Create dashboard
 fig = plot_optimization_dashboard(
     optimization_callback=history,
-    show_contrast=True,
+    show_metric=True,
     show_gradients=True,
     show_parameters=True
 )
@@ -51,7 +51,7 @@ Comprehensive multi-panel visualization of optimization results.
 plot_optimization_dashboard(
     optimization_callback: Dict,                        # Optimization history
     reference_callback: Optional[Dict] = None,          # Reference for comparison
-    show_contrast: bool = True,                         # Show contrast panel
+    show_metric: bool = True,                           # Show metric panel
     show_gradients: bool = True,                        # Show gradient panel
     show_parameters: bool = True,                       # Show parameter panel
     show_loss: bool = False,                            # Show loss panel
@@ -70,7 +70,7 @@ history = experiment.optimize_rotations(num_steps=200, learning_rate=0.05)
 # Create dashboard
 fig = plot_optimization_dashboard(
     optimization_callback=history,
-    show_contrast=True,
+    show_metric=True,
     show_gradients=True,
     show_parameters=True,
     figsize=(18, 12),
@@ -92,7 +92,7 @@ history_ideal = experiment_ideal.optimize_rotations(num_steps=100)
 fig = plot_optimization_dashboard(
     optimization_callback=history_noisy,
     reference_callback=history_ideal,
-    show_contrast=True,
+    show_metric=True,
     title="Noisy vs Ideal Optimization"
 )
 plt.show()
@@ -138,11 +138,11 @@ history_lr10 = experiment.optimize_rotations(num_steps=100, learning_rate=0.10)
 
 # Plot all on same axes
 fig, ax = plt.subplots(figsize=(12, 7))
-ax.plot(history_lr01['contrast'], label='LR = 0.01', linewidth=2)
-ax.plot(history_lr05['contrast'], label='LR = 0.05', linewidth=2)
-ax.plot(history_lr10['contrast'], label='LR = 0.10', linewidth=2)
+ax.plot(history_lr01['metric'], label='LR = 0.01', linewidth=2)
+ax.plot(history_lr05['metric'], label='LR = 0.05', linewidth=2)
+ax.plot(history_lr10['metric'], label='LR = 0.10', linewidth=2)
 ax.set_xlabel('Optimization Step', fontsize=12)
-ax.set_ylabel('Sensing Contrast', fontsize=12)
+ax.set_ylabel('Sensing Metric', fontsize=12)
 ax.set_title('Learning Rate Comparison', fontsize=14)
 ax.legend(fontsize=10)
 ax.grid(True, alpha=0.3)
@@ -257,7 +257,7 @@ fig = plot_time_interval_landscape(
 plt.show()
 
 print(f"Optimal times: {time_results['optimal_times']}")
-print(f"Best contrast: {time_results['best_contrast']:.6f}")
+print(f"Best metric: {time_results['best_metric']:.6f}")
 ```
 
 ### plot_pulse_shape_with_measurements
@@ -349,8 +349,8 @@ def plot_convergence_analysis(history, window=10):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
     # Panel 1: Contrast improvement rate
-    contrast = np.array(history['contrast'])
-    improvement_rate = np.diff(contrast)
+    metric_values = np.array(history['metric'])
+    improvement_rate = np.diff(metric_values)
     
     axes[0, 0].plot(improvement_rate, linewidth=2)
     axes[0, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
@@ -430,24 +430,24 @@ def plot_noise_sensitivity(constants, dims, measurement, initial_state, params,
         
         results.append({
             'rate': rate,
-            'initial_contrast': history['contrast'][0],
-            'final_contrast': history['contrast'][-1],
-            'improvement': history['contrast'][-1] - history['contrast'][0]
+            'initial_metric': history['metric'][0],
+            'final_metric': history['metric'][-1],
+            'improvement': history['metric'][-1] - history['metric'][0]
         })
     
     # Create plots
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
     rates = [r['rate'] for r in results]
-    initial = [r['initial_contrast'] for r in results]
-    final = [r['final_contrast'] for r in results]
+    initial = [r['initial_metric'] for r in results]
+    final = [r['final_metric'] for r in results]
     improvement = [r['improvement'] for r in results]
     
     # Panel 1: Contrast vs noise
     axes[0].semilogx(rates, initial, 'o-', label='Initial', linewidth=2)
     axes[0].semilogx(rates, final, 's-', label='Optimized', linewidth=2)
     axes[0].set_xlabel('Relaxation Rate (rad/s)', fontsize=12)
-    axes[0].set_ylabel('Contrast', fontsize=12)
+    axes[0].set_ylabel('Metric', fontsize=12)
     axes[0].set_title('Noise Sensitivity', fontsize=14)
     axes[0].legend(fontsize=10)
     axes[0].grid(True, alpha=0.3)
@@ -456,12 +456,12 @@ def plot_noise_sensitivity(constants, dims, measurement, initial_state, params,
     axes[1].semilogx(rates, improvement, 'o-', color='green', linewidth=2)
     axes[1].axhline(y=0, color='r', linestyle='--', alpha=0.5)
     axes[1].set_xlabel('Relaxation Rate (rad/s)', fontsize=12)
-    axes[1].set_ylabel('Contrast Improvement', fontsize=12)
+    axes[1].set_ylabel('Metric Improvement', fontsize=12)
     axes[1].set_title('Optimization Benefit', fontsize=14)
     axes[1].grid(True, alpha=0.3)
     
     # Panel 3: Relative improvement
-    relative = [r['improvement'] / r['initial_contrast'] * 100 if r['initial_contrast'] > 0 
+    relative = [r['improvement'] / r['initial_metric'] * 100 if r['initial_metric'] > 0 
                 else 0 for r in results]
     axes[2].semilogx(rates, relative, 'o-', color='purple', linewidth=2)
     axes[2].set_xlabel('Relaxation Rate (rad/s)', fontsize=12)
@@ -580,8 +580,8 @@ import pandas as pd
 
 # Convert history to DataFrame
 df = pd.DataFrame({
-    'step': range(len(history['contrast'])),
-    'contrast': history['contrast'],
+    'step': range(len(history['metric'])),
+    'metric': history['metric'],
     'theta1': [p['theta1'] for p in history['parameters']],
     'theta2': [p['theta2'] for p in history['parameters']]
 })
@@ -617,7 +617,7 @@ fig.savefig('poster_figure.png', dpi=300)
 # Use colorblind-friendly palettes
 colorblind_colors = ['#0173B2', '#DE8F05', '#029E73', '#CC78BC', '#CA9161']
 
-plt.plot(history['contrast'], color=colorblind_colors[0], linewidth=2)
+plt.plot(history['metric'], color=colorblind_colors[0], linewidth=2)
 ```
 
 ### Grid and Styling
@@ -670,10 +670,10 @@ def animate_optimization(history, interval=100):
     
     fig, ax = plt.subplots(figsize=(10, 6))
     line, = ax.plot([], [], 'b-', linewidth=2)
-    ax.set_xlim(0, len(history['contrast']))
-    ax.set_ylim(0, max(history['contrast']) * 1.1)
+    ax.set_xlim(0, len(history['metric']))
+    ax.set_ylim(0, max(history['metric']) * 1.1)
     ax.set_xlabel('Optimization Step', fontsize=12)
-    ax.set_ylabel('Sensing Contrast', fontsize=12)
+    ax.set_ylabel('Sensing Metric', fontsize=12)
     ax.set_title('Optimization Progress', fontsize=14)
     ax.grid(True, alpha=0.3)
     
@@ -683,13 +683,13 @@ def animate_optimization(history, interval=100):
     
     def update(frame):
         x = list(range(frame + 1))
-        y = history['contrast'][:frame + 1]
+        y = history['metric'][:frame + 1]
         line.set_data(x, y)
         return line,
     
     anim = FuncAnimation(
         fig, update, init_func=init,
-        frames=len(history['contrast']),
+        frames=len(history['metric']),
         interval=interval, blit=True
     )
     
@@ -731,8 +731,8 @@ def downsample(data, target_points=1000):
     return data[::step]
 
 # Use downsampled data
-contrast_downsampled = downsample(history['contrast'])
-plt.plot(contrast_downsampled)
+metric_downsampled = downsample(history['metric'])
+plt.plot(metric_downsampled)
 ```
 
 ### Font Rendering Issues

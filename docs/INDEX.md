@@ -61,7 +61,7 @@ results = experiment.run_simulation()
 
 # Optimize rotation parameters
 history = experiment.optimize_rotations(num_steps=100, learning_rate=0.05, verbose=True)
-print(f"Final contrast: {history['contrast'][-1]:.6f}")
+print(f"Final metric: {history['metric'][-1]:.6f}")
 ```
 
 ### Building Quantum Circuits for State Preparation
@@ -311,7 +311,7 @@ Container for optimization parameters.
 plot_optimization_dashboard(
     optimization_callback: OptimizationCallback,
     reference_callback: Optional[OptimizationCallback] = None,
-    show_contrast: bool = True,
+    show_metric: bool = True,
     show_gradients: bool = True,
     show_parameters: bool = True,
     show_trajectory: bool = True,
@@ -338,7 +338,7 @@ experiment = SingleQubitExperiment(exp_params, trainable_params)
 results = experiment.run_simulation()
 print(f"Detection probability (with photon): {results.best_metrics['prob_with']:.4f}")
 print(f"Detection probability (no photon): {results.best_metrics['prob_without']:.4f}")
-print(f"Sensing contrast: {results.best_metrics['contrast']:.4f}")
+print(f"Sensing metric: {results.best_metrics['metric']:.4f}")
 ```
 
 ### Example 2: Parameter Optimization
@@ -354,8 +354,8 @@ history = experiment.optimize_rotations(
 
 # Access results
 best_params = history.get_best_trainable_params()
-best_contrast = history.best_contrast
-print(f"Best contrast achieved: {best_contrast:.6f}")
+best_metric = history.best_metric
+print(f"Best metric achieved: {best_metric:.6f}")
 ```
 
 ### Example 3: Visualization
@@ -376,7 +376,7 @@ fig = plot_optimization_dashboard(
 ```python
 import matplotlib.pyplot as plt
 
-contrasts = []
+metric_values = []
 noise_levels = [0.0001, 0.001, 0.01, 0.1]
 
 for noise in noise_levels:
@@ -397,12 +397,12 @@ for noise in noise_levels:
     
     exp = SingleQubitExperiment(exp_params_noisy, params)
     history = exp.optimize_rotations(theta_init=[1.5, -1.3], num_steps=50)
-    contrasts.append(history.best_contrast)
+    metric_values.append(history.best_metric)
 
 # Plot results
-plt.plot(noise_levels, contrasts, 'o-')
+plt.plot(noise_levels, metric_values, 'o-')
 plt.xlabel('Noise Level')
-plt.ylabel('Best Contrast')
+plt.ylabel('Best Metric')
 plt.xscale('log')
 plt.show()
 ```
@@ -536,12 +536,12 @@ history = experiment.optimize_rotations(
 
 # Visualize results
 from qsopt.core.visualization import plot_optimization_dashboard
-fig = plot_optimization_dashboard(history, show_contrast=True, show_gradients=True)
+fig = plot_optimization_dashboard(history, show_metric=True, show_gradients=True)
 plt.show()
 
-print(f"Initial contrast: {history['contrast'][0]:.6f}")
-print(f"Final contrast: {history['contrast'][-1]:.6f}")
-print(f"Improvement: {history['contrast'][-1] - history['contrast'][0]:.6f}")
+print(f"Initial metric: {history['metric'][0]:.6f}")
+print(f"Final metric: {history['metric'][-1]:.6f}")
+print(f"Improvement: {history['metric'][-1] - history['metric'][0]:.6f}")
 ```
 
 ### Example 3: Circuit-Based State Preparation
@@ -585,7 +585,7 @@ fig = plot_time_interval_landscape(time_results, show_optimal=True)
 plt.show()
 
 print(f"Optimal times: {time_results['optimal_times']}")
-print(f"Best contrast: {time_results['best_contrast']:.6f}")
+print(f"Best metric: {time_results['best_metric']:.6f}")
 ```
 
 ### Example 5: Noise Sensitivity Analysis
@@ -610,16 +610,16 @@ for rate in relaxation_rates:
     
     results_noise.append({
         'rate': rate,
-        'contrast': history['contrast'][-1]
+        'metric': history['metric'][-1]
     })
 
 # Plot results
 import matplotlib.pyplot as plt
 rates = [r['rate'] for r in results_noise]
-contrasts = [r['contrast'] for r in results_noise]
-plt.semilogx(rates, contrasts, 'o-', linewidth=2)
+metric_values = [r['metric'] for r in results_noise]
+plt.semilogx(rates, metric_values, 'o-', linewidth=2)
 plt.xlabel('Relaxation Rate (rad/s)')
-plt.ylabel('Optimized Contrast')
+plt.ylabel('Optimized Metric')
 plt.title('Noise Sensitivity')
 plt.grid(True)
 plt.show()
@@ -1004,10 +1004,10 @@ loaded = SingleQubitExperiment.load_experiment_report('results/my_experiment.jso
 # Access all experiment details
 exp_config = loaded['experimental_params_dict']
 trainable_config = loaded['trainable_params_dict']
-optimization_data = loaded['callback_data']  # epochs, contrast, loss, etc.
+optimization_data = loaded['callback_data']  # epochs, metric, loss, etc.
 
 print(f"Experiment type: {loaded['experiment_type']}")
-print(f"Final contrast: {optimization_data['contrast'][-1]}")
+print(f"Final metric: {optimization_data['metric'][-1]}")
 ```
 
 The JSON report includes:

@@ -2,7 +2,6 @@ README.md
 pyproject.toml
 setup.py
 src/qsopt/__init__.py
-src/qsopt/_runtime_env.py
 src/qsopt.egg-info/PKG-INFO
 src/qsopt.egg-info/SOURCES.txt
 src/qsopt.egg-info/dependency_links.txt
@@ -17,8 +16,6 @@ src/qsopt/core/loss_functions.py
 src/qsopt/core/experiment/__init__.py
 src/qsopt/core/experiment/experiment.py
 src/qsopt/core/experiment/quantum_utils.py
-src/qsopt/core/experiment/old/single_qubit_experiment.py
-src/qsopt/core/experiment/old/two_qubit_experiment.py
 src/qsopt/tests/__init__.py
 src/qsopt/tests/conftest.py
 src/qsopt/tests/test_callback.py

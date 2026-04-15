@@ -74,7 +74,7 @@ def compute_theta1_theta2_landscape(
         Dictionary containing:
             - 'theta1_vals': Array of θ₁ values evaluated (length=resolution)
             - 'theta2_vals': Array of θ₂ values evaluated (length=resolution)
-            - 'contrast_map': 2D array of sensing contrast values
+            - 'metric_map': 2D array of metric values
               (shape: resolution × resolution)
             - 'detection_map': 2D array of detection probability values
               with photon interaction (shape: resolution × resolution)
@@ -100,17 +100,17 @@ def compute_theta1_theta2_landscape(
         >>>
         >>> # Analyze results
         >>> max_idx = np.unravel_index(
-        ...     np.argmax(results['contrast_map']),
-        ...     results['contrast_map'].shape
+        ...     np.argmax(results['metric_map']),
+        ...     results['metric_map'].shape
         ... )
-        >>> print(f"Maximum contrast: {results['contrast_map'][max_idx]:.6f}")
+        >>> print(f"Maximum metric: {results['metric_map'][max_idx]:.6f}")
 
     Notes:
         - Computation time scales as O(resolution²)
         - Each point requires a full quantum dynamics simulation
         - For resolution=25: expect 10-30 minutes (system dependent)
         - For resolution=50: expect 1-2 hours
-        - Results are stored in row-major order: contrast_map[j, i]
+        - Results are stored in row-major order: metric_map[j, i]
           corresponds to (theta1_vals[i], theta2_vals[j])
 
     See Also:

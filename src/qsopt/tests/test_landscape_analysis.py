@@ -91,7 +91,7 @@ def test_compute_theta1_theta2_landscape_structure():
     # Check returned dictionary has expected keys
     assert "theta1_vals" in data
     assert "theta2_vals" in data
-    assert "contrast_map" in data
+    assert "metric_map" in data
     assert "detection_map" in data
     assert "center_theta1" in data
     assert "center_theta2" in data
@@ -99,11 +99,11 @@ def test_compute_theta1_theta2_landscape_structure():
     # Check array shapes
     theta1_vals = cast(np.ndarray, data["theta1_vals"])
     theta2_vals = cast(np.ndarray, data["theta2_vals"])
-    contrast_map = cast(np.ndarray, data["contrast_map"])
+    metric_map = cast(np.ndarray, data["metric_map"])
     detection_map = cast(np.ndarray, data["detection_map"])
     assert theta1_vals.shape == (resolution,)
     assert theta2_vals.shape == (resolution,)
-    assert contrast_map.shape == (resolution, resolution)
+    assert metric_map.shape == (resolution, resolution)
     assert detection_map.shape == (resolution, resolution)
 
     # Check center values
@@ -119,14 +119,14 @@ def test_compute_theta1_theta2_landscape_values():
     resolution = 3
     data = compute_theta1_theta2_landscape(exp_params, resolution=resolution, verbose=False)
 
-    contrast_map = cast(np.ndarray, data["contrast_map"])
+    metric_map = cast(np.ndarray, data["metric_map"])
     detection_map = cast(np.ndarray, data["detection_map"])
     theta1_vals = cast(np.ndarray, data["theta1_vals"])
     theta2_vals = cast(np.ndarray, data["theta2_vals"])
 
-    # Check contrast map values are in valid range [0, 1]
-    assert np.all(contrast_map >= 0.0)
-    assert np.all(contrast_map <= 1.0)
+    # Check metric map values are in valid range [0, 1]
+    assert np.all(metric_map >= 0.0)
+    assert np.all(metric_map <= 1.0)
 
     # Check detection map values are in valid range [0, 1]
     assert np.all(detection_map >= 0.0)
@@ -183,13 +183,13 @@ def test_compute_theta1_theta2_landscape_with_batch():
     )
 
     # Check structure
-    assert "contrast_map" in data
-    contrast_map = cast(np.ndarray, data["contrast_map"])
-    assert contrast_map.shape == (resolution, resolution)
+    assert "metric_map" in data
+    metric_map = cast(np.ndarray, data["metric_map"])
+    assert metric_map.shape == (resolution, resolution)
 
     # Values should still be in valid range
-    assert np.all(contrast_map >= 0.0)
-    assert np.all(contrast_map <= 1.0)
+    assert np.all(metric_map >= 0.0)
+    assert np.all(metric_map <= 1.0)
 
 
 def test_compute_time_interval_landscape_continuous():
@@ -210,7 +210,7 @@ def test_compute_time_interval_landscape_continuous():
 
     # Check returned dictionary has expected keys
     assert "interval_vals" in data
-    assert "contrast_vals" in data
+    assert "metric_vals" in data
     assert "detection_with" in data
     assert "detection_without" in data
     assert "n_measurements" in data
@@ -219,13 +219,13 @@ def test_compute_time_interval_landscape_continuous():
     assert "mode" in data
 
     interval_vals = cast(np.ndarray, data["interval_vals"])
-    contrast_vals = cast(np.ndarray, data["contrast_vals"])
+    metric_vals = cast(np.ndarray, data["metric_vals"])
     detection_with = cast(np.ndarray, data["detection_with"])
     detection_without = cast(np.ndarray, data["detection_without"])
     n_measurements = cast(np.ndarray, data["n_measurements"])
 
     assert interval_vals.shape == (resolution,)
-    assert contrast_vals.shape == (resolution,)
+    assert metric_vals.shape == (resolution,)
     assert detection_with.shape == (resolution,)
     assert detection_without.shape == (resolution,)
     assert n_measurements.shape == (resolution,)
@@ -234,8 +234,8 @@ def test_compute_time_interval_landscape_continuous():
     assert data["mode"] == "continuous"
 
     # Check values are in valid ranges
-    assert np.all(contrast_vals >= 0.0)
-    assert np.all(contrast_vals <= 1.0)
+    assert np.all(metric_vals >= 0.0)
+    assert np.all(metric_vals <= 1.0)
     assert np.all(detection_with >= 0.0)
     assert np.all(detection_with <= 1.0)
     assert np.all(detection_without >= 0.0)
@@ -330,9 +330,9 @@ def test_compute_time_interval_landscape_with_batch():
     assert data["batch_size"] == batch_size
 
     # Values should still be valid
-    contrast_vals = cast(np.ndarray, data["contrast_vals"])
-    assert np.all(contrast_vals >= 0.0)
-    assert np.all(contrast_vals <= 1.0)
+    metric_vals = cast(np.ndarray, data["metric_vals"])
+    assert np.all(metric_vals >= 0.0)
+    assert np.all(metric_vals <= 1.0)
 
 
 def test_compute_time_interval_landscape_invalid_mode():

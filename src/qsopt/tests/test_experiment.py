@@ -315,7 +315,7 @@ class TestExperiment:
         # Should have exactly 1 epoch
         assert result.epoch == 1
         assert len(result.history["epochs"]) == 1
-        assert len(result.history["contrast"]) == 1
+        assert len(result.history["metric"]) == 1
 
         # Should have valid metrics
         assert "prob_with" in result.history

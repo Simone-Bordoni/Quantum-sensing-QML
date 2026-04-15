@@ -56,6 +56,7 @@ Requires-Dist: ipykernel==6.29.5; extra == "jupyter"
 Requires-Dist: ipython==9.4.0; extra == "jupyter"
 Requires-Dist: jupyter-client==8.6.3; extra == "jupyter"
 Requires-Dist: jupyter-core==5.8.1; extra == "jupyter"
+Dynamic: author
 Dynamic: requires-python
 
 # Quantum Sensing Optimization Library (qsopt)
@@ -113,14 +114,25 @@ Initial State |ψ₀⟩ → Initial Circuit → H(t) Evolution → Final Circuit
 
 ## Installation
 
-**Quick Start:**
+**Quick Start (only CPU):**
 ```bash
 pip install -e .
 ```
 
+**With GPU Support (NVIDIA CUDA 12.x - recommended):**
+```bash
+pip install -e ".[cuda12]"
+```
+
+**Alternative GPU Option (CUDA 11.x):**
+```bash
+pip install -e ".[cuda11]"
+```
+
 **With development tools:**
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[cuda12,dev]"      # GPU + dev tools
+pip install -e ".[dev]"              # CPU + dev tools
 ```
 
 **Using Poetry:**
@@ -128,7 +140,7 @@ pip install -e ".[dev]"
 poetry install
 ```
 
-For detailed installation instructions, troubleshooting, and requirements verification, see **[INSTALLATION.md](./INSTALLATION.md)**.
+For detailed installation instructions, GPU setup, and troubleshooting, see **[INSTALLATION.md](./INSTALLATION.md)**.
 
 ### Verification
 
@@ -194,11 +206,11 @@ experiment = Experiment(
 # Run single simulation
 callback = experiment.run_simulation(batch_size=1)
 print(f"Detection probability with photon: {callback.history['prob_with'][-1]:.6f}")
-print(f"Sensing contrast: {callback.history['contrast'][-1]:.6f}")
+print(f"Sensing metric: {callback.history['metric'][-1]:.6f}")
 
 # Optimize circuit parameters
 callback = experiment.optimize_rotations(num_steps=100, verbose=True)
-print(f"\nFinal optimized contrast: {callback.best_metrics['contrast']:.6f}")
+print(f"\nFinal optimized metric: {callback.best_metrics['metric']:.6f}")
 ```
 
 ### Example 2: Two-Qubit Sensing with Custom Circuits
@@ -532,6 +544,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 **Simone Bordoni**  
 Email: simone.bordoni@uniroma1.it  
 GitHub: [@Simone-Bordoni](https://github.com/Simone-Bordoni)
+
+**Nathan Campioni**  
+Email: nathan.campioni@gmail.com
+GitHub: [@DiagnosiZucchero](https://github.com/DiagnosiZucchero)
 
 ## Citation
 

@@ -59,13 +59,13 @@ def create_test_landscape_data():
     theta2_vals = np.linspace(-np.pi, 0, resolution)
 
     # Create simple test patterns
-    contrast_map = np.random.rand(resolution, resolution) * 0.5 + 0.3  # [0.3, 0.8]
+    metric_map = np.random.rand(resolution, resolution) * 0.5 + 0.3  # [0.3, 0.8]
     detection_map = np.random.rand(resolution, resolution) * 0.4 + 0.4  # [0.4, 0.8]
 
     return {
         "theta1_vals": theta1_vals,
         "theta2_vals": theta2_vals,
-        "contrast_map": contrast_map,
+        "metric_map": metric_map,
         "detection_map": detection_map,
         "center_theta1": np.pi / 2,
         "center_theta2": -np.pi / 2,
@@ -154,7 +154,7 @@ def test_plot_time_interval_landscape_creates_figure():
     interval_vals = np.linspace(0.1, 5.0, resolution)
     landscape_data = {
         "interval_vals": interval_vals,
-        "contrast_vals": np.random.rand(resolution) * 0.5 + 0.3,
+        "metric_vals": np.random.rand(resolution) * 0.5 + 0.3,
         "detection_with": np.random.rand(resolution) * 0.4 + 0.4,
         "detection_without": np.random.rand(resolution) * 0.3 + 0.2,
         "n_measurements": np.array([10, 8, 6, 4, 2]),
@@ -172,7 +172,7 @@ def test_plot_time_interval_landscape_creates_figure():
     assert fig is not None
     assert isinstance(fig, Figure)
 
-    # Default configuration renders two subplots (contrast + probabilities)
+    # Default configuration renders two subplots (metric + probabilities)
     assert len(fig.axes) == 2
 
     plt.close(fig)
@@ -192,7 +192,7 @@ def test_plot_time_interval_landscape_with_save():
     interval_vals = np.linspace(0.1, 5.0, resolution)
     landscape_data = {
         "interval_vals": interval_vals,
-        "contrast_vals": np.random.rand(resolution) * 0.5 + 0.3,
+        "metric_vals": np.random.rand(resolution) * 0.5 + 0.3,
         "detection_with": np.random.rand(resolution) * 0.4 + 0.4,
         "detection_without": np.random.rand(resolution) * 0.3 + 0.2,
         "n_measurements": np.array([10, 8, 6, 4, 2]),
@@ -225,7 +225,7 @@ def test_plot_time_interval_landscape_with_measurement_count():
     interval_vals = np.linspace(0.2, 4.0, resolution)
     landscape_data = {
         "interval_vals": interval_vals,
-        "contrast_vals": np.linspace(0.3, 0.6, resolution),
+        "metric_vals": np.linspace(0.3, 0.6, resolution),
         "detection_with": np.linspace(0.4, 0.7, resolution),
         "detection_without": np.linspace(0.2, 0.5, resolution),
         "n_measurements": np.array([12, 9, 6, 3]),
@@ -259,7 +259,7 @@ def test_plot_optimization_dashboard_basic():
             trainable_params_final=[1.0 + i * 0.1],
             prob_with=0.6 + i * 0.05,
             prob_without=0.3,
-            contrast=0.3 + i * 0.05,
+            metric=0.3 + i * 0.05,
         )
 
     # Create dashboard
@@ -281,7 +281,7 @@ def test_plot_optimization_dashboard_with_reference():
         opt_callback(
             trainable_params_initial=[0.5 + i * 0.1],
             trainable_params_final=[],
-            prob_with=0.7, prob_without=0.3, contrast=0.4
+            prob_with=0.7, prob_without=0.3, metric=0.4
         )
 
     # Create reference callback
@@ -289,7 +289,7 @@ def test_plot_optimization_dashboard_with_reference():
     ref_callback(
         trainable_params_initial=[1.5],
         trainable_params_final=[],
-        prob_with=0.8, prob_without=0.2, contrast=0.6
+        prob_with=0.8, prob_without=0.2, metric=0.6
     )
 
     # Create dashboard with reference
@@ -308,13 +308,13 @@ def test_plot_optimization_dashboard_selective_plots():
     callback(
         trainable_params_initial=[1.0],
         trainable_params_final=[0.5],
-        prob_with=0.7, prob_without=0.3, contrast=0.4
+        prob_with=0.7, prob_without=0.3, metric=0.4
     )
 
-    # Test with only contrast plot
+    # Test with only metric plot
     fig1 = plot_optimization_dashboard(
         callback,
-        show_contrast=True,
+        show_metric=True,
         show_gradients=False,
         show_parameters=False,
         show_trajectory=False,
@@ -326,7 +326,7 @@ def test_plot_optimization_dashboard_selective_plots():
     # Test with only probabilities plot
     fig2 = plot_optimization_dashboard(
         callback,
-        show_contrast=False,
+        show_metric=False,
         show_gradients=False,
         show_parameters=False,
         show_trajectory=False,
@@ -345,14 +345,14 @@ def test_plot_optimization_dashboard_no_plots_raises():
     callback(
         trainable_params_initial=[1.0],
         trainable_params_final=[],
-        prob_with=0.7, prob_without=0.3, contrast=0.4
+        prob_with=0.7, prob_without=0.3, metric=0.4
     )
 
     # Should raise ValueError when all plots disabled
     with pytest.raises(ValueError, match="At least one plot type must be enabled"):
         plot_optimization_dashboard(
             callback,
-            show_contrast=False,
+            show_metric=False,
             show_gradients=False,
             show_parameters=False,
             show_trajectory=False,

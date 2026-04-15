@@ -84,7 +84,7 @@ def compute_asymmetry_coupling_sweep(
     coupling_vals = np.linspace(coupling_interval[0], coupling_interval[1], resolution_coupling)
 
     shape = (resolution_coupling, resolution_asymmetry)
-    contrast_map = np.zeros(shape)
+    metric_map = np.zeros(shape)
     detection_map = np.zeros(shape)
     detection_without_map = np.zeros(shape)
     p00 = np.zeros(shape)
@@ -118,7 +118,7 @@ def compute_asymmetry_coupling_sweep(
                 )
 
                 sim = experiment.run_simulation_with_probabilities()
-                contrast_map[j, i] = sim["contrast"]
+                metric_map[j, i] = sim["metric"]
                 detection_map[j, i] = sim["detection_with"]
                 detection_without_map[j, i] = sim["detection_without"]
                 p00[j, i] = sim["probs_with"]["00"]
@@ -132,10 +132,10 @@ def compute_asymmetry_coupling_sweep(
     finally:
         experiment._restore_sweep_state(saved_state)
 
-    max_idx = np.unravel_index(np.argmax(contrast_map), contrast_map.shape)
+    max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
     metadata = {
         "optimal_idx": max_idx,
-        "max_contrast": float(contrast_map[max_idx]),
+        "max_metric": float(metric_map[max_idx]),
         "n_qubits": experiment.experimental_params.n_qubits,
         "cavity_levels": experiment.experimental_params.system_dims.cavity_levels,
         "qubit_levels": experiment.experimental_params.system_dims.qubit_levels,
@@ -157,7 +157,7 @@ def compute_asymmetry_coupling_sweep(
         param2_vals=asymmetry_vals,
         param2_scale="linear",
         results={
-            "contrast_map": contrast_map,
+            "metric_map": metric_map,
             "detection_map": detection_map,
             "detection_without_map": detection_without_map,
             "p00": p00,
@@ -188,7 +188,7 @@ plot_sweep_results(
 
 plot_sweep_results(
     results,
-    results_to_plot=['contrast_map', 'detection_map', 'detection_without_map'],
+    results_to_plot=['metric_map', 'detection_map', 'detection_without_map'],
     mark_optimal=True,
     save_path=str(Path('experiments/two_qubits/asymmetry_coupling_sweep/coupledzz_qubits_detection_maps.png'))
 )

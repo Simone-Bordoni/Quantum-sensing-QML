@@ -85,7 +85,7 @@ plot_sweep_results(
 
 plot_sweep_results(
     results_2q_sweep,
-    results_to_plot=['contrast_map', 'detection_map', 'detection_without_map'],
+    results_to_plot=['metric_map', 'detection_map', 'detection_without_map'],
     mark_optimal=True,
     save_path=str(Path('experiments/two_qubits/chi_gamma_sweep/coupledxx_qubits_detection_maps.png'))
 )

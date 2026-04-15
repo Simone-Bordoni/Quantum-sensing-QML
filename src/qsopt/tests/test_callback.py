@@ -41,7 +41,7 @@ class TestOptimizationCallback:
         assert callback.save_best is True
         assert callback.epoch == 0
         assert callback.best_trainable_params is None
-        assert callback.best_contrast == -float("inf")
+        assert callback.best_metric == -float("inf")
         assert callback.best_metrics is None
         assert len(callback.history["epochs"]) == 0
 
@@ -50,11 +50,11 @@ class TestOptimizationCallback:
         callback = OptimizationCallback(save_every=1, save_best=True)
 
         params = create_test_params([1.0], [2.0])
-        callback(trainable_params=params, prob_with=0.8, prob_without=0.2, contrast=0.6)
+        callback(trainable_params=params, prob_with=0.8, prob_without=0.2, metric=0.6)
 
         assert callback.epoch == 1
         assert len(callback.history["epochs"]) == 1
-        assert callback.history["contrast"][0] == 0.6
+        assert callback.history["metric"][0] == 0.6
         assert callback.history["prob_with"][0] == 0.8
         assert callback.history["prob_without"][0] == 0.2
 
@@ -65,7 +65,7 @@ class TestOptimizationCallback:
         # Call 10 times
         for i in range(10):
             params = create_test_params([float(i)], [float(i+1)])
-            callback(trainable_params=params, prob_with=0.5, prob_without=0.3, contrast=0.2)
+            callback(trainable_params=params, prob_with=0.5, prob_without=0.3, metric=0.2)
 
         assert callback.epoch == 10
         # Should save at epochs 3, 6, 9 (3 times)
@@ -78,29 +78,29 @@ class TestOptimizationCallback:
 
         # First call - should be best
         params1 = create_test_params([1.0], [2.0])
-        callback(trainable_params=params1, prob_with=0.5, prob_without=0.3, contrast=0.2)
+        callback(trainable_params=params1, prob_with=0.5, prob_without=0.3, metric=0.2)
 
-        assert callback.best_contrast == 0.2
+        assert callback.best_metric == 0.2
         assert callback.best_trainable_params is not None
 
         # Second call - worse (lower contrast)
         params2 = create_test_params([2.0], [3.0])
-        callback(trainable_params=params2, prob_with=0.4, prob_without=0.3, contrast=0.1)
+        callback(trainable_params=params2, prob_with=0.4, prob_without=0.3, metric=0.1)
 
         # Best should not change
-        assert callback.best_contrast == 0.2
-        best_initial, best_final = callback.best_trainable_params
+        assert callback.best_metric == 0.2
+        best_initial, _ = callback.best_trainable_params
         assert float(best_initial[0]) == 1.0
 
         # Third call - better (higher contrast)
         params3 = create_test_params([3.0], [4.0])
-        callback(trainable_params=params3, prob_with=0.9, prob_without=0.1, contrast=0.8)
+        callback(trainable_params=params3, prob_with=0.9, prob_without=0.1, metric=0.8)
 
         # Best should update
-        assert callback.best_contrast == 0.8
+        assert callback.best_metric == 0.8
         best_initial, best_final = callback.best_trainable_params
         assert float(best_initial[0]) == 3.0
-        assert callback.best_metrics["contrast"] == 0.8
+        assert callback.best_metrics["metric"] == 0.8
 
     def test_get_best_trainable_params(self):
         """Test retrieving best trainable parameters."""
@@ -111,7 +111,7 @@ class TestOptimizationCallback:
 
         # After recording
         params = create_test_params([1.5], [2.5])
-        callback(trainable_params=params, prob_with=0.7, prob_without=0.2, contrast=0.5)
+        callback(trainable_params=params, prob_with=0.7, prob_without=0.2, metric=0.5)
 
         best = callback.get_best_trainable_params()
         assert best is not None
@@ -128,12 +128,12 @@ class TestOptimizationCallback:
 
         # Record some steps
         params = create_test_params([1.0], [2.0])
-        callback(trainable_params=params, prob_with=0.75, prob_without=0.25, contrast=0.50)
+        callback(trainable_params=params, prob_with=0.75, prob_without=0.25, metric=0.50)
 
         metrics = callback.get_best_metrics()
         assert metrics is not None
         assert metrics["epoch"] == 1
-        assert metrics["contrast"] == 0.50
+        assert metrics["metric"] == 0.50
         assert metrics["prob_with"] == 0.75
         assert metrics["prob_without"] == 0.25
 
@@ -148,15 +148,15 @@ class TestOptimizationCallback:
                 trainable_params=params,
                 prob_with=0.5 + i * 0.1,
                 prob_without=0.3,
-                contrast=0.2 + i * 0.1,
+                metric=0.2 + i * 0.1,
             )
 
         history = callback.get_history()
         assert len(history["epochs"]) == 3
-        assert len(history["contrast"]) == 3
+        assert len(history["metric"]) == 3
         assert len(history["trainable_params"]) == 3
         # Use numpy for floating point comparison
-        np.testing.assert_allclose(history["contrast"], [0.2, 0.3, 0.4], rtol=1e-10)
+        np.testing.assert_allclose(history["metric"], [0.2, 0.3, 0.4], rtol=1e-10)
         assert history["epochs"] == [1, 2, 3]
 
     def test_save_and_load(self):
@@ -170,7 +170,7 @@ class TestOptimizationCallback:
                 trainable_params=params,
                 prob_with=0.5 + i * 0.05,
                 prob_without=0.3,
-                contrast=0.2 + i * 0.05,
+                metric=0.2 + i * 0.05,
             )
 
         # Save to temporary file
@@ -186,18 +186,18 @@ class TestOptimizationCallback:
 
             # Verify arrays
             assert "epochs" in loaded_data
-            assert "contrast" in loaded_data
+            assert "metric" in loaded_data
             assert "prob_with" in loaded_data
             assert "prob_without" in loaded_data
             assert "parameters" in loaded_data
             assert "best_parameters" in loaded_data
-            assert "best_contrast" in loaded_data
+            assert "best_metric" in loaded_data
 
             # Check values
             assert len(loaded_data["epochs"]) == 5
             assert np.array_equal(loaded_data["epochs"], np.array([1, 2, 3, 4, 5]))
             # Best should be at epoch 5 (highest contrast)
-            assert loaded_data["best_contrast"] == 0.4
+            assert loaded_data["best_metric"] == 0.4
             assert loaded_data["best_epoch"] == 5
             # Parameters should be flattened [initial, final]
             assert len(loaded_data["best_parameters"]) == 2
@@ -208,7 +208,7 @@ class TestOptimizationCallback:
 
         # Record some data
         params = create_test_params([1.0], [2.0])
-        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4)
+        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, metric=0.4)
 
         # Verify data exists
         assert callback.epoch == 1
@@ -222,7 +222,7 @@ class TestOptimizationCallback:
         assert callback.epoch == 0
         assert len(callback.history["epochs"]) == 0
         assert callback.best_trainable_params is None
-        assert callback.best_contrast == -float("inf")
+        assert callback.best_metric == -float("inf")
         assert callback.best_metrics is None
 
     def test_repr_simulation_mode(self):
@@ -231,7 +231,7 @@ class TestOptimizationCallback:
 
         # Single call (simulation mode)
         params = create_test_params([1.5], [2.3])
-        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4)
+        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, metric=0.4)
 
         repr_str = repr(callback)
         assert "MODE: Single Simulation" in repr_str
@@ -250,7 +250,7 @@ class TestOptimizationCallback:
                 trainable_params=params,
                 prob_with=0.5 + i * 0.1,
                 prob_without=0.3,
-                contrast=0.2 + i * 0.1,
+                metric=0.2 + i * 0.1,
             )
 
         # Set convergence info
@@ -269,11 +269,11 @@ class TestOptimizationCallback:
         # Record multiple steps
         for i in range(3):
             params = create_test_params([float(i)], [float(i+1)])
-            callback(trainable_params=params, prob_with=0.5, prob_without=0.3, contrast=0.2)
+            callback(trainable_params=params, prob_with=0.5, prob_without=0.3, metric=0.2)
 
         # Best parameters should not be tracked
         assert callback.best_trainable_params is None
-        assert callback.best_contrast == -float("inf")
+        assert callback.best_metric == -float("inf")
 
         # But history should still be recorded
         assert len(callback.history["epochs"]) == 3
@@ -283,7 +283,7 @@ class TestOptimizationCallback:
         callback = OptimizationCallback(save_every=1, save_best=True)
 
         params = create_test_params([1.0], [2.0])
-        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4)
+        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, metric=0.4)
 
         # Modify original parameters (in place mutation)
         params[0][0] = jnp.array(999.0)
@@ -300,7 +300,7 @@ class TestOptimizationCallback:
         callback = OptimizationCallback(save_every=1, save_best=False)
 
         params = create_test_params([1.0], [2.0])
-        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, contrast=0.4)
+        callback(trainable_params=params, prob_with=0.7, prob_without=0.3, metric=0.4)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             filepath = Path(tmpdir) / "test_no_best.npz"
@@ -310,11 +310,11 @@ class TestOptimizationCallback:
 
             # Should not have best parameters
             assert "best_parameters" not in loaded_data
-            assert "best_contrast" not in loaded_data
+            assert "best_metric" not in loaded_data
 
             # But should have history
             assert "epochs" in loaded_data
-            assert "contrast" in loaded_data
+            assert "metric" in loaded_data
 
     def test_convergence_info(self):
         """Test setting and retrieving convergence information."""
@@ -337,7 +337,7 @@ class TestOptimizationCallback:
         # 3 params in initial circuit, 2 in final circuit
         params = create_test_params([1.0, 2.0, 3.0], [4.0, 5.0])
 
-        callback(trainable_params=params, prob_with=0.8, prob_without=0.2, contrast=0.6)
+        callback(trainable_params=params, prob_with=0.8, prob_without=0.2, metric=0.6)
 
         best = callback.get_best_trainable_params()
         best_initial, best_final = best

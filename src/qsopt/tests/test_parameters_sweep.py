@@ -103,20 +103,20 @@ def test_single_qubit_sweep_small(single_qubit_experiment):
     assert isinstance(results, SweepResults)
     assert results.param1_name == "gamma"
     assert results.param2_name == "chi"
-    assert "contrast_map" in results.results
+    assert "metric_map" in results.results
     assert "detection_map" in results.results
     assert "detection_without_map" in results.results
 
     # Check array shapes
     assert len(results.param1_vals) == 3  # gamma values
     assert len(results.param2_vals) == 3  # chi values
-    assert results.results["contrast_map"].shape == (3, 3)
+    assert results.results["metric_map"].shape == (3, 3)
     assert results.results["detection_map"].shape == (3, 3)
     assert results.results["detection_without_map"].shape == (3, 3)
 
     # Check values are reasonable
-    assert np.all(results.results["contrast_map"] >= -1.0)
-    assert np.all(results.results["contrast_map"] <= 1.0)
+    assert np.all(results.results["metric_map"] >= -1.0)
+    assert np.all(results.results["metric_map"] <= 1.0)
     assert np.all(results.results["detection_map"] >= -1e-10)  # Allow for numerical precision
     assert np.all(results.results["detection_map"] <= 1.0)
 
@@ -138,7 +138,7 @@ def test_two_qubit_sweep_small(two_qubit_experiment):
 
     # Check result structure - should be SweepResults object
     assert isinstance(results, SweepResults)
-    assert "contrast_map" in results.results
+    assert "metric_map" in results.results
     assert "detection_map" in results.results
     assert "detection_without_map" in results.results
 
@@ -149,11 +149,11 @@ def test_two_qubit_sweep_small(two_qubit_experiment):
     # Check array shapes
     assert len(results.param1_vals) == 3
     assert len(results.param2_vals) == 3
-    assert results.results["contrast_map"].shape == (3, 3)
+    assert results.results["metric_map"].shape == (3, 3)
 
     # Check values are reasonable
-    assert np.all(results.results["contrast_map"] >= -1.0)
-    assert np.all(results.results["contrast_map"] <= 1.0)
+    assert np.all(results.results["metric_map"] >= -1.0)
+    assert np.all(results.results["metric_map"] <= 1.0)
 
 
 def test_chi_gamma_sweep_alternate_call(single_qubit_experiment):
@@ -170,8 +170,8 @@ def test_chi_gamma_sweep_alternate_call(single_qubit_experiment):
     assert isinstance(results, SweepResults)
     assert len(results.param1_vals) == 2  # gamma values
     assert len(results.param2_vals) == 2  # chi values
-    assert "contrast_map" in results.results
-    assert results.results["contrast_map"].shape == (2, 2)
+    assert "metric_map" in results.results
+    assert results.results["metric_map"].shape == (2, 2)
     assert results.param1_scale in ["linear", "log"]
     assert results.param2_scale in ["linear", "log"]
 
@@ -236,10 +236,10 @@ def test_plot_selective_displays(single_qubit_experiment):
         verbose=False,
     )
 
-    # Test showing only contrast
-    fig1 = plot_sweep_results(results, results_to_plot=["contrast_map"])
+    # Test showing only metric
+    fig1 = plot_sweep_results(results, results_to_plot=["metric_map"])
     assert fig1 is not None
 
     # Test showing two plots
-    fig2 = plot_sweep_results(results, results_to_plot=["contrast_map", "detection_map"])
+    fig2 = plot_sweep_results(results, results_to_plot=["metric_map", "detection_map"])
     assert fig2 is not None

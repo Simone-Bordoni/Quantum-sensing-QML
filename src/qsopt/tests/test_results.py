@@ -183,7 +183,7 @@ class TestSweepResults:
         """Test basic SweepResults initialization."""
         chi_vals = np.linspace(0.1, 1.0, 5)
         gamma_vals = np.linspace(0.01, 0.1, 5)
-        contrast_map = np.random.rand(5, 5)
+        metric_map = np.random.rand(5, 5)
 
         sweep = SweepResults(
             param1_name="gamma",
@@ -192,20 +192,20 @@ class TestSweepResults:
             param2_name="chi",
             param2_vals=chi_vals,
             param2_scale="linear",
-            results={"contrast_map": contrast_map},
+            results={"metric_map": metric_map},
         )
 
         assert sweep.param1_name == "gamma"
         assert sweep.param2_name == "chi"
         assert len(sweep.param1_vals) == 5
         assert len(sweep.param2_vals) == 5
-        assert "contrast_map" in sweep.results
+        assert "metric_map" in sweep.results
 
     def test_str_representation(self):
         """Test string representation of SweepResults."""
         chi_vals = np.linspace(0.1, 1.0, 3)
         gamma_vals = np.linspace(0.01, 0.1, 3)
-        contrast = np.random.rand(3, 3)
+        metric = np.random.rand(3, 3)
 
         sweep = SweepResults(
             param1_name="gamma",
@@ -214,14 +214,14 @@ class TestSweepResults:
             param2_name="chi",
             param2_vals=chi_vals,
             param2_scale="linear",
-            results={"contrast_map": contrast},
+            results={"metric_map": metric},
         )
 
         str_repr = str(sweep)
         assert "SweepResults" in str_repr
         assert "gamma" in str_repr
         assert "chi" in str_repr
-        assert "contrast_map" in str_repr
+        assert "metric_map" in str_repr
 
     def test_str_with_optimal_metadata(self):
         """Test string representation shows optimal point from metadata."""
@@ -235,7 +235,7 @@ class TestSweepResults:
             param2_name="chi",
             param2_vals=chi_vals,
             param2_scale="linear",
-            results={"contrast_map": np.random.rand(3, 3)},
+            results={"metric_map": np.random.rand(3, 3)},
             metadata={"optimal_chi": 0.5, "optimal_gamma": 0.05},
         )
 
@@ -254,7 +254,7 @@ class TestSweepResults:
             param2_name="chi",
             param2_vals=chi_vals,
             param2_scale="linear",
-            results={"contrast_map": np.random.rand(3, 3)},
+            results={"metric_map": np.random.rand(3, 3)},
         )
 
         repr_str = repr(sweep)
@@ -266,7 +266,7 @@ class TestSweepResults:
         """Test saving and loading SweepResults."""
         chi_vals = np.linspace(0.1, 1.0, 4)
         gamma_vals = np.linspace(0.01, 0.1, 4)
-        contrast_map = np.random.rand(4, 4)
+        metric_map = np.random.rand(4, 4)
         detection_map = np.random.rand(4, 4)
 
         original = SweepResults(
@@ -276,7 +276,7 @@ class TestSweepResults:
             param2_name="chi",
             param2_vals=chi_vals,
             param2_scale="linear",
-            results={"contrast_map": contrast_map, "detection_map": detection_map},
+            results={"metric_map": metric_map, "detection_map": detection_map},
             metadata={"optimal_chi": 0.5, "optimal_gamma": 0.05},
         )
 
@@ -294,7 +294,7 @@ class TestSweepResults:
             assert loaded.param1_scale == "log"
             assert np.array_equal(loaded.param1_vals, original.param1_vals)
             assert np.array_equal(loaded.param2_vals, original.param2_vals)
-            assert np.allclose(loaded.results["contrast_map"], contrast_map)
+            assert np.allclose(loaded.results["metric_map"], metric_map)
             assert np.allclose(loaded.results["detection_map"], detection_map)
             assert loaded.metadata["optimal_chi"] == 0.5
 

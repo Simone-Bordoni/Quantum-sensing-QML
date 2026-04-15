@@ -142,7 +142,7 @@ class SweepResults:
         param2_vals: 1D array of second parameter values
         param2_scale: Scale for second parameter ('linear' or 'log')
         results: Dictionary mapping result names to 2D arrays:
-            - For single qubit: 'contrast_map', 'detection_map', 'detection_without_map'
+            - For single qubit: 'metric_map', 'detection_map', 'detection_without_map'
             - For two qubits: 'p00', 'p01', 'p10', 'p11', plus optional contrast/detection maps
         metadata: Optional dictionary for additional information (optimal points, etc.)
 
@@ -150,7 +150,7 @@ class SweepResults:
         >>> sweep = SweepResults(
         ...     param1_name='gamma', param1_vals=gamma_vals, param1_scale='linear',
         ...     param2_name='chi', param2_vals=chi_vals, param2_scale='linear',
-        ...     results={'contrast_map': contrast, 'detection_map': detection}
+        ...     results={'metric_map': metric, 'detection_map': detection}
         ... )
         >>> print(sweep)
         >>> plot_sweep_results(sweep)

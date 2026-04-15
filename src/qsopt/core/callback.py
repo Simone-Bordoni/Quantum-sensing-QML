@@ -2,8 +2,8 @@
 Callback utilities for tracking optimization progress in quantum sensing experiments.
 
 This module provides callback classes for monitoring and saving optimization metrics
-during quantum sensing experiments, including detection probabilities,
-contrast values, and trainable parameters.
+during quantum sensing experiments, including detection measures,
+metric values, and trainable parameters.
 """
 
 import copy
@@ -17,14 +17,14 @@ class OptimizationCallback:
     Callback for tracking optimization progress with detailed metrics.
 
     This callback tracks:
-    - Detection probabilities (with and without photon)
-    - Sensing contrast (optimization objective)
+    - Detection measures (with and without photon)
+    - Metric (optimization objective)
     - Trainable parameters at each epoch
-    - Best parameters found (maximizing contrast)
+    - Best parameters found (maximizing the metric)
 
     Attributes:
         save_every (int): Save history every N epochs
-        save_best (bool): Track best parameters based on contrast
+        save_best (bool): Track best parameters based on the metric
         epoch (int): Current epoch number
         history (Dict): Complete optimization history
         best_trainable_params (Optional): Best trainable parameters found
@@ -37,7 +37,7 @@ class OptimizationCallback:
 
         Args:
             save_every: Save metrics every N epochs (default: 1 = every epoch)
-            save_best: Whether to track best parameters based on contrast (default: True)
+            save_best: Whether to track best parameters based on the metric (default: True)
         """
         self.save_every = save_every
         self.save_best = save_best
@@ -46,15 +46,15 @@ class OptimizationCallback:
         # Initialize history containers
         self.history: Dict[str, List[Any]] = {
             "epochs": [],
-            "contrast": [],
+            "metric": [],
             "prob_with": [],
             "prob_without": [],
             "trainable_params": [],
         }
 
-        # Best tracking (maximize contrast)
+        # Best tracking (maximize the metric)
         self.best_trainable_params: Optional[Any] = None
-        self.best_contrast: float = -float("inf")
+        self.best_metric: float = -float("inf")
         self.best_metrics: Optional[Dict[str, float]] = None
 
         # Optimization completion info
@@ -67,7 +67,7 @@ class OptimizationCallback:
         trainable_params_final: Optional[list] = None,
         prob_with: float = 0.0,
         prob_without: float = 0.0,
-        contrast: float = 0.0,
+        metric: float = 0.0,
         trainable_params: Optional[tuple] = None,  # Backward compatibility
         **kwargs
     ) -> None:
@@ -75,18 +75,19 @@ class OptimizationCallback:
         Record metrics from current optimization step.
 
         This method is called after each optimization step to record the current
-        state of the optimization, including probabilities, contrast, and parameters.
+        state of the optimization, including detection measures, the metric, and parameters.
 
         Args:
             trainable_params_initial: Initial circuit trainable parameters (list of values)
             trainable_params_final: Final circuit trainable parameters (list of values)
-            prob_with: Detection probability with photon interaction
-            prob_without: Detection probability without photon interaction
-            contrast: Sensing contrast (prob_with - prob_without)
+            prob_with: Detection measure with photon interaction
+            prob_without: Detection measure without photon interaction
+            metric: Optimization metric value
             trainable_params: (Deprecated) Tuple of (initial, final) params for backward compatibility
             **kwargs: Additional keyword arguments (for backward compatibility)
         """
         self.epoch += 1
+        metric_value = float(metric)
 
         # Handle backward compatibility: if trainable_params tuple is provided, unpack it
         if trainable_params is not None:
@@ -98,19 +99,19 @@ class OptimizationCallback:
         # Save history every N epochs
         if self.epoch % self.save_every == 0:
             self.history["epochs"].append(self.epoch)
-            self.history["contrast"].append(float(contrast))
+            self.history["metric"].append(metric_value)
             self.history["prob_with"].append(float(prob_with))
             self.history["prob_without"].append(float(prob_without))
             # Save a deep copy of trainable_params to preserve state
             self.history["trainable_params"].append(copy.deepcopy(trainable_params))
 
-        # Track best parameters if enabled (maximize contrast)
-        if self.save_best and contrast > self.best_contrast:
-            self.best_contrast = float(contrast)
+        # Track best parameters if enabled (maximize the metric)
+        if self.save_best and metric_value > self.best_metric:
+            self.best_metric = metric_value
             self.best_trainable_params = copy.deepcopy(trainable_params)
             self.best_metrics = {
                 "epoch": self.epoch,
-                "contrast": float(contrast),
+                "metric": metric_value,
                 "prob_with": float(prob_with),
                 "prob_without": float(prob_without),
             }
@@ -130,7 +131,7 @@ class OptimizationCallback:
         Get the metrics at the best parameters.
 
         Returns:
-            Dictionary containing epoch, contrast, and probabilities
+            Dictionary containing epoch, metric, and detection measures
             at the best parameters, or None if no best parameters found
         """
         return self.best_metrics
@@ -140,8 +141,8 @@ class OptimizationCallback:
         Get the complete optimization history.
 
         Returns:
-            Dictionary with lists of epochs, contrasts,
-            probabilities, and trainable parameters
+            Dictionary with lists of epochs, metric values,
+            detection measures, and trainable parameters
         """
         return self.history
 
@@ -171,7 +172,7 @@ class OptimizationCallback:
             >>> # Later, load with:
             >>> data = np.load('optimization_results.npz')
             >>> epochs = data['epochs']
-            >>> contrast = data['contrast']
+            >>> metric = data['metric']
         """
         filepath = Path(filepath)
 
@@ -190,7 +191,7 @@ class OptimizationCallback:
         # Prepare data for saving
         save_dict = {
             "epochs": np.array(self.history["epochs"]),
-            "contrast": np.array(self.history["contrast"]),
+            "metric": np.array(self.history["metric"]),
             "prob_with": np.array(self.history["prob_with"]),
             "prob_without": np.array(self.history["prob_without"]),
             "parameters": np.array(param_arrays) if param_arrays else np.array([]),
@@ -201,7 +202,7 @@ class OptimizationCallback:
             initial_best, final_best = self.best_trainable_params
             all_best = [float(p) for p in initial_best] + [float(p) for p in final_best]
             save_dict["best_parameters"] = np.array(all_best)
-            save_dict["best_contrast"] = np.array(self.best_contrast)
+            save_dict["best_metric"] = np.array(self.best_metric)
 
             if self.best_metrics is not None:
                 save_dict["best_epoch"] = np.array(self.best_metrics["epoch"])
@@ -225,9 +226,9 @@ class OptimizationCallback:
         Example:
             >>> data = OptimizationCallback.load('results.npz')
             >>> import matplotlib.pyplot as plt
-            >>> plt.plot(data['epochs'], data['contrast'])
+            >>> plt.plot(data['epochs'], data['metric'])
             >>> plt.xlabel('Epoch')
-            >>> plt.ylabel('Contrast')
+            >>> plt.ylabel('Metric')
             >>> plt.show()
         """
         data = np.load(filepath)
@@ -242,13 +243,13 @@ class OptimizationCallback:
         self.epoch = 0
         self.history = {
             "epochs": [],
-            "contrast": [],
+            "metric": [],
             "prob_with": [],
             "prob_without": [],
             "trainable_params": [],
         }
         self.best_trainable_params = None
-        self.best_contrast = -float("inf")
+        self.best_metric = -float("inf")
         self.best_metrics = None
         self.converged = False
         self.final_grad_norm = None
@@ -304,7 +305,7 @@ class OptimizationCallback:
             lines.append("  Detection Probabilities:")
             lines.append(f"     P(with photon):    {self.best_metrics['prob_with']:.6f}")
             lines.append(f"     P(without photon): {self.best_metrics['prob_without']:.6f}")
-            lines.append(f"     Contrast:          {self.best_metrics['contrast']:.6f}")
+            lines.append(f"     Metric:            {self.best_metrics['metric']:.6f}")
 
         return "\n".join(lines)
 

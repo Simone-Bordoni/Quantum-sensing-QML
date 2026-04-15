@@ -2,12 +2,13 @@
 Loss functions and detection probability definitions for quantum sensing experiments.
 
 This module provides utilities for defining custom detection criteria
-and computing contrast metrics from measurement probabilities.
+and computing detection metrics from measurement probabilities.
 """
 
 from typing import Callable, Dict, Union, List, Optional, Tuple, TypeAlias, TypeVar
 
 import jax
+import numpy as np
 import qutip as qt
 from qutip.core.data.extract import extract
 import jax.numpy as jnp
@@ -38,7 +39,7 @@ class DetectionMetric:
     ----------
     n_qubits : int
     metric : Callable[[float,float], float], optional
-        Custom function that takes probabilities of detection with and without photon and derives a loss.
+        Custom function that takes detection measures with and without photon and derives a metric value (loss).
         If None, defaults to lambda x,y: -(x-y)
         Number of qubits, defaults to 2
     detection_criterion : str, optional
@@ -62,18 +63,22 @@ class DetectionMetric:
             - 'max trace distance': doesn't detect and evolves the mixture of states, maximizes the trace distance
                 Doesn't take any parameter, detection_param default None
             
-            - 'max distance': maximizes the distance between the interaction and 
+            - 'max distance': doesn't detect and maximizes the distance between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                Doesn't take any parameter, detection_param default None
+                detection_param: Callable[[array, array], array] distance function. default is contrast
 
     detection_param : Union[int, List[str], List[int]], optional
         Parameter for the detection criterion, defaults to None
-    multiple_measurement_logic: Tuple[type,Callable[[float,float], float], optional
-        Custom function that takes probabilities of detection with and without photon and derives a loss.
-        If None, defaults to lambda x,y: -(x-y)
-    batching_logic:
+    multiple_measurement_logic: Tuple[type,Callable[[type,type], type], optional
+        Protocol that aggregates detection measures from multiple measurements. Contains an initialization value, an aggregator function and a post-aggregation function. 
+        If None, defaults to (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
+    batching_logic: Callable[...,Tuple[float]], optional
+        Protocol that aggregates detection measures from different batches. Takes as input the list of detection measures for the batches and outputs the aggregated detection measure.
+        If None, defaults to average over batch.
+    protocol_name: str, optional
     metric_name : str, optional
-        Name used for logging/plotting
+    multiple_measurement_name: str, optional
+    batching_name: str, optional
 
 
     Examples (for 2 qubits)
@@ -110,20 +115,20 @@ class DetectionMetric:
             multiple_measurement_name: Optional[str] = 'custom multiple measurement logic', \
             batching_name: Optional[str] = 'custom batching'
     ):
-        """Initialize the detection probability calculator."""
+        """Initialize the detection metric protocol."""
 
         self.n_qubits = n_qubits
 
         # define the multiple measurement logic. default: (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
         if multiple_measurement_logic is None:
             self.custom_multiple_measurement_logic = False
-            self.prob_initializer = jnp.array(1)
+            self.aggregate_init = jnp.array(1)
             self.measurement_aggregation = lambda x,y: x*y
             self.post_aggregation = lambda x: 1-x
             self.multiple_measurement_name = 'std probability aggregation'
         else:
             self.custom_multiple_measurement_logic = True
-            self.prob_initializer = jnp.array(1) if multiple_measurement_logic[0] is None else multiple_measurement_logic[0]
+            self.aggregate_init = jnp.array(1) if multiple_measurement_logic[0] is None else multiple_measurement_logic[0]
             self.measurement_aggregation = lambda x,y: x*y if multiple_measurement_logic[1] is None else multiple_measurement_logic[1]
             self.post_aggregation = lambda x: 1-x if multiple_measurement_logic[2] is None else multiple_measurement_logic[2]
             self.multiple_measurement_name = multiple_measurement_name
@@ -164,11 +169,12 @@ class DetectionMetric:
         """
         Compute loss from detection probability.
 
-        Parameters
+        Parameters bananabile portento
         ----------
-        probabilities : Dict[str, float]
-            Dictionary containing '00...0', '10...0', '01...0', ... , '11...1' keys with
-            the respective measurement outcome probabilities.
+        p_with_photon : float
+            Detection probability when the photon is present.
+        p_without_photon : float
+            Detection probability when the photon is absent.
 
         Returns
         -------
@@ -198,9 +204,9 @@ class DetectionMetric:
             - 'max trace distance': doesn't detect and evolves the mixture of states, maximizes the trace distance
                 detection_param: None
             
-            - 'max distance': maximizes the distance between the interaction and 
+            - 'max distance': maximizes the distance between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: None
+                detection_param: Callable[[array, array], array] distance function. default is contrast
         
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
@@ -264,9 +270,9 @@ class DetectionMetric:
         
         elif criterion == 'min fidelity':
             # this criterion must measure couples of rho from the interacting and non interacting simulations,
-            # measurement_aggregation and prob_initializer are updated to handle probability lists
+            # measurement_aggregation and aggregate_init are updated to handle probability lists
             if not self.custom_multiple_measurement_logic:
-                self.prob_initializer = []
+                self.aggregate_init = []
                 self.measurement_aggregation = list_aggregation
                 self.post_aggregation = lambda x: x
                 self.multiple_measurement_name = 'list aggregation'
@@ -276,18 +282,19 @@ class DetectionMetric:
                 self.batching_logic = fidelity_batching
                 self.batching_name = 'fidelity batching'
 
-            # metric name is updated as there is no detection
+            # metric name is updated
             if not self.custom_metric:      
                 self.metric_name = 'fidelity'
+                self.metric = lambda x,y: x-y
 
             return 'all states', 'no detection'
 
 
         elif criterion == 'max trace distance':
             # this criterion must measure couples of rho from the interacting and non interacting simulations,
-            # measurement_aggregation and prob_initializer are updated to handle probability lists
+            # measurement_aggregation and aggregate_init are updated to handle probability lists
             if not self.custom_multiple_measurement_logic:
-                self.prob_initializer = []
+                self.aggregate_init = []
                 self.measurement_aggregation = list_aggregation
                 self.post_aggregation = lambda x: x
                 self.multiple_measurement_name = 'list aggregation'
@@ -297,7 +304,7 @@ class DetectionMetric:
                 self.batching_logic = trace_distance_batching
                 self.batching_name = 'trace distance batching'
 
-            # metric name is updated as there is no detection
+            # metric name is updated
             if not self.custom_metric:      
                 self.metric_name = 'trace distance'
 
@@ -306,15 +313,40 @@ class DetectionMetric:
         elif criterion == 'max distance':
             # this criterion must measure separetly all states, 
             # compute the distance (defined by the metric) between the interacting and non interacting probabilities in each state and then average over states,
-            # measurement_aggregation and prob_initializer are updated to handle probability lists
+            # measurement_aggregation and aggregate_init are updated to handle probability lists
             if not self.custom_multiple_measurement_logic:
-                self.prob_initializer = []
+                self.aggregate_init = []
                 self.measurement_aggregation = list_aggregation
                 self.post_aggregation = lambda x: x
                 self.multiple_measurement_name = 'list aggregation'
 
-            metric= self.metric
+            if detection_param is None:
+                detection_param = lambda x, y: (x - y)
+            else:
+                if not callable(detection_param):
+                    raise ValueError(
+                        "Invalid detection_param for criterion 'max distance': expected a callable "
+                        "that takes two arrays and returns an array of the same shape."
+                    )
 
+                probe_with = jnp.asarray(np.random.rand(100))
+                probe_without = jnp.asarray(np.random.rand(100))
+                try:
+                    probe_distance = detection_param(probe_with, probe_without)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "Invalid detection_param for criterion 'max distance': callable must accept "
+                        "two arrays (interacting and non interacting detection measures) and return "
+                        "an array of the same shape."
+                    ) from exc
+
+                if jnp.shape(probe_distance) != jnp.shape(probe_with):
+                    raise ValueError(
+                        "Invalid detection_param for criterion 'max distance': return value must "
+                        "have the same shape as inputs."
+                    )
+            distance_metric = detection_param
+            
             # batching logic is updated to             
             @staticmethod
             @jit
@@ -324,16 +356,17 @@ class DetectionMetric:
                 detect_without = jnp.array(detect_without_batch)
                 # Shape: (batch_size, n_measurements, n_states)
                 # Sum over states (axis=-1), then average over batch and measurements
-                distance = jnp.mean(jnp.sum(jnp.abs(metric(detect_with, detect_without)), axis=-1)) / 2
+                distance = jnp.mean(jnp.sum(jnp.abs(distance_metric(detect_with, detect_without)), axis=-1)) / 2
 
-                return distance, 0, distance
+                return distance, 0
             
             if not self.custom_batch:
                 self.batching_logic = max_dist_batching
                 self.batching_name = 'max distance batching'
 
-            # since the metric is used in batching, the global metric is updated to function as the identity
-            self.metric = lambda x,y: y-x
+            # metric name is updated
+            if not self.custom_metric:      
+                self.metric_name = 'computational distance'
 
             return 'all states', criterion
 
@@ -352,9 +385,10 @@ class DetectionMetric:
                 detection_param: None\n\n\
             - 'max trace distance': computes the trace distance between the interacting and non interacting states \n\
                 detection_param: None\n\n\
-            - 'max distance': maximizes the distance between the interaction and \n\
-            non interaction measurements (on the computational basis) for all the states\n\
-                detection_param: None")
+            - 'max distance': maximizes the distance between interaction and \n\
+                non interaction measurements (on the computational basis) for all the states \n\
+                detection_param: Callable[[array, array], array] distance function. default is contrast" \
+            )
 
     def __repr__(self) -> str:
         """String representation of the detector."""
@@ -375,7 +409,7 @@ multiple measurement logic:\n\
 @jit
 def std_metric(p_with_photon: float, p_without_photon: float)-> float:
     contrast = p_with_photon - p_without_photon
-    return -contrast
+    return contrast
 
 @staticmethod
 @jit
@@ -383,8 +417,7 @@ def std_batching(detect_with_batch: List[float],detect_without_batch: List[float
     # Average over batch
     detect_with = jnp.mean(jnp.array(detect_with_batch))
     detect_without = jnp.mean(jnp.array(detect_without_batch))
-    contrast = detect_with - detect_without
-    return detect_with, detect_without, contrast
+    return detect_with, detect_without
 
 @staticmethod
 @jit
@@ -401,7 +434,7 @@ def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: Lis
     total_fidelity = jnp.mean(jnp.array(fidelity_list))
 
     #The first output is 0 and the second one is the fidelity so that the fidelity is minimized
-    return 1-total_fidelity, 0, 1-total_fidelity 
+    return 1, total_fidelity
 
 @staticmethod
 @jit
@@ -416,7 +449,7 @@ def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batc
     trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
     
     total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
-    return total_trace_distance, 0, total_trace_distance
+    return total_trace_distance, 0
 
 @staticmethod
 @jit
