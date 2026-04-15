@@ -6,8 +6,8 @@ This script analyzes the parameter space landscape for quantum sensing
 optimization using the θ₁, θ₂ parameterization strategy.
 
 Uses run_simulation() with different rotation parameters and plots heatmaps of:
-- Sensing contrast landscape
-- Detection probability landscape
+- Metric values landscape
+- Detection measures landscape
 
 The analysis uses time-interval based measurements and includes comprehensive
 system parameters in the visualization.
@@ -91,7 +91,7 @@ initial_circuit = create_ry_circuit(n_qubits=1, theta_values=center_theta1)
 final_circuit = create_ry_circuit(n_qubits=1, theta_values=center_theta2)
 experiment = Experiment(exp_parameters, initial_circuit, final_circuit)
 
-contrast_map = np.zeros((resolution, resolution))
+metric_map = np.zeros((resolution, resolution))
 detection_map = np.zeros((resolution, resolution))
 
 for i, theta1 in enumerate(theta1_vals):
@@ -101,13 +101,13 @@ for i, theta1 in enumerate(theta1_vals):
         callback = experiment.run_simulation(batch_size=1)
 
         # Keep the same orientation expected by plot_parameter_landscape.
-        contrast_map[j, i] = callback.history["contrast"][-1]
+        metric_map[j, i] = callback.history["metric"][-1]
         detection_map[j, i] = callback.history["prob_with"][-1]
 
 data_theta12 = {
     "theta1_vals": theta1_vals,
     "theta2_vals": theta2_vals,
-    "contrast_map": contrast_map,
+    "metric_map": metric_map,
     "detection_map": detection_map,
     "center_theta1": center_theta1,
     "center_theta2": center_theta2,
