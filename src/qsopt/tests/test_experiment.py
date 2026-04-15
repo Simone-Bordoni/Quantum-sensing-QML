@@ -19,6 +19,7 @@ from qsopt.core.callback import OptimizationCallback
 from qsopt.core.experiment import Experiment
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
+from qsopt.core.loss_functions import DetectionMetric
 
 
 class TestExperiment:
@@ -339,6 +340,24 @@ class TestExperiment:
         repr_str = repr(result)
         assert "MODE: Single Simulation" in repr_str
         assert "Current Parameters" in repr_str
+
+    @pytest.mark.parametrize(
+        "detection_criterion",
+        ["min fidelity", "max trace distance", "max distance"],
+    )
+    def test_time_evolution_unsupported_detection_criteria(
+        self,
+        experiment,
+        detection_criterion,
+    ):
+        """time_evolution should fail fast for unimplemented detection criteria."""
+        experiment.detection_metric = DetectionMetric(
+            n_qubits=experiment.experimental_params.n_qubits,
+            detection_criterion=detection_criterion,
+        )
+
+        with pytest.raises(NotImplementedError, match="time_evolution is not implemented"):
+            experiment.time_evolution(n_points=20)
 
     @pytest.mark.skip(reason="optimize_rotations requires refactoring for new Experiment structure")
     def test_optimize_short_run(self, experiment):

@@ -264,7 +264,7 @@ class Experiment:
 
                 return rho_current, [jnp.array(prob_list)]
 
-        elif self.detection_metric.detection_name in ['min fidelity', 'max trace distance']:
+        elif self.detection_metric.detection_name == 'no detection':
             def f_measure_reset(rho: qt.Qobj):
                 '''Return rho and reset the qubit as a mixture of all possible states'''
                 
@@ -762,8 +762,8 @@ class Experiment:
         circuit_unitaries = self._prepare_circuit_unitaries()
 
         # Run simulations with batch averaging over uncertainty realizations
-        prob_with_list = []
-        prob_without_list = []
+        batch_with = []
+        batch_without = []
 
         if debug:
             self.debug_times.append({ f'start_measurement_loop' : t.time()})
@@ -775,25 +775,25 @@ class Experiment:
                 self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})
     
             # Simulation with photon interaction
-            prob_with = simulation_fn(
+            detection_with = simulation_fn(
                 solver=solver_with,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
-            prob_with_list.append(prob_with)
+            batch_with.append(detection_with)
 
             if debug:
                 self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})
 
             # Simulation without photon interaction (reference)
-            prob_without = simulation_fn(
+            detection_without = simulation_fn(
                 solver=solver_without,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
-            prob_without_list.append(prob_without)
+            batch_without.append(detection_without)
             if debug:
                 self.step += 1
 
@@ -804,7 +804,7 @@ class Experiment:
         # With the default setup this metric can coincide with contrast, but custom
         # detection metrics may define any scalar objective.
         detect_with, detect_without = self.detection_metric.batching_logic(
-            prob_with_list, prob_without_list
+            batch_with, batch_without
         )
         metric_value = self.detection_metric.metric(detect_with, detect_without)
 
@@ -987,8 +987,32 @@ class Experiment:
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
 
-        if self.detection_metric.detection_name in ['min fidelity','max trace distance', 'max distance']:
-            raise NotImplementedError(f"In time_evolution the detection '{self.detection_metric.detection_name}' is not yet implemented")
+        unsupported_criteria = {
+            "min fidelity",
+            "max trace distance",
+            "max distance",
+        }
+        unsupported_batching = {
+            "fidelity batching": "min fidelity",
+            "trace distance batching": "max trace distance",
+            "max distance batching": "max distance",
+        }
+
+        criterion = getattr(
+            self.detection_metric,
+            "detection_criterion",
+            self.detection_metric.detection_name,
+        )
+        criterion_from_batching = unsupported_batching.get(
+            self.detection_metric.batching_name
+        )
+
+        if criterion in unsupported_criteria or criterion_from_batching is not None:
+            unsupported_label = criterion_from_batching or criterion
+            raise NotImplementedError(
+                f"time_evolution is not implemented for detection criterion "
+                f"'{unsupported_label}'"
+            )
 
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
@@ -1261,19 +1285,18 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                batch_result_with, batch_result_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
+                result_with, result_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
 
                 detect_with, detect_without = detection_metric.batching_logic(
-                    batch_result_with,
-                    batch_result_without,
+                    [result_with],
+                    [result_without],
                 )
 
                 metric = detection_metric.metric(detect_with, detect_without)
 
-                return metric, (detect_with, detect_without, metric)
+                return -metric, (detect_with, detect_without, metric)
 
         else:
-            zero_uncertainty_batch = jnp.zeros((batch_size,), dtype=float)
 
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
@@ -1295,7 +1318,7 @@ class Experiment:
 
                 metric = detection_metric.metric(detect_with, detect_without)
 
-                return metric, (detect_with, detect_without, metric)
+                return -metric, (detect_with, detect_without, metric)
 
         jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 

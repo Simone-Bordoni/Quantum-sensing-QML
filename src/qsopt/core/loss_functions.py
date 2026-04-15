@@ -118,6 +118,8 @@ class DetectionMetric:
         """Initialize the detection metric protocol."""
 
         self.n_qubits = n_qubits
+        self.detection_criterion = detection_criterion
+        self.detection_param = detection_param
 
         # define the multiple measurement logic. default: (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
         if multiple_measurement_logic is None:
@@ -143,7 +145,7 @@ class DetectionMetric:
             self.metric = jit(metric)
 
         self.metric_name = metric_name
-
+        
         # define batching logic. default: average over batch
         if batching_logic is None:
             self.custom_batch = False
@@ -165,23 +167,23 @@ class DetectionMetric:
         
 
 
-    def __call__(self, p_with_photon: float, p_without_photon: float) -> float:
+    def __call__(self, measure_with_photon: float, measure_without_photon: float) -> float:
         """
         Compute loss from detection probability.
 
-        Parameters bananabile portento
+        Parameters
         ----------
-        p_with_photon : float
-            Detection probability when the photon is present.
-        p_without_photon : float
-            Detection probability when the photon is absent.
+        measure_with_photon : float
+            Measurement outcome when the photon is present.
+        measure_without_photon : float
+            Measurement outcome when the photon is absent.
 
         Returns
         -------
         float
             Detection probability according to the defined criterion.
         """
-        return self.metric(p_with_photon,p_without_photon)
+        return self.metric(measure_with_photon, measure_without_photon)
 
     def build_detection(self, criterion, detection_param):
         """Possible criterions:
@@ -470,6 +472,13 @@ def _hermitian_part(mat):
     return 0.5 * (mat + mat.conj().T)
 
 @jit
+def _trace_normalize_density(mat, eps=1e-12):
+    mat_h = _hermitian_part(mat)
+    trace_val = jnp.real(jnp.trace(mat_h))
+    safe_trace = jnp.where(jnp.abs(trace_val) > eps, trace_val, 1.0)
+    return mat_h / safe_trace
+
+@jit
 def sqrtm_psd_smooth(mat, eps=1e-8, beta=40.0):
     # Smooth PSD projection (no hard clipping)
     mat_h = _hermitian_part(mat)
@@ -485,19 +494,25 @@ def sqrtm_psd_smooth(mat, eps=1e-8, beta=40.0):
 @staticmethod
 @jit
 def sqrtm_psd(mat):
-    # Assumes Hermitian PSD matrix
-    eigvals, eigvecs = jnp.linalg.eigh(mat)
-    eigvals = jnp.clip(eigvals, a_min=0.0)  # numerical safety
-    sqrt_eigvals = jnp.sqrt(eigvals)
+    # Principal matrix square root through eigendecomposition without clipping.
+    mat_h = _hermitian_part(mat)
+    eigvals, eigvecs = jnp.linalg.eigh(mat_h)
+    sqrt_eigvals = jnp.sqrt(eigvals.astype(jnp.complex64))
     return (eigvecs * sqrt_eigvals) @ eigvecs.conj().T
 
 @staticmethod
 @jit
 def fidelity(rho, sigma):
-    sqrt_rho = sqrtm_psd_smooth(rho)
-    inner = sqrt_rho @ sigma @ sqrt_rho
-    sqrt_inner = sqrtm_psd_smooth(inner)
-    return jnp.real(jnp.trace(sqrt_inner))**2
+    # Normalize inputs so numerical trace drift does not bias fidelity outside [0, 1].
+    rho_n = _trace_normalize_density(rho)
+    sigma_n = _trace_normalize_density(sigma)
+
+    sqrt_rho = sqrtm_psd(rho_n)
+    inner = _hermitian_part(sqrt_rho @ sigma_n @ sqrt_rho)
+    inner_eigvals = jnp.linalg.eigvalsh(inner)
+    trace_sqrt_inner = jnp.sum(jnp.sqrt(inner_eigvals.astype(jnp.complex64)))
+
+    return jnp.real(trace_sqrt_inner * jnp.conj(trace_sqrt_inner))
 
 def is_valid_density_matrix(rho):
     rho_e = extract(rho.data, "JaxArray")
