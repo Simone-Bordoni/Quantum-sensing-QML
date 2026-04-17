@@ -27,13 +27,17 @@ import time as t
 # Example Windows: r"C:\Users\your_name\Desktop"
 # Example Linux: "/home/your_name"
 MANUAL_HOME_FOLDER = r'/raid/home/ncampioni'
+override_default = True
 
 
 def resolve_home_folder():
     default_home = os.path.expanduser("~")
 
     if MANUAL_HOME_FOLDER:
-        return os.path.normpath(os.path.expanduser(MANUAL_HOME_FOLDER))
+        if override_default:
+            default_home = os.path.normpath(os.path.expanduser(MANUAL_HOME_FOLDER))
+        else:
+            return os.path.normpath(os.path.expanduser(MANUAL_HOME_FOLDER))
 
     try:
         user_input = input(f"Home folder [default is: {default_home}]: ").strip()
