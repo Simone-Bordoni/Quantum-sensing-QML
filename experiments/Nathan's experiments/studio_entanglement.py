@@ -25,7 +25,7 @@ import time as t
 # Set this manually to skip the input prompt.
 # Example Windows: r"C:\Users\your_name\Desktop"
 # Example Linux: "/home/your_name"
-MANUAL_HOME_FOLDER = r'C:\Users\natth\Desktop'
+MANUAL_HOME_FOLDER = r'/raid/home/ncampioni'
 
 
 def resolve_home_folder():
@@ -202,20 +202,9 @@ n_qubits = 5
 computation_dist_5qb = DetectionMetric(n_qubits=5, detection_criterion = 'max computational distance')
 exp_dict_5qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_5qb)
 
-#DEFINISCO DELLE COSTANTI DI ALLENAMENTO
+#DEFINISCO ALLENAMENTO CON DELLE COSTANTI DI ALLENAMENTO
 
 optimizer = optax.sgd(learning_rate=0.05)
-
-#GIRO ESPERIMENTO DI CONTROLLO: 1 QUBIT, CIRCUITI 1 LAYER (ROT), METRICA: MAX COMPUTATIONAL DISTANCE
-
-log_training_event('TRAINING_START', 'control_1qb', 'num_steps=1000 tolerance=1e-9')
-history_ctrl = experiment_1qb.optimize_rotations(num_steps=1000, tolerance=1e-9, optimizer=optimizer, verbose=False)
-history_ctrl.save(os.path.join(save_folder, 'history_ctrl.pkl'))
-log_training_event(
-    'TRAINING_END',
-    'control_1qb',
-    f"converged={history_ctrl.converged} epoch={history_ctrl.epoch} best_metric={history_ctrl.best_metric} {get_last_gradient_info(history_ctrl)}"
-)
 
 
 def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, tolerance, optimizer, save_folder, exp_name):
@@ -250,6 +239,13 @@ def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, 
 
         if history.converged:
             break
+        log_training_event(
+            'CHECKPOINT',
+            exp_name,
+            f"epoch={history.epoch} best_metric={history.best_metric} {get_last_gradient_info(history)}"
+        )
+
+
 
     if history is None:
         log_training_event('TRAINING_END', exp_name, 'status=skipped reason=tot_steps<=0')
@@ -263,24 +259,47 @@ def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, 
         
     return history
 
-try:
-    for exp_name, experiment in test_dict_1qb.items():
+def run_experiment_ensemble(experiment_dict, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9):
+    for exp_name, experiment in experiment_dict.items():
 
-        history = run_experiment_with_checkpoints(experiment, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9, optimizer=optimizer, save_folder=save_folder, exp_name=exp_name)
+        try:
+            
+            history = run_experiment_with_checkpoints(experiment, tot_steps=tot_steps, checkpoint_interval=checkpoint_interval, tolerance=tolerance, optimizer=optimizer, save_folder=save_folder, exp_name=exp_name)
 
-        _ = plot_optimization_dashboard(
-            optimization_callback=history,
-            show_metric=True,
-            show_gradients=True,
-            show_parameters=True,
-            show_detection_measures=True,
-            show_trajectory=True,
-            save_path=os.path.join(save_folder, f'dashboard_{exp_name}.pdf')  # Save to file
-        )
+            _ = plot_optimization_dashboard(
+                optimization_callback=history,
+                show_metric=True,
+                show_gradients=True,
+                show_parameters=True,
+                show_detection_measures=True,
+                show_trajectory=True,
+                save_path=os.path.join(save_folder, f'dashboard_{exp_name}.pdf')  # Save to file
+            )
 
-except Exception as e:
-    failed_experiment = exp_name if 'exp_name' in locals() else 'global'
-    log_training_event('TRAINING_ERROR', failed_experiment, f'error={e}')
-    #print errors to file
-    with open(os.path.join(error_folder, 'error_log.txt'), 'a', encoding='utf-8') as f:
-        f.write(f'Error in experiment {failed_experiment}: {str(e)}\n')
+        except Exception as e:
+            log_training_event('TRAINING_ERROR', exp_name, f'error={e}')
+            #print errors to file
+            with open(os.path.join(error_folder, 'error_log.txt'), 'a', encoding='utf-8') as f:
+                f.write(f'Error in experiment {exp_name}: {str(e)}\n')
+
+
+#GIRO ESPERIMENTO DI CONTROLLO: 1 QUBIT, CIRCUITI 1 LAYER (ROT), METRICA: MAX COMPUTATIONAL DISTANCE
+
+log_training_event('TRAINING_START', 'control_1qb', 'num_steps=1000 tolerance=1e-9')
+history_ctrl = experiment_1qb.optimize_rotations(num_steps=1000, tolerance=1e-9, optimizer=optimizer, verbose=False)
+history_ctrl.save(os.path.join(save_folder, 'history_ctrl.pkl'))
+log_training_event(
+    'TRAINING_END',
+    'control_1qb',
+    f"converged={history_ctrl.converged} epoch={history_ctrl.epoch} best_metric={history_ctrl.best_metric} {get_last_gradient_info(history_ctrl)}"
+)
+
+#GIRO ESPERIMENTI
+
+#run_experiment_ensemble(test_dict_1qb, tot_steps=500, checkpoint_interval=100, tolerance=1e-9)
+
+run_experiment_ensemble(exp_dict_2qb, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9)
+run_experiment_ensemble(exp_dict_3qb, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9)
+run_experiment_ensemble(exp_dict_5qb, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9)
+
+log_training_event('END PROGRAM', '', 'All experiments completed')
