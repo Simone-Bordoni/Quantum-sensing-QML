@@ -4,6 +4,7 @@
 *$py.class
 personal_test.py
 personal_text.txt
+*personal_results/
 ֿֿ*.pyc
 *.conda
 
@@ -156,6 +157,7 @@ activemq-data/
 .env
 .envrc
 .venv
+.venv_gpu
 env/
 venv/
 ENV/
