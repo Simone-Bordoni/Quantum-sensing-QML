@@ -45,15 +45,7 @@ class OptimizationCallback:
         self.epoch = 0
 
         # Initialize history containers
-        self.history: Dict[str, List[Any]] = {
-            "epochs": [],
-            "metric": [],
-            "detection_with": [],
-            "detection_without": [],
-            "trainable_params": [],
-            "optimizer_state": [],
-            "grads": [],
-        }
+        self.history: Dict[str, List[Any]] = self._empty_history_template()
 
         # Best tracking (maximize the metric)
         self.best_trainable_params: Optional[Any] = None
@@ -63,6 +55,19 @@ class OptimizationCallback:
         # Optimization completion info
         self.converged: bool = False
         self.final_grad_norm: Optional[float] = None
+
+    @staticmethod
+    def _empty_history_template() -> Dict[str, List[Any]]:
+        """Create an empty history dictionary with the expected keys."""
+        return {
+            "epochs": [],
+            "metric": [],
+            "detection_with": [],
+            "detection_without": [],
+            "trainable_params": [],
+            "optimizer_state": [],
+            "grads": [],
+        }
 
     @staticmethod
     def _to_object_array(values: List[Any]) -> np.ndarray:
@@ -184,15 +189,20 @@ class OptimizationCallback:
             epoch = self.history["epochs"][-1] + epoch + 1
         if not (1 <= epoch <= self.history["epochs"][-1]):
             raise ValueError("Epoch index is out of bounds.")
+        idx: Optional[int] = None
+        selected_epoch: Optional[int] = None
         for idx, ep in enumerate(self.history["epochs"]):
             diff = abs(ep - epoch)
             if 0 <= diff < self.save_every:
                 if diff!=0:
                     print(f"Epoch {epoch} requested but not present, returning parameters saved from epoch {ep} (diff={diff})")
+                selected_epoch = ep
                 break 
+        if idx is None or selected_epoch is None:
+            raise ValueError("No parameters found for the requested epoch.")
             
         initial_params, final_params = self.history["trainable_params"][idx]
-        return copy.deepcopy(initial_params), copy.deepcopy(final_params), ep
+        return copy.deepcopy(initial_params), copy.deepcopy(final_params), selected_epoch
 
     def get_opt_state(self, epoch: int = -1) -> Tuple[Any, Any]:
         """
@@ -212,12 +222,15 @@ class OptimizationCallback:
             epoch = self.history["epochs"][-1] + epoch + 1
         if not (1 <= epoch <= self.history["epochs"][-1]):
             raise ValueError("Epoch index is out of bounds.")
+        idx: Optional[int] = None
         for idx, ep in enumerate(self.history["epochs"]):
             diff = abs(ep - epoch)
             if 0 <= diff < self.save_every:
                 if diff != 0:
                     print(f"Epoch {epoch} requested but not present, returning optimizer state saved from epoch {ep} (diff={diff})")
                 break
+        if idx is None:
+            raise ValueError("No optimizer state found for the requested epoch.")
 
         optimizer_state = copy.deepcopy(self.history["optimizer_state"][idx])
         grads_history = self.history.get("grads", [])
@@ -406,16 +419,29 @@ class OptimizationCallback:
 
         Clears all history and best parameter tracking.
         """
+        # Clear existing history buffers in-place so any external references obtained
+        # through get_history() are also emptied and no stale large objects are kept.
+        if isinstance(self.history, dict):
+            for value in self.history.values():
+                if isinstance(value, list):
+                    value.clear()
+            self.history.clear()
+            self.history.update(self._empty_history_template())
+        else:
+            self.history = self._empty_history_template()
+
+        # Release possible list references contained in best params before dropping.
+        if self.best_trainable_params is not None:
+            try:
+                for params in self.best_trainable_params:
+                    if isinstance(params, list):
+                        params.clear()
+            except TypeError:
+                pass
+        if isinstance(self.best_metrics, dict):
+            self.best_metrics.clear()
+
         self.epoch = 0
-        self.history = {
-            "epochs": [],
-            "metric": [],
-            "detection_with": [],
-            "detection_without": [],
-            "trainable_params": [],
-            "optimizer_state": [],
-            "grads": [],
-        }
         self.best_trainable_params = None
         self.best_metric = -float("inf")
         self.best_metrics = None

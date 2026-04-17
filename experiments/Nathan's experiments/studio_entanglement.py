@@ -1,5 +1,6 @@
 # Import required libraries
 import os
+import gc
 from datetime import datetime
 import numpy as np
 import matplotlib.pyplot as plt
@@ -183,25 +184,6 @@ test_dict_1qb = {}
 test_dict_1qb[f'{n_qubits}qb_no_no'] = create_std_experiment_setup(n_qubits, initial_circuit=input_circ_1qb, final_circuit=final_circ_1qb, detection_metric=computation_dist_1qb)
 test_dict_1qb[f'{n_qubits}qb_z_no'] = create_std_experiment_setup(n_qubits, initial_circuit=initial_circ_z_1qb, final_circuit=final_circ_1qb, detection_metric=computation_dist_1qb)
 
-
-#ESPERIMENTI A 2 QUBIT CON E SENZA ENTANGLEMENT: 
-
-n_qubits = 2
-computation_dist_2qb = DetectionMetric(n_qubits=2, detection_criterion = 'max computational distance')
-exp_dict_2qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_2qb)
-
-#ESPERIMENTI A 3 QUBIT CON E SENZA ENTANGLEMENT:
-
-n_qubits = 3
-computation_dist_3qb = DetectionMetric(n_qubits=3, detection_criterion = 'max computational distance')
-exp_dict_3qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_3qb)
-
-#ESPERIMENTI A 5 QUBIT CON E SENZA ENTANGLEMENT:
-
-n_qubits = 5
-computation_dist_5qb = DetectionMetric(n_qubits=5, detection_criterion = 'max computational distance')
-exp_dict_5qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_5qb)
-
 #DEFINISCO ALLENAMENTO CON DELLE COSTANTI DI ALLENAMENTO
 
 optimizer = optax.sgd(learning_rate=0.05)
@@ -260,13 +242,15 @@ def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, 
     return history
 
 def run_experiment_ensemble(experiment_dict, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9):
-    for exp_name, experiment in experiment_dict.items():
+    for exp_name in list(experiment_dict.keys()):
+
+        history = None
 
         try:
             
-            history = run_experiment_with_checkpoints(experiment, tot_steps=tot_steps, checkpoint_interval=checkpoint_interval, tolerance=tolerance, optimizer=optimizer, save_folder=save_folder, exp_name=exp_name)
+            history = run_experiment_with_checkpoints(experiment_dict[exp_name], tot_steps=tot_steps, checkpoint_interval=checkpoint_interval, tolerance=tolerance, optimizer=optimizer, save_folder=save_folder, exp_name=exp_name)
 
-            _ = plot_optimization_dashboard(
+            fig = plot_optimization_dashboard(
                 optimization_callback=history,
                 show_metric=True,
                 show_gradients=True,
@@ -275,12 +259,23 @@ def run_experiment_ensemble(experiment_dict, tot_steps=1000, checkpoint_interval
                 show_trajectory=True,
                 save_path=os.path.join(save_folder, f'dashboard_{exp_name}.pdf')  # Save to file
             )
+            plt.close(fig)
 
         except Exception as e:
             log_training_event('TRAINING_ERROR', exp_name, f'error={e}')
             #print errors to file
             with open(os.path.join(error_folder, 'error_log.txt'), 'a', encoding='utf-8') as f:
                 f.write(f'Error in experiment {exp_name}: {str(e)}\n')
+
+        finally:
+            # Keep disk artifacts, then release in-memory history and experiment references.
+            if history is not None:
+                history.reset()
+            if exp_name in experiment_dict:
+                del experiment_dict[exp_name]
+            if history is not None:
+                del history
+            gc.collect()
 
 
 #GIRO ESPERIMENTO DI CONTROLLO: 1 QUBIT, CIRCUITI 1 LAYER (ROT), METRICA: MAX COMPUTATIONAL DISTANCE
@@ -293,13 +288,31 @@ log_training_event(
     'control_1qb',
     f"converged={history_ctrl.converged} epoch={history_ctrl.epoch} best_metric={history_ctrl.best_metric} {get_last_gradient_info(history_ctrl)}"
 )
+history_ctrl.reset()
+del experiment_1qb
+del history_ctrl
+gc.collect()
 
 #GIRO ESPERIMENTI
 
 #run_experiment_ensemble(test_dict_1qb, tot_steps=500, checkpoint_interval=100, tolerance=1e-9)
 
-run_experiment_ensemble(exp_dict_2qb, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9)
-run_experiment_ensemble(exp_dict_3qb, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9)
-run_experiment_ensemble(exp_dict_5qb, tot_steps=1000, checkpoint_interval=200, tolerance=1e-9)
+
+
+n_qubits = 2
+computation_dist_2qb = DetectionMetric(n_qubits=2, detection_criterion = 'max computational distance')
+exp_dict_2qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_2qb)
+run_experiment_ensemble(exp_dict_2qb, tot_steps=10, checkpoint_interval=200, tolerance=1e-9)
+
+
+n_qubits = 3
+computation_dist_3qb = DetectionMetric(n_qubits=3, detection_criterion = 'max computational distance')
+exp_dict_3qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_3qb)
+run_experiment_ensemble(exp_dict_3qb, tot_steps=10, checkpoint_interval=200, tolerance=1e-9)
+
+# n_qubits = 5
+# computation_dist_5qb = DetectionMetric(n_qubits=5, detection_criterion = 'max computational distance')
+# exp_dict_5qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_5qb)
+# run_experiment_ensemble(exp_dict_5qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
 
 log_training_event('END PROGRAM', '', 'All experiments completed')

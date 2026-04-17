@@ -1458,7 +1458,7 @@ class Experiment:
             )
 
             # Progress output
-            if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
+            if verbose and (step % verbose_step == 0 or grad_norm < tolerance or step <3):
                 new_time = t.time() - start_time
                 # Build parameter display (up to 4 each)
                 n_init_show = min(n_initial, 4)
