@@ -319,14 +319,14 @@ class TestExperiment:
         assert len(result.history["metric"]) == 1
 
         # Should have valid metrics
-        assert "prob_with" in result.history
-        assert "prob_without" in result.history
-        assert len(result.history["prob_with"]) == 1
-        assert len(result.history["prob_without"]) == 1
+        assert "detection_with" in result.history
+        assert "detection_without" in result.history
+        assert len(result.history["detection_with"]) == 1
+        assert len(result.history["detection_without"]) == 1
 
         # Probabilities should be in [0, 1]
-        assert 0 <= result.history["prob_with"][0] <= 1
-        assert 0 <= result.history["prob_without"][0] <= 1
+        assert 0 <= result.history["detection_with"][0] <= 1
+        assert 0 <= result.history["detection_without"][0] <= 1
 
         # Optimization-related attributes should be False/None (not from optimization)
         assert result.converged is False
@@ -343,7 +343,7 @@ class TestExperiment:
 
     @pytest.mark.parametrize(
         "detection_criterion",
-        ["min fidelity", "max trace distance", "max distance"],
+        ["min fidelity", "max trace distance", "max computational distance"],
     )
     def test_time_evolution_unsupported_detection_criteria(
         self,

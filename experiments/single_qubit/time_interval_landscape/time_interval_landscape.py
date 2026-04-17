@@ -5,7 +5,7 @@ Time Interval Landscape Analysis Example
 This script demonstrates the time-interval landscape analysis functionality
 with batch averaging to account for measurement uncertainty.
 
-The analysis shows how sensing contrast varies with the time interval between
+The analysis shows how the metric varies with the time interval between
 measurements while keeping rotation parameters fixed.
 """
 

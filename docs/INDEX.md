@@ -123,7 +123,7 @@ Comprehensive plotting and analysis tools for optimization results.
 
 **Key Functions:**
 - `plot_optimization_dashboard()`: Multi-panel optimization visualization
-- `plot_contrast_evolution()`: Track sensing contrast over epochs
+- `plot_metric_evolution()`: Track values of the metric over epochs
 - `plot_parameter_trajectory()`: Parameter space exploration
 - `plot_time_interval_landscape()`: Measurement interval landscapes
 - `plot_pulse_shape_with_measurements()`: Pulse visualization
@@ -163,7 +163,7 @@ Create comprehensive plots and dashboards.
 
 **Key Functions:**
 - `plot_optimization_dashboard()`: Multi-panel optimization visualization
-- `plot_contrast_evolution()`: Tracking sensing contrast
+- `plot_metric_evolution()`: Plotting values of the metric
 - `plot_parameter_trajectory()`: Parameter space exploration
 - `plot_time_interval_landscape()`: Measurement interval landscape with uncertainty
 - `plot_pulse_shape_with_measurements()`: Pulse envelope annotated with measurement times
@@ -175,7 +175,7 @@ Create comprehensive plots and dashboards.
 Optimize, visualize, and interpret measurement schedules alongside rotation controls.
 
 **Key Functions:**
-- `compute_time_interval_landscape()`: Evaluate sensing contrast across interval grids
+- `compute_time_interval_landscape()`: Evaluate the metric across interval grids
 - `optimize_measurement_times()`: Execute the adaptive measurement interval search
 - `plot_time_interval_landscape()`: Present interval landscapes with system metadata
 
@@ -287,7 +287,6 @@ Main experiment class for quantum sensing simulations.
 - `run_simulation() -> OptimizationCallback`: Execute single simulation
 - `optimize_rotations(theta_init, num_steps, verbose) -> OptimizationCallback`: Run optimization
 - `optimize_measurement_times(resolution, mode, batch_size, ...) -> Dict`: Search over measurement intervals
-- `get_sensing_contrast() -> float`: Calculate current contrast
 
 #### TrainableParameters
 
@@ -315,7 +314,7 @@ plot_optimization_dashboard(
     show_gradients: bool = True,
     show_parameters: bool = True,
     show_trajectory: bool = True,
-    show_probabilities: bool = True,
+    show_detection_measures: bool = True,
     save_path: Optional[str] = None
 ) -> Figure
 ```
@@ -336,8 +335,8 @@ experiment = SingleQubitExperiment(exp_params, trainable_params)
 
 # Run single simulation
 results = experiment.run_simulation()
-print(f"Detection probability (with photon): {results.best_metrics['prob_with']:.4f}")
-print(f"Detection probability (no photon): {results.best_metrics['prob_without']:.4f}")
+print(f"Detection measure (with photon): {results.best_metrics['detection_with']:.4f}")
+print(f"Detection measure (no photon): {results.best_metrics['detection_without']:.4f}")
 print(f"Sensing metric: {results.best_metrics['metric']:.4f}")
 ```
 
@@ -415,7 +414,7 @@ import numpy as np
 from qsopt.utils.landscape_analysis import compute_time_interval_landscape
 from qsopt.utils.visualization import plot_time_interval_landscape
 
-# Compute contrast landscape over time intervals
+# Compute metric landscape over time intervals
 landscape = compute_time_interval_landscape(
     exp_params,
     theta1=np.pi / 2,
@@ -481,7 +480,7 @@ For comprehensive guides on specific modules:
 
 - **[Quantum Sensing Experiments](./experiments.md)** - Full documentation of experiment configuration, optimization methods, parameter management, noise modeling, and integration with circuit-based state preparation.
 
-- **[Visualization Tools](./visualization.md)** - Comprehensive plotting functions including optimization dashboards, contrast evolution, parameter trajectories, measurement landscapes, and advanced customization options.
+- **[Visualization Tools](./visualization.md)** - Comprehensive plotting functions including optimization dashboards, metric evolution, parameter trajectories, measurement landscapes, and advanced customization options.
 
 ---
 
@@ -521,7 +520,7 @@ params.add_rotation_angles(['theta1', 'theta2'], [np.pi/2, -np.pi/2])
 # Run simulation
 experiment = SingleQubitExperiment(exp_params, params)
 results = experiment.run_simulation()
-print(f"Sensing contrast: {results.contrast:.6f}")
+print(f"Sensing metric: {results.metric:.6f}")
 ```
 
 ### Example 2: Gradient-Based Optimization
@@ -805,7 +804,7 @@ loss, grads = jax.value_and_grad(custom_loss_fn)(params, circuit, target)
 
 ### Optimization Not Converging
 
-**Symptoms:** Contrast oscillates or doesn't improve
+**Symptoms:** Metric values oscillate or don't improve
 
 **Solutions:**
 1. Reduce learning rate (try 0.01 instead of 0.05)
@@ -824,9 +823,9 @@ print(f"Average gradient magnitude: {avg_grad:.6e}")
 # If too large (> 1.0): decrease learning rate
 ```
 
-### Low Sensing Contrast
+### Low Metric Value
 
-**Symptoms:** Optimized contrast remains < 0.1
+**Symptoms:** Optimized metric remains < 0.1
 
 **Solutions:**
 1. Check measurement times span the pulse timescale
@@ -834,14 +833,15 @@ print(f"Average gradient magnitude: {avg_grad:.6e}")
 3. Test ideal (noiseless) limit to establish upper bound
 4. Try different initial state types
 5. Increase system dimensions if truncation too aggressive
+6. Some metrics (fidelity, trace distance, computational distance) get scaled down with multiple measurements to approximately 1/n_measurements
 
 ```python
 # Debug: Test ideal limit
 ideal_noise = NoiseConfiguration(relaxation=0.0, dephasing=0.0)
 exp_params_ideal = ExperimentalParameters(..., noise_config=ideal_noise)
 experiment_ideal = SingleQubitExperiment(exp_params_ideal, params)
-ideal_contrast = experiment_ideal.run_simulation().contrast
-print(f"Ideal contrast (no noise): {ideal_contrast:.6f}")
+ideal_metric = experiment_ideal.run_simulation().metric
+print(f"Ideal metric (no noise): {ideal_metric:.6f}")
 ```
 
 ### Memory Issues

@@ -150,11 +150,11 @@ def test_run_simulation_completes(experiment):
     callback = experiment.run_simulation(batch_size=1)
 
     assert callback is not None
-    # History contains multiple keys (epochs, prob_with, prob_without, contrast, etc.)
+    # History contains multiple keys (epochs, detection_with, detection_without, metric, etc.)
     assert "epochs" in callback.history
     assert len(callback.history["epochs"]) == 1
-    assert "prob_with" in callback.history
-    assert len(callback.history["prob_with"]) == 1
+    assert "detection_with" in callback.history
+    assert len(callback.history["detection_with"]) == 1
 
 
 if __name__ == "__main__":

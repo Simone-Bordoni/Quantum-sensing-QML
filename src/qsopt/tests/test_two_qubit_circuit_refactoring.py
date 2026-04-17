@@ -174,17 +174,17 @@ def test_two_qubit_single_shot_with_circuits(two_qubit_experimental_params):
     callback = experiment.run_simulation(batch_size=1)
 
     # Verify callback has results
-    assert len(callback.history["prob_with"]) > 0
-    assert len(callback.history["prob_without"]) > 0
+    assert len(callback.history["detection_with"]) > 0
+    assert len(callback.history["detection_without"]) > 0
     assert len(callback.history["metric"]) > 0
 
     # Get the latest results
-    prob_with = callback.history["prob_with"][-1]
-    prob_without = callback.history["prob_without"][-1]
+    detection_with = callback.history["detection_with"][-1]
+    detection_without = callback.history["detection_without"][-1]
 
-    # Check that probabilities are valid
-    assert 0 <= prob_with <= 1
-    assert 0 <= prob_without <= 1
+    # Check that detection measures are valid
+    assert 0 <= detection_with <= 1
+    assert 0 <= detection_without <= 1
 
 
 def test_two_qubit_optimization_step(two_qubit_experimental_params):
@@ -225,12 +225,12 @@ def test_two_qubit_multi_gate_circuits(two_qubit_experimental_params):
     # Run simulation to verify everything works
     callback = experiment.run_simulation(batch_size=1)
 
-    assert len(callback.history["prob_with"]) > 0
-    assert len(callback.history["prob_without"]) > 0
-    prob_with = callback.history["prob_with"][-1]
-    prob_without = callback.history["prob_without"][-1]
-    assert 0 <= prob_with <= 1
-    assert 0 <= prob_without <= 1
+    assert len(callback.history["detection_with"]) > 0
+    assert len(callback.history["detection_without"]) > 0
+    detection_with = callback.history["detection_with"][-1]
+    detection_without = callback.history["detection_without"][-1]
+    assert 0 <= detection_with <= 1
+    assert 0 <= detection_without <= 1
 
 
 def test_two_qubit_callback_integration(two_qubit_experimental_params):
@@ -247,15 +247,15 @@ def test_two_qubit_callback_integration(two_qubit_experimental_params):
     assert num_steps <= 3, "Should not exceed requested steps"
 
     # Verify we have matching history lengths
-    assert len(result_callback.history["prob_with"]) == num_steps
-    assert len(result_callback.history["prob_without"]) == num_steps
+    assert len(result_callback.history["detection_with"]) == num_steps
+    assert len(result_callback.history["detection_without"]) == num_steps
 
     # Verify all values are valid
-    for prob_with, prob_without in zip(
-        result_callback.history["prob_with"], result_callback.history["prob_without"]
+    for detection_with, detection_without in zip(
+        result_callback.history["detection_with"], result_callback.history["detection_without"]
     ):
-        assert 0 <= prob_with <= 1
-        assert 0 <= prob_without <= 1
+        assert 0 <= detection_with <= 1
+        assert 0 <= detection_without <= 1
 
 
 def test_two_qubit_wrong_parameter_count():
@@ -313,12 +313,12 @@ if __name__ == "__main__":
     print("\n1. Testing default circuit creation...")
     exp = TwoQubitExperiment(experimental_params=params)
     callback = exp.run_simulation(batch_size=1)
-    prob_with = callback.history["prob_with"][-1]
-    prob_without = callback.history["prob_without"][-1]
-    contrast = callback.history["metric"][-1]
-    print(f"   Detection with photon: {prob_with:.6f}")
-    print(f"   Detection without photon: {prob_without:.6f}")
-    print(f"   Sensing contrast: {contrast:.6f}")
+    detection_with = callback.history["detection_with"][-1]
+    detection_without = callback.history["detection_without"][-1]
+    metric_value = callback.history["metric"][-1]
+    print(f"   Detection measure with photon: {detection_with:.6f}")
+    print(f"   Detection measure without photon: {detection_without:.6f}")
+    print(f"   Sensing metric: {metric_value:.6f}")
 
     # Test optimization
     print("\n2. Testing optimization...")
@@ -331,9 +331,9 @@ if __name__ == "__main__":
         print(f"   Final loss: {result_callback.history['loss'][-1]:.6f}")
         print(f"   Loss improved: {result_callback.history['loss'][0] > result_callback.history['loss'][-1]}")
     else:
-        # Fallback to metric (contrast for this legacy experiment)
-        print(f"   Initial contrast: {result_callback.history['metric'][0]:.6f}")
-        print(f"   Final contrast: {result_callback.history['metric'][-1]:.6f}")
-        print(f"   Contrast improved: {result_callback.history['metric'][0] < result_callback.history['metric'][-1]}")
+        # Fallback to metric for this experiment.
+        print(f"   Initial metric: {result_callback.history['metric'][0]:.6f}")
+        print(f"   Final metric: {result_callback.history['metric'][-1]:.6f}")
+        print(f"   Metric improved: {result_callback.history['metric'][0] < result_callback.history['metric'][-1]}")
 
     print("\n✅ All manual tests passed!")

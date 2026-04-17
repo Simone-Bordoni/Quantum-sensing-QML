@@ -46,7 +46,7 @@ def compute_theta1_theta2_landscape(
         This function depends on TrainableParameters which is being removed.
         It will be refactored to work with circuit-based parameters in a future release.
 
-    This function evaluates the sensing contrast and detection probability
+    This function evaluates the sensing metric and detection measure
     across a 2D grid of rotation parameters (θ₁, θ₂). Each point represents
     a quantum sensing simulation with different rotation angles applied
     before and after time evolution.
@@ -54,7 +54,7 @@ def compute_theta1_theta2_landscape(
     The workflow for each parameter point:
         1. Set θ₁ and θ₂ rotation angles
         2. Run quantum simulation with and without photon interaction
-        3. Calculate sensing contrast (difference in detection probabilities)
+        3. Calculate sensing metric (difference in detection measures)
         4. Store results in 2D arrays
 
     Args:
@@ -76,7 +76,7 @@ def compute_theta1_theta2_landscape(
             - 'theta2_vals': Array of θ₂ values evaluated (length=resolution)
             - 'metric_map': 2D array of metric values
               (shape: resolution × resolution)
-            - 'detection_map': 2D array of detection probability values
+                        - 'detection_map': 2D array of detection measure values
               with photon interaction (shape: resolution × resolution)
             - 'center_theta1': Center θ₁ value used
             - 'center_theta2': Center θ₂ value used
@@ -141,7 +141,7 @@ def compute_time_interval_landscape(
     theta2: Optional[float] = None,
 ) -> Dict[str, Union[np.ndarray, float, str, int]]:
     """
-    Compute contrast landscape vs measurement time interval.
+    Compute metric landscape vs measurement time interval.
 
     .. deprecated::
         This function has been moved to the Experiment class as a method.

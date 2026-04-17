@@ -102,7 +102,7 @@ for i, theta1 in enumerate(theta1_vals):
 
         # Keep the same orientation expected by plot_parameter_landscape.
         metric_map[j, i] = callback.history["metric"][-1]
-        detection_map[j, i] = callback.history["prob_with"][-1]
+        detection_map[j, i] = callback.history["detection_with"][-1]
 
 data_theta12 = {
     "theta1_vals": theta1_vals,

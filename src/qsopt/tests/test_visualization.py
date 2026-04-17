@@ -257,8 +257,8 @@ def test_plot_optimization_dashboard_basic():
         callback(
             trainable_params_initial=[0.5 + i * 0.1],
             trainable_params_final=[1.0 + i * 0.1],
-            prob_with=0.6 + i * 0.05,
-            prob_without=0.3,
+            detection_with=0.6 + i * 0.05,
+            detection_without=0.3,
             metric=0.3 + i * 0.05,
         )
 
@@ -281,7 +281,7 @@ def test_plot_optimization_dashboard_with_reference():
         opt_callback(
             trainable_params_initial=[0.5 + i * 0.1],
             trainable_params_final=[],
-            prob_with=0.7, prob_without=0.3, metric=0.4
+            detection_with=0.7, detection_without=0.3, metric=0.4
         )
 
     # Create reference callback
@@ -289,7 +289,7 @@ def test_plot_optimization_dashboard_with_reference():
     ref_callback(
         trainable_params_initial=[1.5],
         trainable_params_final=[],
-        prob_with=0.8, prob_without=0.2, metric=0.6
+        detection_with=0.8, detection_without=0.2, metric=0.6
     )
 
     # Create dashboard with reference
@@ -308,7 +308,7 @@ def test_plot_optimization_dashboard_selective_plots():
     callback(
         trainable_params_initial=[1.0],
         trainable_params_final=[0.5],
-        prob_with=0.7, prob_without=0.3, metric=0.4
+        detection_with=0.7, detection_without=0.3, metric=0.4
     )
 
     # Test with only metric plot
@@ -318,7 +318,7 @@ def test_plot_optimization_dashboard_selective_plots():
         show_gradients=False,
         show_parameters=False,
         show_trajectory=False,
-        show_probabilities=False,
+        show_detection_measures=False,
     )
     assert fig1 is not None
     plt.close(fig1)
@@ -330,7 +330,7 @@ def test_plot_optimization_dashboard_selective_plots():
         show_gradients=False,
         show_parameters=False,
         show_trajectory=False,
-        show_probabilities=True,
+        show_detection_measures=True,
     )
     assert fig2 is not None
     plt.close(fig2)
@@ -345,7 +345,7 @@ def test_plot_optimization_dashboard_no_plots_raises():
     callback(
         trainable_params_initial=[1.0],
         trainable_params_final=[],
-        prob_with=0.7, prob_without=0.3, metric=0.4
+        detection_with=0.7, detection_without=0.3, metric=0.4
     )
 
     # Should raise ValueError when all plots disabled
@@ -356,7 +356,7 @@ def test_plot_optimization_dashboard_no_plots_raises():
             show_gradients=False,
             show_parameters=False,
             show_trajectory=False,
-            show_probabilities=False,
+            show_detection_measures=False,
         )
 
 

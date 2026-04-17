@@ -67,7 +67,7 @@ experiment = SingleQubitExperiment(exp_params, params)
 
 # Run single simulation
 results = experiment.run_simulation()
-print(f"Initial contrast: {results.contrast:.6f}")
+print(f"Initial metric: {results.metric:.6f}")
 
 # Optimize rotations
 history = experiment.optimize_rotations(
@@ -316,7 +316,7 @@ experiment = SingleQubitExperiment(
 results = experiment.run_simulation()
 
 # Results contain:
-results.contrast              # Sensing contrast metric
+results.metric                # Sensing metric
 results.measurement_outcomes  # Measurement results at each time
 results.evolved_states        # Quantum states at measurement times
 results.expectation_values    # Observable expectations
@@ -326,7 +326,7 @@ results.expectation_values    # Observable expectations
 
 #### optimize_rotations
 
-Optimize rotation angles for maximum sensing contrast:
+Optimize rotation angles for maximum sensing metric:
 
 ```python
 history = experiment.optimize_rotations(
@@ -391,13 +391,13 @@ print(f"Optimal times: {results['optimal_times']}")
 print(f"Best metric: {results['best_metric']:.6f}")
 ```
 
-### Computing Sensing Contrast
+### Computing Sensing Metric
 
 ```python
-# Get current contrast
-contrast = experiment.get_sensing_contrast()
+# Get current metric
+metric = experiment.get_sensing_metric()
 
-# Contrast definition: C = |⟨O⟩_field - ⟨O⟩_no_field| / (⟨O⟩_field + ⟨O⟩_no_field)
+# Example metric definition: C = |⟨O⟩_field - ⟨O⟩_no_field| / (⟨O⟩_field + ⟨O⟩_no_field)
 # where O is the measured observable
 ```
 
@@ -416,15 +416,15 @@ experiment = SingleQubitExperiment(exp_params, params)
 
 # 2. Initial evaluation
 initial_results = experiment.run_simulation()
-print(f"Initial contrast: {initial_results.contrast:.6f}")
+print(f"Initial metric: {initial_results.metric:.6f}")
 
 # 3. Optimize
 history = experiment.optimize_rotations(num_steps=100, learning_rate=0.05)
 
 # 4. Evaluate optimized
 final_results = experiment.run_simulation()
-print(f"Final contrast: {final_results.contrast:.6f}")
-print(f"Improvement: {final_results.contrast - initial_results.contrast:.6f}")
+print(f"Final metric: {final_results.metric:.6f}")
+print(f"Improvement: {final_results.metric - initial_results.metric:.6f}")
 ```
 
 ### Advanced Workflow with Multiple Optimizations
@@ -690,9 +690,9 @@ noise = NoiseConfiguration(
 
 ## Troubleshooting
 
-### Low Contrast
+### Low Metric
 
-**Problem:** Optimized contrast remains low
+**Problem:** Optimized metric remains low
 
 **Solutions:**
 1. Check measurement times - ensure they span the pulse timescale
@@ -706,13 +706,13 @@ noise = NoiseConfiguration(
 ideal_noise = NoiseConfiguration(relaxation=0.0, dephasing=0.0)
 exp_params_ideal = ExperimentalParameters(..., noise_config=ideal_noise)
 experiment_ideal = SingleQubitExperiment(exp_params_ideal, params)
-ideal_contrast = experiment_ideal.run_simulation().contrast
-print(f"Ideal contrast: {ideal_contrast:.6f}")
+ideal_metric = experiment_ideal.run_simulation().metric
+print(f"Ideal metric: {ideal_metric:.6f}")
 ```
 
 ### Optimization Not Converging
 
-**Problem:** Contrast oscillates or doesn't improve
+**Problem:** Metric oscillates or doesn't improve
 
 **Solutions:**
 1. Reduce learning rate

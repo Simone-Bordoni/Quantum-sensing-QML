@@ -132,7 +132,7 @@ class Gate(ABC):
     def __repr__(self, params = True) -> str:
         """String representation of gate."""
         if params & self.has_parameter():
-            return f"{self.name}[{self.target}](param={self._parameter.value:.4f})"
+            return f"{self.name}[{self.target}](param={self._parameter.value:.3f})"
         return f"{self.name}[{self.target}]"
 
 

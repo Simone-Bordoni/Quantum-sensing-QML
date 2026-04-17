@@ -26,7 +26,7 @@ def plot_optimization_dashboard(
     show_gradients: bool = True,
     show_parameters: bool = True,
     show_trajectory: bool = True,
-    show_probabilities: bool = True,
+    show_detection_measures: bool = True,
     figsize: Tuple[int, int] = (16, 18),
     save_path: Optional[str] = None,
     dpi: int = 300,
@@ -48,7 +48,7 @@ def plot_optimization_dashboard(
         show_metric: Display detection metric evolution plot when True
         show_gradients: Display gradient magnitude evolution plot when True
         show_parameters: Display parameter evolution plot when True
-        show_probabilities: Display detection probabilities plot
+        show_detection_measures: Display detection measures plot
         figsize: Figure size as ``(width, height)`` in inches (default: 16x18)
         save_path: Optional path to save the figure (e.g., ``'dashboard.pdf'``)
             If None, figure is displayed but not saved
@@ -71,7 +71,7 @@ def plot_optimization_dashboard(
         >>> # Selective plotting
         >>> fig = plot_optimization_dashboard(history,
         ...                                   show_gradients=False,
-        ...                                   show_probabilities=False)
+        ...                                   show_detection_measures=False)
     """
     # Count active plots to determine layout
     active_plots = [
@@ -79,7 +79,7 @@ def plot_optimization_dashboard(
         show_gradients,
         show_trajectory,
         show_parameters,
-        show_probabilities,
+        show_detection_measures,
     ]
     n_plots = sum(active_plots)
 
@@ -98,8 +98,8 @@ def plot_optimization_dashboard(
     history = optimization_callback.get_history()
     epochs = np.array(history["epochs"])
     metric_values = np.array(history["metric"])
-    prob_with = np.array(history["prob_with"])
-    prob_without = np.array(history["prob_without"])
+    detection_with = np.array(history["detection_with"])
+    detection_without = np.array(history["detection_without"])
 
     # Extract parameter arrays from tuple structure
     param_arrays = []
@@ -139,16 +139,16 @@ def plot_optimization_dashboard(
 
     # Extract reference values if provided
     reference_metric = None
-    reference_prob_with = None
-    reference_prob_without = None
+    reference_detection_with = None
+    reference_detection_without = None
     reference_params = None
 
     if reference_callback is not None:
         ref_history = reference_callback.get_history()
         if ref_history["metric"]:
             reference_metric = ref_history["metric"][0]
-            reference_prob_with = ref_history["prob_with"][0]
-            reference_prob_without = ref_history["prob_without"][0]
+            reference_detection_with = ref_history["detection_with"][0]
+            reference_detection_without = ref_history["detection_without"][0]
 
         if ref_history["trainable_params"]:
             # Extract reference params from tuple structure
@@ -229,30 +229,30 @@ def plot_optimization_dashboard(
         ax.legend(fontsize=9 if n_total_params > 4 else 10, ncol=2 if n_total_params > 6 else 1)
         ax.grid(True, alpha=0.3)
 
-    # Plot 4: Detection Probabilities Evolution
-    if show_probabilities:
+    # Plot 4: Detection Measures Evolution
+    if show_detection_measures:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
         plot_idx += 1
 
-        ax.plot(epochs, prob_with, "g-", linewidth=2, label="With Photon (Optimized)", alpha=0.8)
+        ax.plot(epochs, detection_with, "g-", linewidth=2, label="With Photon (Optimized)", alpha=0.8)
         ax.plot(
-            epochs, prob_without, "r-", linewidth=2, label="Without Photon (Optimized)", alpha=0.8
+            epochs, detection_without, "r-", linewidth=2, label="Without Photon (Optimized)", alpha=0.8
         )
 
         # Add reference benchmarks if available
-        if reference_prob_with is not None:
+        if reference_detection_with is not None:
             ax.axhline(
-                y=reference_prob_with,
+                y=reference_detection_with,
                 color="green",
                 linestyle="--",
                 linewidth=2,
                 alpha=0.6,
                 label="With Photon (Reference)",
             )
-        if reference_prob_without is not None:
+        if reference_detection_without is not None:
             ax.axhline(
-                y=reference_prob_without,
+                y=reference_detection_without,
                 color="red",
                 linestyle="--",
                 linewidth=2,
@@ -261,8 +261,8 @@ def plot_optimization_dashboard(
             )
 
         ax.set_xlabel("Epoch", fontsize=12)
-        ax.set_ylabel("Detection Probability", fontsize=12)
-        ax.set_title("Detection Probabilities Evolution", fontsize=14)
+        ax.set_ylabel("Detection Measure", fontsize=12)
+        ax.set_title("Detection Measures Evolution", fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 
@@ -351,7 +351,7 @@ def plot_optimization_dashboard(
     return fig
 
 
-def plot_contrast_evolution(
+def plot_metric_evolution(
     optimization_callback: OptimizationCallback,
     reference_callback: Optional[OptimizationCallback] = None,
     figsize: Tuple[int, int] = (10, 6),
@@ -359,7 +359,7 @@ def plot_contrast_evolution(
     dpi: int = 300,
 ) -> Figure:
     """
-    Create a standalone plot of the metric'sevolution.
+    Create a standalone plot of metric evolution.
 
     Args:
         optimization_callback: OptimizationCallback from ``optimize_rotations()``
@@ -654,13 +654,13 @@ def plot_parameter_landscape(
     )
     ax1.legend(loc="upper right", fontsize=10)
 
-    # Plot 2: Detection probability landscape
+    # Plot 2: Detection measure landscape
     im2 = ax2.contourf(P1_deg, P2_deg, detection_map, levels=30, cmap="plasma")
     ax2.set_xlabel("θ₁ (degrees)", fontsize=12)
     ax2.set_ylabel("θ₂ (degrees)", fontsize=12)
-    ax2.set_title("Detection Probability Landscape (with photon)", fontsize=14)
+    ax2.set_title("Detection Measure Landscape (with photon)", fontsize=14)
     ax2.grid(True, alpha=0.3)
-    cbar2 = plt.colorbar(im2, ax=ax2, label="Detection Probability")
+    cbar2 = plt.colorbar(im2, ax=ax2, label="Detection Measure")
 
     # Mark center point
     ax2.plot(
@@ -743,7 +743,7 @@ Initial State:  {exp_params.initial_state.state_type.value}
 
 Landscape Statistics:
     • Metric range:       [{metric_map.min():.6f}, {metric_map.max():.6f}]  |  Variation:  {metric_map.max() - metric_map.min():.2e}
-  • Detection range:    [{detection_map.min():.6f}, {detection_map.max():.6f}]  |  Variation:  {detection_map.max() - detection_map.min():.2e}
+    • Detection measure range:    [{detection_map.min():.6f}, {detection_map.max():.6f}]  |  Variation:  {detection_map.max() - detection_map.min():.2e}
     • Maximum at:         θ₁ = {max_x:.2f}°,  θ₂ = {max_y:.2f}°,  Metric = {max_metric:.8f}
 """
 
@@ -780,7 +780,7 @@ def plot_time_interval_landscape(
 
     Creates a comprehensive visualization showing:
     1. Detection metric vs time interval
-    2. Detection probabilities (with and without photon) vs time interval
+    2. Detection measures (with and without photon) vs time interval
     3. (Optional) Number of measurements vs time interval
 
     Includes system information box showing:
@@ -793,8 +793,8 @@ def plot_time_interval_landscape(
         landscape_data: Dictionary from ``compute_time_interval_landscape()`` containing:
             - 'interval_vals': Array of time interval values
             - 'metric_vals': Array of metric values
-            - 'detection_with': Array of detection probabilities with photon
-            - 'detection_without': Array of detection probabilities without photon
+            - 'detection_with': Array of detection measures with photon
+            - 'detection_without': Array of detection measures without photon
             - 'n_measurements': Array of number of measurements per interval
             - 'mode': Computation mode ('continuous' or 'discrete')
             - 'batch_size': Batch size used
@@ -885,7 +885,7 @@ def plot_time_interval_landscape(
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="best", fontsize=10)
 
-    # Plot 2: Detection probabilities
+    # Plot 2: Detection measures
     if mode == "discrete":
         ax2.plot(
             interval_vals,
@@ -915,8 +915,8 @@ def plot_time_interval_landscape(
     ax2.axvline(optimal_interval, color="red", linestyle="--", alpha=0.7, linewidth=1.5)
 
     ax2.set_xlabel("Time Interval (Δt)", fontsize=12)
-    ax2.set_ylabel("Detection Probability", fontsize=12)
-    ax2.set_title("Detection Probabilities vs Time Interval", fontsize=14)
+    ax2.set_ylabel("Detection Measure", fontsize=12)
+    ax2.set_title("Detection Measures vs Time Interval", fontsize=14)
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc="best", fontsize=10)
 
@@ -1311,11 +1311,16 @@ def plot_time_evolution(
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
 
-    # Plot detection probabilities
-    if "detection_probability" in probabilities:
-        ax.plot(times, probabilities["detection_probability"], label="P_detect", linewidth=2, linestyle="-")
-    if "nondetection_probability" in probabilities:
-        ax.plot(times, probabilities["nondetection_probability"], label="P_nondetect", linewidth=2, linestyle="--")
+    # Plot detection measures (supports legacy probability keys).
+    if "detection_measure" in probabilities:
+        ax.plot(times, probabilities["detection_measure"], label="Detection measure", linewidth=2, linestyle="-")
+    elif "detection_probability" in probabilities:
+        ax.plot(times, probabilities["detection_probability"], label="Detection measure", linewidth=2, linestyle="-")
+
+    if "nondetection_measure" in probabilities:
+        ax.plot(times, probabilities["nondetection_measure"], label="No-detection measure", linewidth=2, linestyle="--")
+    elif "nondetection_probability" in probabilities:
+        ax.plot(times, probabilities["nondetection_probability"], label="No-detection measure", linewidth=2, linestyle="--")
 
     # Add cavity population on same y-axis if requested
     if show_cavity_population and cavity_population is not None:
@@ -1508,8 +1513,8 @@ def plot_sweep_results(
     # Title mapping for common result types
     title_map = {
         "metric_map": "Detection Metric",
-        "detection_map": "P(detection | with photon)",
-        "detection_without_map": "P(detection | without photon)",
+        "detection_map": "Detection measure (with photon)",
+        "detection_without_map": "Detection measure (without photon)",
     }
 
     # Format parameter names for axis labels
@@ -1536,10 +1541,7 @@ def plot_sweep_results(
 
         # Use data-aware levels for metric values so small/negative ranges are visible.
         if user_contour_levels is None:
-            is_probability_like = result_key.startswith("p") or result_key in {
-                "detection_map",
-                "detection_without_map",
-            }
+            is_probability_like = result_key.startswith("p")
             if is_probability_like:
                 contour_levels_local = probability_default_levels
             else:
@@ -1554,7 +1556,7 @@ def plot_sweep_results(
             contour_levels_local = user_contour_levels
 
         if user_label_levels is None:
-            if result_key.startswith("p") or result_key in {"detection_map", "detection_without_map"}:
+            if result_key.startswith("p"):
                 label_levels_local = probability_default_labels
             else:
                 label_levels_local = np.linspace(contour_levels_local[0], contour_levels_local[-1], 6)
@@ -1566,11 +1568,12 @@ def plot_sweep_results(
         # Filled contours
         cf = ax.contourf(Param1, Param2, result_T, levels=contour_levels_local, cmap=cmap_local)
         cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
-        is_probability_result = result_key.startswith("p") or result_key in {
-            "detection_map",
-            "detection_without_map",
-        }
-        cbar.set_label("Probability" if is_probability_result else "Value", fontsize=10)
+        is_probability_result = result_key.startswith("p")
+        if result_key in {"detection_map", "detection_without_map"}:
+            cbar_label = "Detection Measure"
+        else:
+            cbar_label = "Probability" if is_probability_result else "Value"
+        cbar.set_label(cbar_label, fontsize=10)
 
         # Line contours with labels
         cs = ax.contour(Param1, Param2, result_T, levels=label_levels_local, colors="k", linewidths=0.2)

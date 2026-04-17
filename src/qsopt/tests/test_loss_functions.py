@@ -90,10 +90,10 @@ class TestDetectionMetricInit:
         assert dm.multiple_measurement_name == "list aggregation"
         assert dm.batching_name == "trace distance batching"
 
-    def test_max_distance(self):
-        """Test 'max distance' criterion."""
-        dm = DetectionMetric(n_qubits=2, detection_criterion="max distance")
-        assert dm.detection_name == "max distance"
+    def test_max_computational_distance(self):
+        """Test 'max computational distance' criterion."""
+        dm = DetectionMetric(n_qubits=2, detection_criterion="max computational distance")
+        assert dm.detection_name == "max computational distance"
         assert dm.multiple_measurement_name == "list aggregation"
 
     def test_invalid_criterion_raises(self):

@@ -15,7 +15,7 @@ This library focuses on **quantum sensing optimization** through gradient-based 
 - **Custom quantum circuits**: Define any parameterized circuit for state preparation and readout
 - **Protocol optimization**: Maximize photon detection sensitivity in dispersive readout schemes
 - **Noise-aware optimization**: Realistic decoherence models with relaxation and dephasing
-- **Parameter landscape analysis**: Systematic exploration of sensing contrast vs circuit parameters
+- **Parameter landscape analysis**: Systematic exploration of the metric vs circuit parameters
 - **Gradient-based optimization**: Leverage JAX automatic differentiation for efficient training
 - **Flexible detection metrics**: Custom detection criteria for different sensing tasks
 
@@ -44,7 +44,7 @@ This library focuses on **quantum sensing optimization** through gradient-based 
 
 **Sensing Optimization Workflow:**
 ```
-Initial State |ψ₀⟩ → Initial Circuit → H(t) Evolution → Final Circuit → Measurement → Contrast
+Initial State |ψ₀⟩ → Initial Circuit → H(t) Evolution → Final Circuit → Measurement → Metric
                            ↓                                    ↓                        ↓
                     Gradient ← ← ← ← ← ← ← JAX Autodiff ← ← ← ← ← ← ← ← ← ← ← ← ← ←┘
                            ↓
@@ -144,8 +144,8 @@ experiment = Experiment(
 
 # Run single simulation
 callback = experiment.run_simulation(batch_size=1)
-print(f"Detection probability with photon: {callback.history['prob_with'][-1]:.6f}")
-print(f"Sensing metric: {callback.history['metric'][-1]:.6f}")
+print(f"Detection measure with photon: {callback.history['detection_with'][-1]:.6f}")
+print(f"Metric value: {callback.history['metric'][-1]:.6f}")
 
 # Optimize circuit parameters
 callback = experiment.optimize_rotations(num_steps=100, verbose=True)
@@ -270,7 +270,7 @@ Quantum-sensing-QML/
 │   │       └── quantum_utils.py        # Hamiltonian construction utilities
 │   ├── utils/                          # Utility modules
 │   │   ├── results.py                  # TimeEvolutionResults / SweepResults containers
-│   │   ├── visualization.py            # Plotting (contrast, dashboard, trajectory)
+│   │   ├── visualization.py            # Plotting (metric, dashboard, trajectory)
 │   │   ├── landscape_analysis.py       # Parameter landscape sweep tools
 │   │   └── experiment_loader.py        # Experiment serialization utilities
 │   └── tests/                          # Test suite (16 files, 301 tests, 0 failures)
@@ -376,7 +376,7 @@ This library has been developed for and applied to:
 
 **Primary Applications:**
 - **Dark Matter Detection**: Optimizing quantum sensors for axion searches via dispersive readout
-- **Protocol Optimization**: Maximizing sensing contrast through gradient-based parameter tuning
+- **Protocol Optimization**: Maximizing metric's value through gradient-based parameter tuning
 - **Noise Resilience Analysis**: Understanding optimization benefits under realistic decoherence
 - **Parameter Space Studies**: Exploring rotation angle landscapes for optimal sensing
 - **Benchmarking**: Quantifying improvements over standard π/2 rotation protocols

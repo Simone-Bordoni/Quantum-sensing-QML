@@ -8,7 +8,7 @@ metric values, and trainable parameters.
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -19,7 +19,8 @@ class OptimizationCallback:
     This callback tracks:
     - Detection measures (with and without photon)
     - Metric (optimization objective)
-    - Trainable parameters at each epoch
+    - Trainable parameters (initial and final circuit trainable parameters)
+    - Gradients and optimizer state
     - Best parameters found (maximizing the metric)
 
     Attributes:
@@ -47,9 +48,11 @@ class OptimizationCallback:
         self.history: Dict[str, List[Any]] = {
             "epochs": [],
             "metric": [],
-            "prob_with": [],
-            "prob_without": [],
+            "detection_with": [],
+            "detection_without": [],
             "trainable_params": [],
+            "optimizer_state": [],
+            "grads": [],
         }
 
         # Best tracking (maximize the metric)
@@ -61,15 +64,22 @@ class OptimizationCallback:
         self.converged: bool = False
         self.final_grad_norm: Optional[float] = None
 
+    @staticmethod
+    def _to_object_array(values: List[Any]) -> np.ndarray:
+        """Convert a Python list to a 1D object array for NPZ serialization."""
+        arr = np.empty(len(values), dtype=object)
+        arr[:] = values
+        return arr
+
     def __call__(
         self,
         trainable_params_initial: Optional[list] = None,
         trainable_params_final: Optional[list] = None,
-        prob_with: float = 0.0,
-        prob_without: float = 0.0,
+        detection_with: float = 0.0,
+        detection_without: float = 0.0,
         metric: float = 0.0,
-        trainable_params: Optional[tuple] = None,  # Backward compatibility
-        **kwargs
+        optimizer_state: Any = None,
+        grads: Any = None,
     ) -> None:
         """
         Record metrics from current optimization step.
@@ -80,30 +90,40 @@ class OptimizationCallback:
         Args:
             trainable_params_initial: Initial circuit trainable parameters (list of values)
             trainable_params_final: Final circuit trainable parameters (list of values)
-            prob_with: Detection measure with photon interaction
-            prob_without: Detection measure without photon interaction
+            detection_with: Detection measure with photon interaction
+            detection_without: Detection measure without photon interaction
             metric: Optimization metric value
-            trainable_params: (Deprecated) Tuple of (initial, final) params for backward compatibility
-            **kwargs: Additional keyword arguments (for backward compatibility)
+            optimizer_state: Optimizer state
+            grads: Gradients at current step
         """
         self.epoch += 1
         metric_value = float(metric)
 
-        # Handle backward compatibility: if trainable_params tuple is provided, unpack it
-        if trainable_params is not None:
-            trainable_params_initial, trainable_params_final = trainable_params
+        # Store trainable parameters as plain Python float lists for robust serialization.
+        initial_values = (
+            np.asarray(trainable_params_initial, dtype=float).reshape(-1).tolist()
+            if trainable_params_initial is not None
+            else []
+        )
+        final_values = (
+            np.asarray(trainable_params_final, dtype=float).reshape(-1).tolist()
+            if trainable_params_final is not None
+            else []
+        )
 
         # Package parameters as tuple for internal storage
-        trainable_params = (trainable_params_initial, trainable_params_final)
+        trainable_params = (initial_values, final_values)
 
         # Save history every N epochs
         if self.epoch % self.save_every == 0:
             self.history["epochs"].append(self.epoch)
             self.history["metric"].append(metric_value)
-            self.history["prob_with"].append(float(prob_with))
-            self.history["prob_without"].append(float(prob_without))
+            self.history["detection_with"].append(float(detection_with))
+            self.history["detection_without"].append(float(detection_without))
             # Save a deep copy of trainable_params to preserve state
             self.history["trainable_params"].append(copy.deepcopy(trainable_params))
+            self.history["optimizer_state"].append(copy.deepcopy(optimizer_state))
+            self.history["grads"].append(copy.deepcopy(grads))
 
         # Track best parameters if enabled (maximize the metric)
         if self.save_best and metric_value > self.best_metric:
@@ -112,8 +132,8 @@ class OptimizationCallback:
             self.best_metrics = {
                 "epoch": self.epoch,
                 "metric": metric_value,
-                "prob_with": float(prob_with),
-                "prob_without": float(prob_without),
+                "detection_with": float(detection_with),
+                "detection_without": float(detection_without),
             }
 
     def get_best_trainable_params(self) -> Optional[tuple[list, list]]:
@@ -146,6 +166,64 @@ class OptimizationCallback:
         """
         return self.history
 
+    def get_params(self, epoch: int = -1) -> Tuple[list, list, int]:
+        """
+        Get the trainable parameters from the specified epoch.
+
+        Args:
+            epoch: Index of the epoch to retrieve parameters from. Default is -1 (last epoch).
+
+        Returns:
+            Tuple of (initial_circuit_params, final_circuit_params) from the specified epoch.
+        Raises:
+            ValueError if no history recorded yet or if the epoch index is out of bounds.
+        """
+        if self.history["trainable_params"] == []:
+            raise ValueError("No trainable parameters saved in history.")
+        if epoch < 0:
+            epoch = self.history["epochs"][-1] + epoch + 1
+        if not (1 <= epoch <= self.history["epochs"][-1]):
+            raise ValueError("Epoch index is out of bounds.")
+        for idx, ep in enumerate(self.history["epochs"]):
+            diff = abs(ep - epoch)
+            if 0 <= diff < self.save_every:
+                if diff!=0:
+                    print(f"Epoch {epoch} requested but not present, returning parameters saved from epoch {ep} (diff={diff})")
+                break 
+            
+        initial_params, final_params = self.history["trainable_params"][idx]
+        return copy.deepcopy(initial_params), copy.deepcopy(final_params), ep
+
+    def get_opt_state(self, epoch: int = -1) -> Tuple[Any, Any]:
+        """
+        Get optimizer state and gradients from the specified epoch.
+
+        Args:
+            epoch: Index of the epoch to retrieve optimizer state from. Default is -1 (last epoch).
+
+        Returns:
+            Tuple of (optimizer_state, grads) from the specified epoch.
+        Raises:
+            ValueError if no history recorded yet or if the epoch index is out of bounds.
+        """
+        if self.history["optimizer_state"] == []:
+            raise ValueError("No optimizer state saved in history.")
+        if epoch < 0:
+            epoch = self.history["epochs"][-1] + epoch + 1
+        if not (1 <= epoch <= self.history["epochs"][-1]):
+            raise ValueError("Epoch index is out of bounds.")
+        for idx, ep in enumerate(self.history["epochs"]):
+            diff = abs(ep - epoch)
+            if 0 <= diff < self.save_every:
+                if diff != 0:
+                    print(f"Epoch {epoch} requested but not present, returning optimizer state saved from epoch {ep} (diff={diff})")
+                break
+
+        optimizer_state = copy.deepcopy(self.history["optimizer_state"][idx])
+        grads_history = self.history.get("grads", [])
+        grads = copy.deepcopy(grads_history[idx]) if len(grads_history) > idx else None
+        return optimizer_state, grads
+
     def set_convergence_info(self, converged: bool, final_grad_norm: float) -> None:
         """
         Set convergence information at the end of optimization.
@@ -162,7 +240,8 @@ class OptimizationCallback:
         Save optimization results to an NPZ file.
 
         The saved file contains all history arrays and best parameters.
-        Note: trainable_params objects are converted to parameter arrays for NPZ storage.
+        It also includes serialized optimizer state and trainable-parameter histories
+        to support hot-start continuation across Python sessions.
 
         Args:
             filepath: Path to save the NPZ file (e.g., 'results.npz')
@@ -179,35 +258,38 @@ class OptimizationCallback:
         # Create directory if it doesn't exist
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert trainable_params to parameter arrays for saving
-        param_arrays = []
-        for tp_tuple in self.history["trainable_params"]:
-            # tp_tuple is (initial_params, final_params)
-            initial_params, final_params = tp_tuple
-            # Flatten both lists into a single array
-            all_params = [float(p) for p in initial_params] + [float(p) for p in final_params]
-            param_arrays.append(np.array(all_params))
+        initial_history = [list(params[0]) for params in self.history["trainable_params"]]
+        final_history = [list(params[1]) for params in self.history["trainable_params"]]
+        final_grad_norm_value = np.nan if self.final_grad_norm is None else float(self.final_grad_norm)
 
         # Prepare data for saving
         save_dict = {
             "epochs": np.array(self.history["epochs"]),
             "metric": np.array(self.history["metric"]),
-            "prob_with": np.array(self.history["prob_with"]),
-            "prob_without": np.array(self.history["prob_without"]),
-            "parameters": np.array(param_arrays) if param_arrays else np.array([]),
+            "detection_with": np.array(self.history["detection_with"]),
+            "detection_without": np.array(self.history["detection_without"]),
+            "trainable_params_initial_history": self._to_object_array(initial_history),
+            "trainable_params_final_history": self._to_object_array(final_history),
+            "optimizer_state_history": self._to_object_array(self.history["optimizer_state"]),
+            "grads_history": self._to_object_array(self.history["grads"]),
+            "save_every": np.array(self.save_every),
+            "save_best": np.array(self.save_best),
+            "epoch": np.array(self.epoch),
+            "converged": np.array(self.converged),
+            "final_grad_norm": np.array(final_grad_norm_value),
         }
 
         # Add best parameters if available
         if self.best_trainable_params is not None:
             initial_best, final_best = self.best_trainable_params
-            all_best = [float(p) for p in initial_best] + [float(p) for p in final_best]
-            save_dict["best_parameters"] = np.array(all_best)
+            save_dict["best_initial_params"] = np.array(initial_best, dtype=float) 
+            save_dict["best_final_params"] = np.array(final_best, dtype=float)
             save_dict["best_metric"] = np.array(self.best_metric)
 
             if self.best_metrics is not None:
                 save_dict["best_epoch"] = np.array(self.best_metrics["epoch"])
-                save_dict["best_prob_with"] = np.array(self.best_metrics["prob_with"])
-                save_dict["best_prob_without"] = np.array(self.best_metrics["prob_without"])
+                save_dict["best_detection_with"] = np.array(self.best_metrics["detection_with"])
+                save_dict["best_detection_without"] = np.array(self.best_metrics["detection_without"])
 
         # Save to NPZ file
         np.savez(filepath, **save_dict)
@@ -231,8 +313,92 @@ class OptimizationCallback:
             >>> plt.ylabel('Metric')
             >>> plt.show()
         """
-        data = np.load(filepath)
+        data = np.load(filepath, allow_pickle=True)
         return {key: data[key] for key in data.files}
+
+    @classmethod
+    def load_callback(cls, filepath: str) -> "OptimizationCallback":
+        """
+        Reconstruct a callback object from a saved NPZ file.
+
+        Args:
+            filepath: Path to the saved NPZ file.
+
+        Returns:
+            OptimizationCallback populated with history, best metrics, and optimizer state.
+        """
+        data = cls.load(filepath)
+
+        save_every = int(np.asarray(data.get("save_every", np.array(1))).item())
+        save_best = bool(np.asarray(data.get("save_best", np.array(True))).item())
+        callback = cls(save_every=save_every, save_best=save_best)
+
+        callback.history["epochs"] = np.asarray(data.get("epochs", np.array([])), dtype=int).tolist()
+        callback.history["metric"] = np.asarray(data.get("metric", np.array([])), dtype=float).tolist()
+        callback.history["detection_with"] = np.asarray(
+            data.get("detection_with", np.array([])), dtype=float
+        ).tolist()
+        callback.history["detection_without"] = np.asarray(
+            data.get("detection_without", np.array([])), dtype=float
+        ).tolist()
+
+        if (
+            "trainable_params_initial_history" in data
+            and "trainable_params_final_history" in data
+        ):
+            initial_history = data["trainable_params_initial_history"].tolist()
+            final_history = data["trainable_params_final_history"].tolist()
+            callback.history["trainable_params"] = [
+                (
+                    np.asarray(initial_params, dtype=float).reshape(-1).tolist(),
+                    np.asarray(final_params, dtype=float).reshape(-1).tolist(),
+                )
+                for initial_params, final_params in zip(initial_history, final_history)
+            ]
+        else:
+            callback.history["trainable_params"] = []
+
+        if "optimizer_state_history" in data:
+            callback.history["optimizer_state"] = data["optimizer_state_history"].tolist()
+        else:
+            callback.history["optimizer_state"] = [None] * len(callback.history["epochs"])
+
+        if "grads_history" in data:
+            callback.history["grads"] = data["grads_history"].tolist()
+        else:
+            callback.history["grads"] = [None] * len(callback.history["epochs"])
+
+        callback.epoch = int(
+            np.asarray(data.get("epoch", np.array(len(callback.history["epochs"])))).item()
+        )
+        callback.converged = bool(np.asarray(data.get("converged", np.array(False))).item())
+
+        final_grad_norm_value = float(np.asarray(data.get("final_grad_norm", np.array(np.nan))).item())
+        callback.final_grad_norm = None if np.isnan(final_grad_norm_value) else final_grad_norm_value
+
+        if "best_metric" in data:
+            callback.best_metric = float(np.asarray(data["best_metric"]).item())
+
+        if "best_initial_params" in data and "best_final_params" in data:
+            callback.best_trainable_params = (
+                np.asarray(data["best_initial_params"], dtype=float).reshape(-1).tolist(),
+                np.asarray(data["best_final_params"], dtype=float).reshape(-1).tolist(),
+            )
+
+        if (
+            "best_epoch" in data
+            and "best_metric" in data
+            and "best_detection_with" in data
+            and "best_detection_without" in data
+        ):
+            callback.best_metrics = {
+                "epoch": int(np.asarray(data["best_epoch"]).item()),
+                "metric": float(np.asarray(data["best_metric"]).item()),
+                "detection_with": float(np.asarray(data["best_detection_with"]).item()),
+                "detection_without": float(np.asarray(data["best_detection_without"]).item()),
+            }
+
+        return callback
 
     def reset(self) -> None:
         """
@@ -244,9 +410,11 @@ class OptimizationCallback:
         self.history = {
             "epochs": [],
             "metric": [],
-            "prob_with": [],
-            "prob_without": [],
+            "detection_with": [],
+            "detection_without": [],
             "trainable_params": [],
+            "optimizer_state": [],
+            "grads": [],
         }
         self.best_trainable_params = None
         self.best_metric = -float("inf")
@@ -302,9 +470,9 @@ class OptimizationCallback:
 
         # Show metrics (best for optimization, current for simulation)
         if self.best_metrics is not None:
-            lines.append("  Detection Probabilities:")
-            lines.append(f"     P(with photon):    {self.best_metrics['prob_with']:.6f}")
-            lines.append(f"     P(without photon): {self.best_metrics['prob_without']:.6f}")
+            lines.append("  Detection Measures:")
+            lines.append(f"     With photon:    {self.best_metrics['detection_with']:.6f}")
+            lines.append(f"     Without photon: {self.best_metrics['detection_without']:.6f}")
             lines.append(f"     Metric:            {self.best_metrics['metric']:.6f}")
 
         return "\n".join(lines)

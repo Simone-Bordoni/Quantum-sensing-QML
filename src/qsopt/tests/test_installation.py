@@ -134,7 +134,7 @@ class TestCoreImports:
         """Test visualization module imports."""
         try:
             from qsopt.utils.visualization import (
-                plot_contrast_evolution,
+                plot_metric_evolution,
                 plot_optimization_dashboard,
                 plot_parameter_trajectory,
             )
@@ -412,13 +412,13 @@ class TestTopLevelImports:
     def test_toplevel_visualization(self):
         """Test top-level visualization imports."""
         from qsopt import (
-            plot_contrast_evolution,
+            plot_metric_evolution,
             plot_optimization_dashboard,
             plot_parameter_trajectory,
         )
 
         assert plot_optimization_dashboard is not None
-        assert plot_contrast_evolution is not None
+        assert plot_metric_evolution is not None
         assert plot_parameter_trajectory is not None
 
 

@@ -11,6 +11,7 @@ __author__ = "Simone Bordoni, Nathan Campioni"
 __email__ = "simone.bordoni@uniroma1.it, nathan.campioni@gmail.com"
 
 from .core.callback import OptimizationCallback
+from .core.circuit import QuantumCircuit, create_ry_circuit
 from .core.experiment import Experiment
 from .core.loss_functions import DetectionMetric
 
@@ -19,15 +20,17 @@ from .core.experimental_parameters import (
     ExperimentalParameters,
     InitialStateConfig,
     InitialStateType,
+    InteractionType,
     MeasurementProtocol,
     NoiseConfiguration,
     PhysicalConstants,
+    QubitInteraction,
     SystemDimensions,
 )
 # TrainableParameters has been removed in favor of circuit-based parameter management
 
 from .utils.visualization import (
-    plot_contrast_evolution,
+    plot_metric_evolution,
     plot_optimization_dashboard,
     plot_parameter_trajectory,
 )

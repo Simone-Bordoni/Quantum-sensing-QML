@@ -6,7 +6,7 @@ Complete guide to plotting and visualization tools for quantum sensing optimizat
 
 The visualization module provides:
 - **Optimization dashboards** with multi-panel displays
-- **Contrast evolution** tracking over training
+- **Metric evolution** tracking over training
 - **Parameter trajectory** visualization
 - **Measurement landscape** plots
 - **Pulse shape** visualization with measurement markers
@@ -98,17 +98,17 @@ fig = plot_optimization_dashboard(
 plt.show()
 ```
 
-### plot_contrast_evolution
+### plot_metric_evolution
 
-Track sensing contrast over optimization steps.
+Track sensing metric over optimization steps.
 
 ```python
-plot_contrast_evolution(
+plot_metric_evolution(
     optimization_callback: Dict,                   # Optimization history
     reference_callback: Optional[Dict] = None,     # Optional reference
     figsize: Tuple[int, int] = (10, 6),           # Figure size
     xlabel: str = "Optimization Step",             # X-axis label
-    ylabel: str = "Sensing Contrast",              # Y-axis label
+    ylabel: str = "Sensing Metric",                # Y-axis label
     title: Optional[str] = None,                   # Custom title
     show_final_value: bool = True,                 # Annotate final value
     color: str = 'blue',                           # Line color
@@ -120,10 +120,10 @@ plot_contrast_evolution(
 ```python
 history = experiment.optimize_rotations(num_steps=150, learning_rate=0.05)
 
-fig = plot_contrast_evolution(
+fig = plot_metric_evolution(
     optimization_callback=history,
     show_final_value=True,
-    title="Contrast Optimization",
+    title="Metric Optimization",
     color='darkblue'
 )
 plt.show()
@@ -225,7 +225,7 @@ plt.show()
 
 ### plot_time_interval_landscape
 
-Visualize contrast as function of measurement interval.
+Visualize metric as function of measurement interval.
 
 ```python
 plot_time_interval_landscape(
@@ -300,29 +300,29 @@ import numpy as np
 
 def plot_parameter_landscape_2d(experiment, param1_name, param2_name, 
                                  param1_range, param2_range, resolution=20):
-    """Create 2D heatmap of contrast over parameter space."""
+    """Create 2D heatmap of metric over parameter space."""
     
     # Create grid
     p1_values = np.linspace(param1_range[0], param1_range[1], resolution)
     p2_values = np.linspace(param2_range[0], param2_range[1], resolution)
-    contrast_grid = np.zeros((resolution, resolution))
+    metric_grid = np.zeros((resolution, resolution))
     
-    # Evaluate contrast at each point
+    # Evaluate metric at each point
     for i, p1 in enumerate(p1_values):
         for j, p2 in enumerate(p2_values):
             params = {param1_name: p1, param2_name: p2}
             experiment.trainable_params.set_parameter_dict(params)
             results = experiment.run_simulation()
-            contrast_grid[j, i] = results.contrast
+            metric_grid[j, i] = results.metric
     
     # Plot
     fig, ax = plt.subplots(figsize=(10, 8))
-    im = ax.contourf(p1_values, p2_values, contrast_grid, levels=20, cmap='RdYlGn')
+    im = ax.contourf(p1_values, p2_values, metric_grid, levels=20, cmap='RdYlGn')
     ax.set_xlabel(f'{param1_name} (rad)', fontsize=12)
     ax.set_ylabel(f'{param2_name} (rad)', fontsize=12)
     ax.set_title('Parameter Landscape', fontsize=14)
     cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label('Contrast', fontsize=12)
+    cbar.set_label('Metric', fontsize=12)
     
     return fig
 
@@ -348,14 +348,14 @@ def plot_convergence_analysis(history, window=10):
     
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # Panel 1: Contrast improvement rate
+    # Panel 1: Metric improvement rate
     metric_values = np.array(history['metric'])
     improvement_rate = np.diff(metric_values)
     
     axes[0, 0].plot(improvement_rate, linewidth=2)
     axes[0, 0].axhline(y=0, color='r', linestyle='--', alpha=0.5)
     axes[0, 0].set_xlabel('Step')
-    axes[0, 0].set_ylabel('Contrast Improvement')
+    axes[0, 0].set_ylabel('Metric Improvement')
     axes[0, 0].set_title('Improvement Rate per Step')
     axes[0, 0].grid(True, alpha=0.3)
     
@@ -443,7 +443,7 @@ def plot_noise_sensitivity(constants, dims, measurement, initial_state, params,
     final = [r['final_metric'] for r in results]
     improvement = [r['improvement'] for r in results]
     
-    # Panel 1: Contrast vs noise
+    # Panel 1: Metric vs noise
     axes[0].semilogx(rates, initial, 'o-', label='Initial', linewidth=2)
     axes[0].semilogx(rates, final, 's-', label='Optimized', linewidth=2)
     axes[0].set_xlabel('Relaxation Rate (rad/s)', fontsize=12)
@@ -528,7 +528,7 @@ fig.savefig('results.pdf', bbox_inches='tight')
 
 ```python
 # Add custom annotations to plots
-fig = plot_contrast_evolution(history)
+fig = plot_metric_evolution(history)
 ax = fig.axes[0]
 
 # Mark specific event
@@ -567,8 +567,8 @@ fig.savefig('optimization.svg', format='svg', bbox_inches='tight')
 ```python
 # Save multiple figures in loop
 for idx, history in enumerate(optimization_histories):
-    fig = plot_contrast_evolution(history, title=f'Run {idx+1}')
-    fig.savefig(f'run_{idx+1}_contrast.png', dpi=200, bbox_inches='tight')
+    fig = plot_metric_evolution(history, title=f'Run {idx+1}')
+    fig.savefig(f'run_{idx+1}_metric.png', dpi=200, bbox_inches='tight')
     plt.close(fig)  # Close to free memory
 ```
 
@@ -604,7 +604,7 @@ df.to_excel('optimization_data.xlsx', index=False)
 fig = plot_optimization_dashboard(history, figsize=(16, 9))
 
 # Publication (square or 4:3)
-fig = plot_contrast_evolution(history, figsize=(8, 6))
+fig = plot_metric_evolution(history, figsize=(8, 6))
 
 # Poster (large, high DPI)
 fig = plot_optimization_dashboard(history, figsize=(24, 18))
@@ -654,7 +654,7 @@ def interactive_parameter_plot(experiment, param_name, param_range):
         results = experiment.run_simulation()
         
         print(f"{param_name} = {value:.4f} rad")
-        print(f"Contrast = {results.contrast:.6f}")
+        print(f"Metric = {results.metric:.6f}")
 
 # Use it
 interactive_parameter_plot(experiment, 'theta1', (0, 2*np.pi))

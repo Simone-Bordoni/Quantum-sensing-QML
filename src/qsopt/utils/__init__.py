@@ -15,7 +15,7 @@ from .experiment_loader import load_experiment_from_report
 from .landscape_analysis import compute_theta1_theta2_landscape, compute_time_interval_landscape
 from .results import SweepResults, TimeEvolutionResults, load_results, save_results
 from .visualization import (
-    plot_contrast_evolution,
+    plot_metric_evolution,
     plot_optimization_dashboard,
     plot_parameter_landscape,
     plot_parameter_trajectory,
@@ -26,7 +26,7 @@ from .visualization import (
 
 __all__ = [
     "plot_optimization_dashboard",
-    "plot_contrast_evolution",
+    "plot_metric_evolution",
     "plot_parameter_trajectory",
     "plot_parameter_landscape",
     "plot_time_interval_landscape",

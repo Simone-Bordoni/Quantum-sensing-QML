@@ -248,13 +248,13 @@ class Experiment:
         Generate the measure and reset function
 
         The function operates on the rho of the full system 
-        and outputs a new rho and the detection probability
+        and outputs a new rho and the detection measure
         """
         
         measure_reset = self.operators['measure_reset']
         measure_reset_dag = self.operators['measure_reset_dag']
 
-        if self.detection_metric.detection_name == 'max distance':
+        if self.detection_metric.detection_name == 'max computational distance':
             def f_measure_reset(rho: qt.Qobj):
                 '''Measure probability of each qubit and reset the qubit as a mixture of all possible states'''
                 
@@ -580,7 +580,7 @@ class Experiment:
                                   to avoid recomputation
 
         Returns:
-            Detection probability as JAX array
+            Detection measure as JAX array
         """
 
         if args is None:
@@ -638,7 +638,7 @@ class Experiment:
                                   to avoid recomputation
 
         Returns:
-            Detection probability as JAX array
+            Detection measure as JAX array
         """
 
         if  not hasattr(self,'debug_times'):          #####################################
@@ -711,7 +711,7 @@ class Experiment:
         - Applies rotations to all qubits independently
         - Evolves under n-qubit Hamiltonian
         - Performs measurements (joint or individual)
-        - Computes detection probabilities with and without photon interaction
+        - Computes detection measures with and without photon interaction
 
         Args:
             batch_size: Number of random realizations to average over for measurement
@@ -722,7 +722,7 @@ class Experiment:
             OptimizationCallback: Callback containing simulation results with:
                 - Single epoch (epoch=1)
                 - Current parameter values
-                - Detection probabilities (prob_with, prob_without) averaged over batch
+                - Detection measures (detection_with, detection_without) averaged over batch
                 - Metric value averaged over batch
 
         Raises:
@@ -801,8 +801,8 @@ class Experiment:
             self.debug_times.append({ f'compute_probs' : t.time()})
 
         # Use detection metric's batching logic and then evaluate the configured metric.
-        # With the default setup this metric can coincide with contrast, but custom
-        # detection metrics may define any scalar objective.
+        # With the default setup this metric can coincide with a simple difference (contrast),
+        # but custom detection metrics may define any scalar objective.
         detect_with, detect_without = self.detection_metric.batching_logic(
             batch_with, batch_without
         )
@@ -817,8 +817,8 @@ class Experiment:
         callback(
             trainable_params_initial=self.trainable_params_initial,
             trainable_params_final=self.trainable_params_final,
-            prob_with=float(detect_with),
-            prob_without=float(detect_without),
+            detection_with=float(detect_with),
+            detection_without=float(detect_without),
             metric=float(metric_value),
         )
 
@@ -903,7 +903,7 @@ class Experiment:
             detection_with, detection_without = self.detection_metric.batching_logic(
                 [[rho_final_with]], [[rho_final_without]]
             )
-        elif detection_name == "max distance":
+        elif detection_name == "max computational distance":
             all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
             probs_with_vector = jnp.array([probs_with[state] for state in all_states], dtype=float)
             probs_without_vector = jnp.array([probs_without[state] for state in all_states], dtype=float)
@@ -990,12 +990,12 @@ class Experiment:
         unsupported_criteria = {
             "min fidelity",
             "max trace distance",
-            "max distance",
+            "max computational distance",
         }
         unsupported_batching = {
             "fidelity batching": "min fidelity",
             "trace distance batching": "max trace distance",
-            "max distance batching": "max distance",
+            "max computational distance batching": "max computational distance",
         }
 
         criterion = getattr(
@@ -1141,6 +1141,7 @@ class Experiment:
         optimizer = None,
         optimize_measurement_times: bool = False,
         renormalize_grad: Optional[Union[bool,float]] = False,
+        hot_start: bool = False
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -1164,6 +1165,8 @@ class Experiment:
                     If None defaults to 0.5.
             renormalize_grad: Radious of the sphere inside which the gradients are renormalized. (default: 1)
                     If False (0), does not renormalize the gradients.
+            hot_start: If True, continues optimization from the last parameters and optimizer state in the callback.
+                    If either the optimizer or the params are given they override the hot start values. (default: False) 
 
         Returns:
             OptimizationCallback with full optimization history, including
@@ -1189,9 +1192,34 @@ class Experiment:
         # Use provided callback or default
         if callback is None:
             callback = self.callback
+                
+        loaded_grads = None
 
-        # Reset callback at start of new optimization
-        callback.reset()
+        # Reset callback only at start of new optimizations
+        if hot_start:
+
+            if verbose: print("Starting hot start optimization, trying to load last parameters, optimizer state, and gradients from callback:")
+
+            if initial_values is not None:
+                warnings.warn("Starting parameters were given but where overwritten by the hot start.")
+            
+            loaded_initial, loaded_final, epoch = callback.get_params()
+            initial_values = [float(p) for p in np.asarray(loaded_initial, dtype=float).reshape(-1)] + [
+                float(p) for p in np.asarray(loaded_final, dtype=float).reshape(-1)
+            ]
+            if verbose: print("- Parameters LOADED")
+
+            opt_state, loaded_grads = callback.get_opt_state()
+            if verbose: print(
+                f"- Gradients LOADED\n- Optimizer state LOADED")
+
+            start_step = epoch
+            num_steps = start_step + num_steps
+            if verbose: print(f"Resuming from epoch {start_step}, running until epoch {num_steps}")
+            
+        else:
+            start_step = 0
+            callback.reset()
 
         # Count total trainable parameters from both circuits
         n_initial = self.initial_circuit.count_trainable_parameters()
@@ -1219,11 +1247,28 @@ class Experiment:
             initial_values = [float(p) for p in initial_params] + [float(p) for p in final_params]
 
         params = jnp.array(initial_values, dtype=float)
-
-        # Initialize optimizer (default to SGD with lr=0.5 if not provided)
+            
+        # Initialize optimizer for new optimizations (default to SGD with lr=0.5 if not provided)
         if optimizer is None:
             optimizer = optax.sgd(learning_rate=0.5)
-        opt_state = optimizer.init(params)
+        if not hot_start:
+            opt_state = optimizer.init(params)
+        elif opt_state is None:
+            warnings.warn(
+                "No optimizer state available for hot start; reinitializing optimizer state."
+            )
+            opt_state = optimizer.init(params)
+        elif loaded_grads is None:
+            warnings.warn(
+                "No gradients available for hot start; continuing from loaded optimizer state without pre-update. One epoch will be repeated."
+            )
+        else:
+            try:
+                updates, opt_state = optimizer.update(loaded_grads, opt_state, params)
+                params = optax.apply_updates(params, updates)
+            except Exception as e:
+                warnings.warn(f"An error occurred while using the hot start optimizer state to update the given optimizer, the optimizer state will be ignored and the optimizer will be reinitialized:\n {e}")
+                opt_state = optimizer.init(params)
 
         # Get initial state, solvers and detection metric
         rho0 = self._cached_initial_state
@@ -1372,10 +1417,10 @@ class Experiment:
         best_params = jnp.array(params)
 
         # Initialize variables
-        step = 0
+        step = start_step
         grad_norm = float("inf")
 
-        for step in range(num_steps):
+        for step in range(start_step, num_steps):
             if time_uncertainty > 0:
                 measurement_uncertainty_batch = jnp.asarray(
                     np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
@@ -1385,7 +1430,7 @@ class Experiment:
                 measurement_uncertainty_batch = zero_uncertainty_batch
 
             # Compute gradients using JAX autodiff
-            grads, (prob_with, prob_without, step_metric) = jax.grad(
+            grads, (detection_with, detection_without, step_metric) = jax.grad(
                 jitted_objective, has_aux=True
             )(params, base_measurement_times, measurement_uncertainty_batch)
 
@@ -1394,21 +1439,23 @@ class Experiment:
                 best_metric = step_metric
                 best_params = jnp.array(params)
 
-            # Call callback to track progress
-            callback(
-                trainable_params_initial=params[:n_initial], #self.initial_circuit.get_trainable_parameters(),
-                trainable_params_final=params[n_initial:], #self.final_circuit.get_trainable_parameters(),
-                prob_with=float(prob_with),
-                prob_without=float(prob_without),
-                metric=float(step_metric),
-            )
-
-            #Renormalize gradient to be between [-1,+1]
+            #Renormalize gradient inside a set interval, to avoid too large steps in the limited (2pi)^n_params parameter space.
             grad_norm = float(jnp.linalg.norm(grads))
-            if renormalize_grad != False:
+            if renormalize_grad and grad_norm > 0:
                 new_norm = jnp.tanh(grad_norm/renormalize_grad) * renormalize_grad
                 grads = grads * new_norm/grad_norm
                 grad_norm = new_norm
+
+            # Call callback to track progress
+            callback(
+                trainable_params_initial=params[:n_initial], 
+                trainable_params_final=params[n_initial:],
+                detection_with=float(detection_with),
+                detection_without=float(detection_without),
+                metric=float(step_metric),
+                optimizer_state=opt_state,
+                grads=grads,
+            )
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance):
@@ -1808,8 +1855,8 @@ class Experiment:
             # Store results (averaged over batch)
             # Clip values to ensure they're in valid ranges (handle numerical precision issues)
             metric_vals[i] = np.clip(callback.history["metric"][-1], 0.0, 1.0)
-            detection_with[i] = np.clip(callback.history["prob_with"][-1], 0.0, 1.0)
-            detection_without[i] = np.clip(callback.history["prob_without"][-1], 0.0, 1.0)
+            detection_with[i] = np.clip(callback.history["detection_with"][-1], 0.0, 1.0)
+            detection_without[i] = np.clip(callback.history["detection_without"][-1], 0.0, 1.0)
 
             # Progress update
             if verbose:
@@ -1866,7 +1913,7 @@ class Experiment:
         """
         Sweep over chi and gamma parameters for n-qubit system.
 
-        This method evaluates sensing contrast and detection probability across
+        This method evaluates the sensing metric and detection measure across
         a 2D grid of chi (dispersive coupling) and gamma (cavity decay rate)
         values. The experiment instance is reused with temporary parameter
         updates for efficiency, and the original state is restored after completion.
@@ -1988,8 +2035,8 @@ class Experiment:
 
                         # Store results (j,i indexing for correct orientation in plots)
                         metric_map[j, i] = callback.history["metric"][-1]
-                        detection_map[j, i] = callback.history["prob_with"][-1]
-                        detection_without_map[j, i] = callback.history["prob_without"][-1]
+                        detection_map[j, i] = callback.history["detection_with"][-1]
+                        detection_without_map[j, i] = callback.history["detection_without"][-1]
 
                     # Progress indicator
                     if verbose and (i * resolution_gamma + j + 1) % max(1, total_points // 10) == 0:

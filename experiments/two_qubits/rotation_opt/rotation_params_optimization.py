@@ -56,7 +56,7 @@ exp_params = ExperimentalParameters(
 
 initial_circuit = create_ry_circuit(n_qubits=2, theta_values=np.pi / 2)
 final_circuit = create_ry_circuit(n_qubits=2, theta_values=-np.pi / 2)
-detection_metric = DetectionMetric(n_qubits=2, detection_criterion='max distance')
+detection_metric = DetectionMetric(n_qubits=2, detection_criterion='max computational distance')
 optimizer = optax.sgd(learning_rate=5.0)
 
 experiment = Experiment(exp_params, initial_circuit, final_circuit, detection_metric=detection_metric)
