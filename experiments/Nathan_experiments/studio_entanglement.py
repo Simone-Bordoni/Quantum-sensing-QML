@@ -101,9 +101,14 @@ def create_std_experiment_setup(n_qubits, initial_circuit, final_circuit, detect
         chi=0.1
     ) for i in range(n_qubits) for j in range(n_qubits) if i!=j ]
 
+    if n_qubits == 1:
+        chi = 0.5 * gm
+    else:
+        chi = 2.0 * gm
+
     physical_constants = PhysicalConstants(
         n_qubits=n_qubits,
-        chi= 2.0*gm,
+        chi= chi,
         photon_cavity_coupling=gm,
         inverse_pulse_width=inverse_pulse_width,
         qubit_interactions=interactions
@@ -138,7 +143,7 @@ def create_std_experiment_setup(n_qubits, initial_circuit, final_circuit, detect
 n_qubits = 1
 input_circ_1qb = create_ry_circuit(n_qubits, np.pi/2)
 final_circ_1qb = create_ry_circuit(n_qubits, -np.pi/2)
-computation_dist_1qb = DetectionMetric(n_qubits=1, detection_criterion = 'max computational distance')
+computation_dist_1qb = DetectionMetric(n_qubits=n_qubits, detection_criterion = 'max computational distance')
 
 experiment_1qb = create_std_experiment_setup(n_qubits, initial_circuit=input_circ_1qb, final_circuit=final_circ_1qb, detection_metric=computation_dist_1qb)
 
