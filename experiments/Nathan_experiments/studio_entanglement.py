@@ -320,20 +320,20 @@ gc.collect()
 
 
 
-n_qubits = 2
-computation_dist_2qb = DetectionMetric(n_qubits=2, detection_criterion = 'max computational distance')
-exp_dict_2qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_2qb)
-run_experiment_ensemble(exp_dict_2qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
+# n_qubits = 2
+# computation_dist_2qb = DetectionMetric(n_qubits=2, detection_criterion = 'max computational distance')
+# exp_dict_2qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_2qb)
+# run_experiment_ensemble(exp_dict_2qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
 
 
-n_qubits = 3
-computation_dist_3qb = DetectionMetric(n_qubits=3, detection_criterion = 'max computational distance')
-exp_dict_3qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_3qb)
-run_experiment_ensemble(exp_dict_3qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
+# n_qubits = 3
+# computation_dist_3qb = DetectionMetric(n_qubits=3, detection_criterion = 'max computational distance')
+# exp_dict_3qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_3qb)
+# run_experiment_ensemble(exp_dict_3qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
 
 n_qubits = 5
 computation_dist_5qb = DetectionMetric(n_qubits=5, detection_criterion = 'max computational distance')
 exp_dict_5qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_5qb)
 run_experiment_ensemble(exp_dict_5qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
 
-log_training_event('END PROGRAM', '', 'All experiments completed')
+log_training_event('END PROGRAM', 'All experiments completed','-'*70 )
