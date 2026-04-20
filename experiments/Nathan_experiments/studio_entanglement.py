@@ -51,21 +51,21 @@ def resolve_home_folder():
 home_path = resolve_home_folder()
 save_folder = os.path.join(home_path, 'personal_results', 'studio_entanglement')
 error_folder = os.path.join(save_folder, 'errors')
-training_log_file = os.path.join(save_folder, 'log.txt')
+log_file = os.path.join(save_folder, 'log.txt')
 
 os.makedirs(save_folder, exist_ok=True)
 os.makedirs(error_folder, exist_ok=True)
 
 
-def log_training_event(event, experiment_name, details=""):
+def log_event(event, experiment_name, details=""):
     timestamp = datetime.now().isoformat(timespec="seconds")
     details_text = f" | {details}" if details else ""
-    with open(training_log_file, 'a', encoding='utf-8') as log_file:
+    with open(log_file, 'a', encoding='utf-8') as log_file:
         log_file.write(f"[{timestamp}] {event} | {experiment_name}{details_text}\n")
 
 
 
-log_training_event('START PROGRAM', '', 'Initializing experiments and training runs')
+log_event('START PROGRAM', '', 'Initializing experiments and training runs')
 
 
 def get_last_gradient_info(callback):
@@ -203,7 +203,7 @@ def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, 
     missing_steps = tot_steps
     history = None
 
-    log_training_event(
+    log_event(
         'TRAINING_START',
         exp_name,
         f"tot_steps={tot_steps} checkpoint_interval={checkpoint_interval} tolerance={tolerance}"
@@ -230,7 +230,7 @@ def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, 
 
         if history.converged:
             break
-        log_training_event(
+        log_event(
             'CHECKPOINT',
             exp_name,
             f"epoch={history.epoch} best_metric={history.best_metric} {get_last_gradient_info(history)}"
@@ -239,10 +239,10 @@ def run_experiment_with_checkpoints(experiment, tot_steps, checkpoint_interval, 
 
 
     if history is None:
-        log_training_event('TRAINING_END', exp_name, 'status=skipped reason=tot_steps<=0')
+        log_event('TRAINING_END', exp_name, 'status=skipped reason=tot_steps<=0')
         return None
 
-    log_training_event(
+    log_event(
         'TRAINING_END',
         exp_name,
         f"converged={history.converged} epoch={history.epoch} best_metric={history.best_metric} {get_last_gradient_info(history)}"
@@ -271,7 +271,7 @@ def run_experiment_ensemble(experiment_dict, tot_steps=1000, checkpoint_interval
             plt.close(fig)
 
         except Exception as e:
-            log_training_event('TRAINING_ERROR', exp_name, f'error={e}')
+            log_event('TRAINING_ERROR', exp_name, f'error={e}')
             #print errors to file
             with open(os.path.join(error_folder, 'error_log.txt'), 'a', encoding='utf-8') as f:
                 f.write(f'Error in experiment {exp_name}: {str(e)}\n')
@@ -289,10 +289,10 @@ def run_experiment_ensemble(experiment_dict, tot_steps=1000, checkpoint_interval
 
 #GIRO ESPERIMENTO DI CONTROLLO: 1 QUBIT, CIRCUITI 1 LAYER (ROT), METRICA: MAX COMPUTATIONAL DISTANCE
 
-log_training_event('TRAINING_START', 'control_1qb', 'num_steps=1000 tolerance=1e-9')
+log_event('TRAINING_START', 'control_1qb', 'num_steps=1000 tolerance=1e-9')
 history_ctrl = experiment_1qb.optimize_rotations(num_steps=1000, tolerance=1e-9, optimizer=optimizer, verbose=False)
 history_ctrl.save(os.path.join(save_folder, 'history_ctrl.pkl'))
-log_training_event(
+log_event(
     'TRAINING_END',
     'control_1qb',
     f"converged={history_ctrl.converged} epoch={history_ctrl.epoch} best_metric={history_ctrl.best_metric} {get_last_gradient_info(history_ctrl)}"
@@ -336,4 +336,4 @@ computation_dist_5qb = DetectionMetric(n_qubits=5, detection_criterion = 'max co
 exp_dict_5qb = build_experiment_dict(n_qubits=n_qubits, detection_metric=computation_dist_5qb)
 run_experiment_ensemble(exp_dict_5qb, tot_steps=10000, checkpoint_interval=200, tolerance=1e-9)
 
-log_training_event('END PROGRAM', 'All experiments completed','-'*70 )
+log_event('END PROGRAM', 'All experiments completed','-'*70 )
