@@ -353,7 +353,7 @@ class Experiment:
         return H_interaction
 
 
-    def _generate_hamiltonian(self, hamiltonian_terms: List[str] = None) -> None:
+    def _generate_hamiltonian(self) -> None:
         """
         Generate Hamiltonian for n-qubit system
         Creates:
@@ -366,25 +366,19 @@ class Experiment:
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
-        
 
         # Extract coupling constants
-        gm = self.experimental_params.photon_cavity_coupling
-        chi_list = self.experimental_params.chi  # List of [chi1, chi2, ... , chin]
-        sigma = self.experimental_params.inverse_pulse_width
+        n_cavities = self.experimental_params.n_cavities
         n_qubits = self.experimental_params.n_qubits
+        gm_dict = self.experimental_params.cavity_cavity_coupling
+        chi_dict = self.experimental_params.qubit_cavity_coupling  
+        sigma = self.experimental_params.inverse_pulse_width
 
-        # Extract individual chi values for each qubit
-        # Type narrowing: chi is always a list for two-qubit experiments
-        if isinstance(chi_list, list):
-            chi = chi_list
-        else:
-            # Should not reach here due to __init__ validation, but type checker needs this
-            chi = [chi_list] * n_qubits
+        # Extract time modulations
+        qubit_cavity_time_modulation = self.experimental_params.qubit_cavity_time_modulation
+        cavity_cavity_time_modulation = self.experimental_params.cavity_cavity_time_modulation
 
         # Get operators
-        a_in = self.operators["a_in"]
-        a_in_dag = self.operators["a_in_dag"]
         a = self.operators["a"]
         a_dag = self.operators["a_dag"]
 
@@ -397,29 +391,51 @@ class Experiment:
         # Time-dependent coupling function arguments
         args = {"sigma": sigma}
 
-        # Time-dependent cavity-field coupling Hamiltonian
-        # H_c = (i/2)√γ (a_in† a - a_in a†)
-        coupling_coeff = 1j / 2 * jnp.sqrt(gm)
-        H_coupling = qt.Qobj(coupling_coeff * (a_in_dag * a - a_in * a_dag))  # type: ignore
+        # Initialize Hamiltonian and Lindblad
+        H_time = []
+        H_const = []
+        L_interaction = []
 
-        # Dispersive qubit-resonator interaction Hamiltonians
+        # Cavity-Cavity coupling Hamiltonian and Lindblad terms
+        # H_c = (i/2)√γ (a_in† a - a_in a†)
+        for (cavity1, cavity2), gm in gm_dict.items():
+
+            coeff = 1j / 2 * jnp.sqrt(gm)
+            H_c_c_coupling = qt.Qobj(coeff * (a_dag[cavity1] * a[cavity2] - a[cavity1] * a_dag[cavity2]))  # type: ignore
+
+            if (cavity1, cavity2) in cavity_cavity_time_modulation.keys():
+                modulation_func = cavity_cavity_time_modulation[(cavity1, cavity2)]
+                H_time.append((H_c_c_coupling, modulation_func))
+                # Lindblad interaction operator
+                L_interaction.append(qt.QobjEvo([a[cavity1], gu], args=args) + np.sqrt(gm) * a[cavity2])
+
+            else:
+                H_const.append(H_c_c_coupling)
+        
+        # Qubit-Cavity coupling Hamiltonians terms
         # H_q = -Σᵢ χᵢ a†a σz_i
-        H_dispersive_list = [qt.Qobj(-chi[i] * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
-        H_dispersive = sum(H_dispersive_list)
+        for (qubit, cavity), chi in chi_dict.items():
+
+            coeff = -chi
+            H_q_c_coupling = qt.Qobj(coeff * (a_dag[cavity] * a[cavity] * sigma_z[qubit]))  # type: ignore
+
+            if (qubit, cavity) in qubit_cavity_time_modulation.keys():
+                modulation_func = qubit_cavity_time_modulation[(qubit, cavity)]
+                H_time.append((H_q_c_coupling, modulation_func))
+            else:
+                H_const.append(H_q_c_coupling)
 
         # Qubit-qubit interaction Hamiltonians
         # H_interaction = Σⱼ (χⱼ/2) σᵢ ⊗ σⱼ
         # where σᵢ and σⱼ can be σx, σy, or σz depending on interaction type
-        H_qubit_interaction = self._build_qubit_interaction_hamiltonian()
+        H_const.append(self._build_qubit_interaction_hamiltonian())
 
-        if hamiltonian_list == [] and hamiltonian_time == []:
-            raise ValueError(f'Invalid hamiltonian configuration: no or wrong hamiltonian terms specified.\nhamiltonian_terms can include any between the following:\
-                "cavity-field coupling", "resonator detuning", "resonator drive", "qubit-cavity interaction", "qubit-qubit interaction"')
-
+        # Constant part of Hamiltonian (time-independent terms)
+        H_0 = sum(H_const)  # type: ignore
 
         # Complete time-dependent Hamiltonian
         # H(t) = H_dispersive + H_qubit_interaction + H_coupling * g(t)
-        H_total = qt.QobjEvo([H_dispersive + H_qubit_interaction, [H_coupling, gu]], args=args)
+        H_total = qt.QobjEvo([H_0, H_time], args=args)
 
         # Noise configuration
         noise_config = self.experimental_params.noise_config
@@ -481,10 +497,7 @@ class Experiment:
         if noise_config.custom_operators is not None:
             lindblad_noise.extend(noise_config.custom_operators)
 
-        # Lindblad interaction operator (same for with/without photon)
-        L_int = qt.QobjEvo([a_in, gu], args=args) + np.sqrt(gm) * a
-
-        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = [L_int] + lindblad_noise
+        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = L_interaction + lindblad_noise
         no_interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = lindblad_noise
 
         # Store Hamiltonians and Lindblad operators

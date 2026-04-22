@@ -104,6 +104,10 @@ class PhysicalSetup:
 
     def __post_init__(self):
         """Convert qubit_cavity_coupling to dictionary format if necessary and set default interactions."""
+
+        if not self.qubit_cavity_time_modulation is None:
+            raise NotImplementedError("Time modulation of qubit-cavity coupling is not yet implemented. Please set qubit_cavity_time_modulation to None.")  
+
         if isinstance(self.qubit_cavity_coupling, (int, float)):
             self.qubit_cavity_coupling = { (i, j): float(self.qubit_cavity_coupling) for i in range(self.n_qubits) for j in range(self.n_cavities) }
         elif not isinstance(self.qubit_cavity_coupling, dict):
@@ -605,6 +609,8 @@ class ExperimentalParameters:
             if not isinstance(function, Callable[[float], float]):
                 raise TypeError(f"The values of the qubit_cavity_time_modulation dictionary must be a callable function"
                                 f" that takes a single float argument (time) and returns a float. Got {type(function)} for key ({qubit}, {cavity})")
+            if (qubit, cavity) not in self.physical_setup.qubit_cavity_coupling.keys():
+                raise ValueError(f"Time modulation specified for qubit {qubit} and cavity {cavity}, but no corresponding qubit_cavity_coupling defined for this pair.")
 
         for (cavity1,cavity2), function in self.physical_setup.cavity_cavity_time_modulation.items():
             if not isinstance(cavity1, int):
@@ -618,6 +624,8 @@ class ExperimentalParameters:
             if not isinstance(function, Callable[[float], float]):
                 raise TypeError(f"The values of the cavity_cavity_time_modulation dictionary must be a callable function"
                                 f" that takes a single float argument (time) and returns a float. Got {type(function)} for key ({cavity1}, {cavity2})") 
+            if (cavity1, cavity2) not in self.physical_setup.cavity_cavity_coupling.keys():
+                raise ValueError(f"Time modulation specified for cavity pair ({cavity1}, {cavity2}), but no corresponding cavity_cavity_coupling defined for this pair.")
 
         if self.physical_setup.inverse_pulse_width <= 0:
             raise ValueError("Pulse width parameter (inverse_pulse_width) must be > 0")
