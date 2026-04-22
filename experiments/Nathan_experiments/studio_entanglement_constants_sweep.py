@@ -41,7 +41,7 @@ from qsopt.utils.visualization import plot_sweep_results
 
 BASE_MEASUREMENT_TIMES = np.array([-5.0, -2.5, 0.0, 2.5, 5.0], dtype=float)
 # Edit this path for your cluster/user setup if needed.
-DEFAULT_RESULTS_DIR = (Path.home() / "personal_results" / "studio_entanglement").resolve()
+DEFAULT_RESULTS_DIR = (Path("/raid/home/ncampioni/Quantum-sensing-QML") / "personal_results" / "studio_entanglement").resolve()
 
 
 def _log_event(log_path: Path, message: str) -> None:
