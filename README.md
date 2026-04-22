@@ -95,7 +95,7 @@ pytest src/qsopt/tests/test_installation.py -v
 ```python
 import numpy as np
 from qsopt.core import (
-    ExperimentalParameters, PhysicalConstants, SystemDimensions,
+    ExperimentalParameters, PhysicalSetup, SystemDimensions,
     NoiseConfiguration, MeasurementProtocol, InitialStateConfig,
     InitialStateType
 )
@@ -103,7 +103,7 @@ from qsopt.core.experiment import Experiment
 from qsopt.core.circuit import create_ry_circuit
 
 # Define physical system (single qubit: n_qubits=1)
-physical_constants = PhysicalConstants(
+physical_setup = PhysicalSetup(
     n_qubits=1,  # Specify number of qubits
     chi=0.5 * 0.03 * 2 * np.pi,  # Dispersive coupling
     photon_cavity_coupling=0.03 * 2 * np.pi,
@@ -124,7 +124,7 @@ initial_state = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
 
 # Create experimental parameters
 exp_params = ExperimentalParameters(
-    physical_constants=physical_constants,
+    physical_setup=physical_setup,
     system_dims=system_dims,
     measurement=measurement,
     initial_state=initial_state,
@@ -175,8 +175,8 @@ final_circuit = QuantumCircuit(n_qubits=2)
 final_circuit.add_gate(RYGate(theta=-np.pi / 4, target=0, trainable=True))
 final_circuit.add_gate(RYGate(theta=-np.pi / 3, target=1, trainable=True))
 
-# Update physical constants for 2 qubits
-physical_constants = PhysicalConstants(
+# Update physical setup for 2 qubits
+physical_setup = PhysicalSetup(
     n_qubits=2,
     chi=[0.5 * 0.03 * 2 * np.pi, 0.4 * 0.03 * 2 * np.pi],  # Different χ per qubit
     photon_cavity_coupling=0.03 * 2 * np.pi,
@@ -364,7 +364,7 @@ create_ry_circuit(n_qubits, theta_values=None, trainable=True)  # Build RY circu
 ### Experimental Parameters (`qsopt.core`)
 
 **Configuration Classes:**
-- `PhysicalConstants` — System coupling strengths and qubit count
+- `PhysicalSetup` — System coupling strengths and qubit count
 - `SystemDimensions` — Hilbert space level counts
 - `NoiseConfiguration` — Relaxation and dephasing rates
 - `MeasurementProtocol` — Measurement times and settings

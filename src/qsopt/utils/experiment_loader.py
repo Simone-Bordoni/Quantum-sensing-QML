@@ -21,7 +21,7 @@ from ..core.experimental_parameters import (
     InitialStateType,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 # TODO: Remove TrainableParameters dependency - refactor to use circuits

@@ -18,7 +18,7 @@ import pytest
 #     InitialStateType,
 #     MeasurementProtocol,
 #     NoiseConfiguration,
-#     PhysicalConstants,
+#     PhysicalSetup,
 #     SingleQubitExperiment,
 #     SystemDimensions,
 #     TrainableParameters,
@@ -35,7 +35,7 @@ class TestExperimentReports:
         """Helper to create a test experiment."""
         gm = 0.03 * 2 * np.pi
 
-        constants = PhysicalConstants(
+        setup = PhysicalSetup(
             chi=0.5 * gm, photon_cavity_coupling=gm, inverse_pulse_width=0.1 * gm
         )
 
@@ -50,7 +50,7 @@ class TestExperimentReports:
         noise_config = NoiseConfiguration(depolarizing=0.001, dephasing=0.001, relaxation=0.001)
 
         exp_params = ExperimentalParameters(
-            physical_constants=constants,
+            physical_setup=setup,
             system_dims=dims,
             measurement=measurement,
             initial_state=initial_state,
@@ -167,7 +167,7 @@ class TestExperimentReports:
             exp_params = report["experimental_parameters"]
 
             # Check all sections exist
-            assert "physical_constants" in exp_params
+            assert "physical_setup" in exp_params
             assert "system_dimensions" in exp_params
             assert "measurement_protocol" in exp_params
             assert "initial_state" in exp_params

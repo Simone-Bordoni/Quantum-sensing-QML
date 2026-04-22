@@ -12,7 +12,7 @@ from qsopt.core.experimental_parameters import (
     InitialStateType,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit_layer
@@ -23,7 +23,7 @@ from qsopt.utils.visualization import plot_sweep_results
 @pytest.fixture
 def single_qubit_experiment():
     """Create a basic single-qubit experiment for testing."""
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=1, chi=[10.0], photon_cavity_coupling=10.0, inverse_pulse_width=1.0
     )
 
@@ -35,7 +35,7 @@ def single_qubit_experiment():
     noise_config = NoiseConfiguration(depolarizing=0.0, dephasing=0.0, relaxation=0.0)
 
     exp_params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -51,7 +51,7 @@ def single_qubit_experiment():
 @pytest.fixture
 def two_qubit_experiment():
     """Create a basic two-qubit experiment for testing."""
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2, chi=[10.0, 10.0], photon_cavity_coupling=10.0, inverse_pulse_width=1.0
     )
 
@@ -65,7 +65,7 @@ def two_qubit_experiment():
     )
 
     exp_params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,

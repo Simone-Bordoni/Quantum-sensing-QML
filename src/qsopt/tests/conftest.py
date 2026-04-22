@@ -27,11 +27,11 @@ def custom_experimental_parameters():
         InitialStateType,
         MeasurementProtocol,
         NoiseConfiguration,
-        PhysicalConstants,
+        PhysicalSetup,
         SystemDimensions,
     )
 
-    constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=0.5, inverse_pulse_width=0.1)
+    setup = PhysicalSetup(chi=1.0, photon_cavity_coupling=0.5, inverse_pulse_width=0.1)
 
     dims = SystemDimensions(cavity_levels=2, qubit_levels=2, field_levels=2)
 
@@ -42,7 +42,7 @@ def custom_experimental_parameters():
     noise_config = NoiseConfiguration(depolarizing=0.01, dephasing=0.01, relaxation=0.01)
 
     return ExperimentalParameters(
-        physical_constants=constants,
+        physical_setup=setup,
         system_dims=dims,
         measurement=measurement,
         initial_state=initial_state,

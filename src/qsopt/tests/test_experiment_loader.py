@@ -20,7 +20,7 @@ from qsopt.core.experimental_parameters import (
     InitialStateConfig,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 # from qsopt.core.trainable_parameters import TrainableParameters
@@ -40,7 +40,7 @@ class TestExperimentLoader:
             "experiment_type": "SingleQubitExperiment",
             "version": "1.0",
             "experimental_parameters": {
-                "physical_constants": {
+                "physical_setup": {
                     "chi": 0.5,
                     "photon_cavity_coupling": 1.0,
                     "inverse_pulse_width": 0.1,
@@ -100,7 +100,7 @@ class TestExperimentLoader:
             "experiment_type": "SingleQubitExperiment",
             "version": "1.0",
             "experimental_parameters": {
-                "physical_constants": {
+                "physical_setup": {
                     "chi": 0.5,
                     "photon_cavity_coupling": 1.0,
                     "inverse_pulse_width": 0.1,
@@ -162,8 +162,8 @@ class TestExperimentLoader:
 
             # Check experimental parameters
             assert isinstance(exp_params, ExperimentalParameters)
-            assert exp_params.physical_constants.chi == [0.5]  # Now a list
-            assert exp_params.physical_constants.photon_cavity_coupling == 1.0
+            assert exp_params.physical_setup.chi == [0.5]  # Now a list
+            assert exp_params.physical_setup.photon_cavity_coupling == 1.0
             assert exp_params.system_dims.cavity_levels == 10
             assert exp_params.system_dims.qubit_levels == [2]  # Now a list
 

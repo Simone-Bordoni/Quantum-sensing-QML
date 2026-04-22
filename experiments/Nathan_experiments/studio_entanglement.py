@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import optax
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
     MeasurementProtocol,
     InteractionType,
@@ -106,7 +106,7 @@ def create_std_experiment_setup(n_qubits, initial_circuit, final_circuit, detect
     else:
         chi = 2.0 * gm
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=n_qubits,
         chi= chi,
         photon_cavity_coupling=gm,
@@ -124,7 +124,7 @@ def create_std_experiment_setup(n_qubits, initial_circuit, final_circuit, detect
     initial_state = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
 
     exp_params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=SystemDimensions(),
         measurement=measurement,
         initial_state=initial_state,

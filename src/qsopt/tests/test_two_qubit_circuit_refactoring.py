@@ -23,7 +23,7 @@ from qsopt.core.experimental_parameters import (
     InitialStateType,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 # from qsopt.core.experiment import TwoQubitExperiment
@@ -32,7 +32,7 @@ from qsopt.core.experimental_parameters import (
 @pytest.fixture
 def two_qubit_experimental_params():
     """Create standard two-qubit experimental parameters."""
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2, chi=[0.5, 0.5], photon_cavity_coupling=10.0, inverse_pulse_width=1.0
     )
 
@@ -46,7 +46,7 @@ def two_qubit_experimental_params():
     )
 
     return ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -260,10 +260,10 @@ def test_two_qubit_callback_integration(two_qubit_experimental_params):
 
 def test_two_qubit_wrong_parameter_count():
     """Test that error is raised if circuits don't have 2 parameters each."""
-    physical_constants = PhysicalConstants(n_qubits=2, chi=[0.5, 0.5])
+    physical_setup = PhysicalSetup(n_qubits=2, chi=[0.5, 0.5])
     system_dims = SystemDimensions(field_levels=2, cavity_levels=2, qubit_levels=[2, 2])
     params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
     )
 
@@ -288,7 +288,7 @@ if __name__ == "__main__":
     # Run a simple smoke test
     print("Running two-qubit circuit refactoring tests...")
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2, chi=[0.5, 0.5], photon_cavity_coupling=10.0, inverse_pulse_width=1.0
     )
 
@@ -302,7 +302,7 @@ if __name__ == "__main__":
     )
 
     params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,

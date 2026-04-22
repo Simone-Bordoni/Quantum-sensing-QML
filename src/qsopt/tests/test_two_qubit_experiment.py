@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters
 #     InitialStateType,
 #     MeasurementProtocol,
 #     NoiseConfiguration,
-#     PhysicalConstants,
+#     PhysicalSetup,
 #     SystemDimensions,
 # )
 # from qsopt.core.trainable_parameters import TrainableParameters
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters
 @pytest.fixture
 def two_qubit_params():
     """Create experimental parameters for two-qubit system."""
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2, chi=[10.0, 10.0], photon_cavity_coupling=10.0, inverse_pulse_width=1.0
     )
 
@@ -43,7 +43,7 @@ def two_qubit_params():
     )
 
     return ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,

@@ -23,7 +23,7 @@ from .core.experimental_parameters import (
     InteractionType,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     QubitInteraction,
     SystemDimensions,
 )

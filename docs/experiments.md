@@ -21,7 +21,7 @@ The experiments module provides tools for:
 
 ```python
 from qsopt.core import (
-    SingleQubitExperiment, ExperimentalParameters, PhysicalConstants,
+    SingleQubitExperiment, ExperimentalParameters, PhysicalSetup,
     SystemDimensions, MeasurementProtocol, InitialStateConfig,
     InitialStateType, NoiseConfiguration, TrainableParameters
 )
@@ -29,7 +29,7 @@ import numpy as np
 
 # Define physical system
 gm = 0.03 * 2 * np.pi
-constants = PhysicalConstants(
+setup = PhysicalSetup(
     chi=0.5 * gm,                    # Dispersive coupling
     photon_cavity_coupling=gm,       # Cavity-field coupling
     inverse_pulse_width=0.1 * gm     # Pulse shaping
@@ -37,7 +37,7 @@ constants = PhysicalConstants(
 
 # Configure experiment
 exp_params = ExperimentalParameters(
-    physical_constants=constants,
+    physical_setup=setup,
     system_dims=SystemDimensions(
         cavity_levels=2,   # Fock states in cavity
         qubit_levels=2,    # Qubit states
@@ -84,21 +84,21 @@ print(f"Optimized metric: {history['metric'][-1]:.6f}")
 
 Complete configuration for quantum sensing experiments.
 
-### PhysicalConstants
+### PhysicalSetup
 
 Physical parameters of the quantum system:
 
 ```python
 @dataclass
-class PhysicalConstants:
-    """Physical constants for the sensing protocol."""
+class PhysicalSetup:
+    """Physical setup for the sensing protocol."""
     chi: float                      # Dispersive coupling strength (rad/s)
     photon_cavity_coupling: float   # Cavity-field coupling g (rad/s)
     inverse_pulse_width: float      # 1/τ for pulse shaping (rad/s)
     
 # Example: Circuit QED parameters
 gm = 0.03 * 2 * np.pi  # 30 kHz typical cavity coupling
-constants = PhysicalConstants(
+setup = PhysicalSetup(
     chi=0.5 * gm,          # Chi ~ g/2
     photon_cavity_coupling=gm,
     inverse_pulse_width=0.1 * gm  # Pulse width ~ 10/g
@@ -212,7 +212,7 @@ ideal_noise = NoiseConfiguration(
 ```python
 # Full experimental configuration
 exp_params = ExperimentalParameters(
-    physical_constants=PhysicalConstants(
+    physical_setup=PhysicalSetup(
         chi=0.5 * gm,
         photon_cavity_coupling=gm,
         inverse_pulse_width=0.1 * gm
@@ -502,7 +502,7 @@ for rate in relaxation_rates:
     # Create experiment with specific noise
     noise = NoiseConfiguration(relaxation=rate, dephasing=rate/2)
     exp_params_noisy = ExperimentalParameters(
-        physical_constants=constants,
+        physical_setup=setup,
         system_dims=dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -555,7 +555,7 @@ initial_state = InitialStateConfig(
 )
 
 exp_params = ExperimentalParameters(
-    physical_constants=constants,
+    physical_setup=setup,
     system_dims=dims,
     measurement=measurement,
     initial_state=initial_state,

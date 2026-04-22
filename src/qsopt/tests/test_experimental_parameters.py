@@ -19,28 +19,28 @@ from qsopt.core.experimental_parameters import (
     InitialStateType,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 
 
-class TestPhysicalConstants:
-    """Test the PhysicalConstants dataclass."""
+class TestPhysicalSetup:
+    """Test the PhysicalSetup dataclass."""
 
     def test_default_initialization(self):
-        """Test default initialization of PhysicalConstants."""
-        constants = PhysicalConstants()
-        assert constants.n_qubits == 1
-        assert constants.chi == [0.5]  # Now a list
-        assert constants.photon_cavity_coupling == 1.0
-        assert constants.inverse_pulse_width == 0.1
+        """Test default initialization of PhysicalSetup."""
+        setup = PhysicalSetup()
+        assert setup.n_qubits == 1
+        assert setup.chi == [0.5]  # Now a list
+        assert setup.photon_cavity_coupling == 1.0
+        assert setup.inverse_pulse_width == 0.1
 
     def test_custom_initialization(self):
-        """Test custom initialization of PhysicalConstants."""
-        constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=2.0, inverse_pulse_width=0.2)
-        assert constants.chi == [1.0]  # Now a list
-        assert constants.photon_cavity_coupling == 2.0
-        assert constants.inverse_pulse_width == 0.2
+        """Test custom initialization of PhysicalSetup."""
+        setup = PhysicalSetup(chi=1.0, photon_cavity_coupling=2.0, inverse_pulse_width=0.2)
+        assert setup.chi == [1.0]  # Now a list
+        assert setup.photon_cavity_coupling == 2.0
+        assert setup.inverse_pulse_width == 0.2
 
 
 class TestSystemDimensions:
@@ -139,7 +139,7 @@ class TestExperimentalParameters:
         params = ExperimentalParameters()
 
         # Check that all components are initialized
-        assert isinstance(params.physical_constants, PhysicalConstants)
+        assert isinstance(params.physical_setup, PhysicalSetup)
         assert isinstance(params.system_dims, SystemDimensions)
         assert isinstance(params.measurement, MeasurementProtocol)
         assert isinstance(params.noise_config, NoiseConfiguration)
@@ -151,16 +151,16 @@ class TestExperimentalParameters:
 
     def test_custom_initialization(self):
         """Test initialization with custom parameters."""
-        constants = PhysicalConstants(chi=1.0, photon_cavity_coupling=2.0)
+        setup = PhysicalSetup(chi=1.0, photon_cavity_coupling=2.0)
         dims = SystemDimensions(cavity_levels=8, qubit_levels=2, field_levels=10)
         measurement = MeasurementProtocol(measurement_times=[-10.0, -5.0, 0.0, 5.0, 10.0])
 
         params = ExperimentalParameters(
-            physical_constants=constants, system_dims=dims, measurement=measurement
+            physical_setup=setup, system_dims=dims, measurement=measurement
         )
 
-        assert params.physical_constants.chi == [1.0]  # Now a list
-        assert params.physical_constants.photon_cavity_coupling == 2.0
+        assert params.physical_setup.chi == [1.0]  # Now a list
+        assert params.physical_setup.photon_cavity_coupling == 2.0
         assert params.system_dims.cavity_levels == 8
         assert params.system_dims.qubit_levels == [2]  # Now a list
         assert params.system_dims.field_levels == 10
@@ -168,10 +168,10 @@ class TestExperimentalParameters:
 
     def test_measurement_times_computation(self):
         """Test that measurement times are correctly computed."""
-        constants = PhysicalConstants(inverse_pulse_width=0.2)
+        setup = PhysicalSetup(inverse_pulse_width=0.2)
         measurement = MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0])
 
-        params = ExperimentalParameters(physical_constants=constants, measurement=measurement)
+        params = ExperimentalParameters(physical_setup=setup, measurement=measurement)
 
         # Times are stored and returned as absolute values (no normalization)
         expected_times = np.array([-5.0, 0.0, 5.0])
@@ -218,44 +218,44 @@ class TestExperimentalParameters:
 
     def test_validation_chi_zero(self):
         """Test warning when chi = 0."""
-        constants = PhysicalConstants(chi=0.0)
+        setup = PhysicalSetup(chi=0.0)
 
         with pytest.warns(UserWarning, match="Dispersive coupling \\(chi\\) for qubit 0 is zero"):
-            ExperimentalParameters(physical_constants=constants)
+            ExperimentalParameters(physical_setup=setup)
 
     def test_validation_chi_negative(self):
         """Test validation error when chi < 0."""
-        constants = PhysicalConstants(chi=-1.0)
+        setup = PhysicalSetup(chi=-1.0)
 
         with pytest.raises(
             ValueError, match="Dispersive coupling \\(chi\\) for qubit 0 must be >= 0"
         ):
-            ExperimentalParameters(physical_constants=constants)
+            ExperimentalParameters(physical_setup=setup)
 
     def test_validation_photon_cavity_coupling_zero(self):
         """Test warning when photon_cavity_coupling = 0."""
-        constants = PhysicalConstants(photon_cavity_coupling=0.0)
+        setup = PhysicalSetup(photon_cavity_coupling=0.0)
 
         with pytest.warns(UserWarning, match="Photon-cavity coupling.*is zero"):
-            ExperimentalParameters(physical_constants=constants)
+            ExperimentalParameters(physical_setup=setup)
 
     def test_validation_photon_cavity_coupling_negative(self):
         """Test validation error when photon_cavity_coupling < 0."""
-        constants = PhysicalConstants(photon_cavity_coupling=-1.0)
+        setup = PhysicalSetup(photon_cavity_coupling=-1.0)
 
         with pytest.raises(
             ValueError, match="Photon-cavity coupling \\(photon_cavity_coupling\\) must be >= 0"
         ):
-            ExperimentalParameters(physical_constants=constants)
+            ExperimentalParameters(physical_setup=setup)
 
     def test_validation_inverse_pulse_width_non_positive(self):
         """Test validation error when inverse_pulse_width <= 0."""
-        constants = PhysicalConstants(inverse_pulse_width=0.0)
+        setup = PhysicalSetup(inverse_pulse_width=0.0)
 
         with pytest.raises(
             ValueError, match="Pulse width parameter \\(inverse_pulse_width\\) must be > 0"
         ):
-            ExperimentalParameters(physical_constants=constants)
+            ExperimentalParameters(physical_setup=setup)
 
     def test_validation_negative_depolarizing_rate(self):
         """Test validation error when depolarizing rate < 0."""
@@ -333,11 +333,11 @@ class TestExperimentalParameters:
         params = ExperimentalParameters()
 
         # Test getter
-        assert params.chi == params.physical_constants.chi
+        assert params.chi == params.physical_setup.chi
 
         # Test setter
         params.chi = 1.5
-        assert params.physical_constants.chi == [1.5]  # Now a list
+        assert params.physical_setup.chi == [1.5]  # Now a list
         assert params.chi == [1.5]  # Now a list
 
     def test_primary_properties_photon_cavity_coupling(self):
@@ -345,11 +345,11 @@ class TestExperimentalParameters:
         params = ExperimentalParameters()
 
         # Test getter
-        assert params.photon_cavity_coupling == params.physical_constants.photon_cavity_coupling
+        assert params.photon_cavity_coupling == params.physical_setup.photon_cavity_coupling
 
         # Test setter
         params.photon_cavity_coupling = 2.5
-        assert params.physical_constants.photon_cavity_coupling == 2.5
+        assert params.physical_setup.photon_cavity_coupling == 2.5
         assert params.photon_cavity_coupling == 2.5
 
     def test_primary_properties_inverse_pulse_width(self):
@@ -357,11 +357,11 @@ class TestExperimentalParameters:
         params = ExperimentalParameters()
 
         # Test getter
-        assert params.inverse_pulse_width == params.physical_constants.inverse_pulse_width
+        assert params.inverse_pulse_width == params.physical_setup.inverse_pulse_width
 
         # Test setter
         params.inverse_pulse_width = 0.3
-        assert params.physical_constants.inverse_pulse_width == 0.3
+        assert params.physical_setup.inverse_pulse_width == 0.3
         assert params.inverse_pulse_width == 0.3
 
     def test_primary_properties_measurement_times(self):

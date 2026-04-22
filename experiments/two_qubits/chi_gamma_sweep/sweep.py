@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
-    PhysicalConstants,
+    PhysicalSetup,
     QubitInteraction,
     NoiseConfiguration,
     SystemDimensions,
@@ -24,7 +24,7 @@ interaction=QubitInteraction(
     chi=0.1
 )
 
-phys_const_2q = PhysicalConstants(
+phys_setup_2q = PhysicalSetup(
     n_qubits=2,
     chi=[40.0, 40.0],  # Equal dispersive coupling for both qubits
     photon_cavity_coupling=10.0,  # gamma
@@ -53,7 +53,7 @@ noise = NoiseConfiguration(
 )
 
 exp_params_2q = ExperimentalParameters(
-    physical_constants=phys_const_2q,
+    physical_setup=phys_setup_2q,
     system_dims=sys_dims_2q,
     measurement=meas_protocol_2q,
     initial_state=initial_state_2q,

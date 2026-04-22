@@ -10,15 +10,15 @@ from qsopt.core.experimental_parameters import (
     InitialStateType,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 from qsopt.utils.visualization import plot_optimization_dashboard
 
 gm = 0.03 * 2 * np.pi
 
-# Define custom physical constants
-custom_constants = PhysicalConstants(
+# Define custom physical setup
+custom_setup = PhysicalSetup(
     chi = 0.5 * gm,                    # Dispersive coupling
     photon_cavity_coupling = gm,  # Photon-cavity coupling
     inverse_pulse_width = 0.1 * gm      # Inverse pulse width
@@ -50,7 +50,7 @@ noise_config = NoiseConfiguration(
 
 # Create parameters with custom configuration
 exp_parameters = ExperimentalParameters(
-    physical_constants=custom_constants,
+    physical_setup=custom_setup,
     system_dims=custom_dims,
     measurement=custom_measurement,
     initial_state=initial_state,

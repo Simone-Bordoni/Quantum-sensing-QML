@@ -454,7 +454,7 @@ def create_custom_initial_state(theta: float):
 
 # Configure experiment with custom state
 exp_params = ExperimentalParameters(
-    physical_constants=PhysicalConstants(...),
+    physical_setup=PhysicalSetup(...),
     system_dims=SystemDimensions(cavity_levels=2, qubit_levels=2, field_levels=2),
     measurement=MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0]),
     initial_state=InitialStateConfig(

@@ -21,7 +21,7 @@ from .experimental_parameters import (
     InitialStateConfig,
     MeasurementProtocol,
     NoiseConfiguration,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 # TODO: TrainableParameters has been removed in favor of circuit-based parameter management

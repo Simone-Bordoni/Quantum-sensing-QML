@@ -25,7 +25,7 @@ pip install -e .
 
 ```python
 from qsopt.core import (
-    ExperimentalParameters, PhysicalConstants, SystemDimensions,
+    ExperimentalParameters, PhysicalSetup, SystemDimensions,
     NoiseConfiguration, MeasurementProtocol, InitialStateConfig,
     InitialStateType, TrainableParameters, SingleQubitExperiment
 )
@@ -33,7 +33,7 @@ import numpy as np
 
 # Define system parameters
 gm = 0.03 * 2 * np.pi
-constants = PhysicalConstants(
+setup = PhysicalSetup(
     chi=0.5 * gm,
     photon_cavity_coupling=gm,
     inverse_pulse_width=0.1 * gm
@@ -41,7 +41,7 @@ constants = PhysicalConstants(
 
 # Configure experiment
 exp_params = ExperimentalParameters(
-    physical_constants=constants,
+    physical_setup=setup,
     system_dims=SystemDimensions(cavity_levels=2, qubit_levels=2, field_levels=2),
     measurement=MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0]),
     initial_state=InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON),
@@ -95,7 +95,7 @@ Run and optimize quantum sensing protocols with realistic noise models.
 - `SingleQubitExperiment`: Main experiment interface for 1-qubit sensing
 - `TwoQubitExperiment`: Two-qubit sensing protocols
 - `ExperimentalParameters`: System configuration
-- `PhysicalConstants`: Chi coupling, photon coupling, pulse parameters
+- `PhysicalSetup`: Chi coupling, photon coupling, pulse parameters
 - `SystemDimensions`: Hilbert space dimensions
 - `NoiseConfiguration`: Relaxation and dephasing rates
 
@@ -254,7 +254,7 @@ def create_entangling_layer(gate_class: Type[Gate], num_qubits: int,
 
 ```python
 ExperimentalParameters(
-    physical_constants: PhysicalConstants,
+    physical_setup: PhysicalSetup,
     system_dims: SystemDimensions,
     measurement: MeasurementProtocol,
     initial_state: InitialStateConfig,
@@ -387,7 +387,7 @@ for noise in noise_levels:
     
     # Create new experiment with updated noise
     exp_params_noisy = ExperimentalParameters(
-        physical_constants=constants,
+        physical_setup=setup,
         system_dims=dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -490,7 +490,7 @@ For comprehensive guides on specific modules:
 
 ```python
 from qsopt.core import (
-    ExperimentalParameters, PhysicalConstants, SystemDimensions,
+    ExperimentalParameters, PhysicalSetup, SystemDimensions,
     MeasurementProtocol, InitialStateConfig, InitialStateType,
     NoiseConfiguration, TrainableParameters, SingleQubitExperiment
 )
@@ -498,7 +498,7 @@ import numpy as np
 
 # System parameters
 gm = 0.03 * 2 * np.pi
-constants = PhysicalConstants(
+setup = PhysicalSetup(
     chi=0.5 * gm,
     photon_cavity_coupling=gm,
     inverse_pulse_width=0.1 * gm
@@ -506,7 +506,7 @@ constants = PhysicalConstants(
 
 # Experiment configuration
 exp_params = ExperimentalParameters(
-    physical_constants=constants,
+    physical_setup=setup,
     system_dims=SystemDimensions(cavity_levels=2, qubit_levels=2, field_levels=2),
     measurement=MeasurementProtocol(measurement_times=[-5.0, 0.0, 5.0]),
     initial_state=InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON),
@@ -597,7 +597,7 @@ results_noise = []
 for rate in relaxation_rates:
     noise = NoiseConfiguration(relaxation=rate, dephasing=rate/2)
     exp_params_noisy = ExperimentalParameters(
-        physical_constants=constants,
+        physical_setup=setup,
         system_dims=dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -727,7 +727,7 @@ initial_state = InitialStateConfig(
 )
 
 exp_params = ExperimentalParameters(
-    physical_constants=constants,
+    physical_setup=setup,
     system_dims=dims,
     measurement=measurement,
     initial_state=initial_state,

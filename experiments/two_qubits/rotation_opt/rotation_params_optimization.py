@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
     MeasurementProtocol,
     InitialStateConfig,
@@ -20,7 +20,7 @@ from qsopt.utils.visualization import plot_optimization_dashboard
 import warnings
 warnings.filterwarnings('ignore')
 
-physical_constants = PhysicalConstants(
+physical_setup = PhysicalSetup(
     n_qubits=2,
     chi=[30.0, 30.0],
     photon_cavity_coupling=15.0,
@@ -46,7 +46,7 @@ noise_config = NoiseConfiguration(
 )
 
 exp_params = ExperimentalParameters(
-    physical_constants=physical_constants,
+    physical_setup=physical_setup,
     system_dims=system_dims,
     measurement=measurement,
     initial_state=initial_state,

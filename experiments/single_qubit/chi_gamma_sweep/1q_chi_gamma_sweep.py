@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
     NoiseConfiguration,
     MeasurementProtocol,
@@ -15,7 +15,7 @@ from qsopt.core.experiment import Experiment
 from qsopt.utils import plot_sweep_results
 
 # Single Qubit Experiment Setup
-phys_const_1q = PhysicalConstants(
+phys_setup_1q = PhysicalSetup(
     n_qubits=1,
     chi=5.0,  # Dispersive coupling
     photon_cavity_coupling=10.0,  # gamma
@@ -42,7 +42,7 @@ meas_protocol_1q = MeasurementProtocol(
 initial_state_1q = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
 
 exp_params_1q = ExperimentalParameters(
-    physical_constants=phys_const_1q,
+    physical_setup=phys_setup_1q,
     system_dims=sys_dims_1q,
     measurement=meas_protocol_1q,
     initial_state=initial_state_1q,

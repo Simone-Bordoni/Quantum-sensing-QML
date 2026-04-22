@@ -98,7 +98,7 @@ class Experiment:
 
         if final_circuit is None:
             final_circuit = create_ry_circuit(experimental_params.n_qubits, theta_values=-np.pi/2)
-
+        
         self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
@@ -114,7 +114,10 @@ class Experiment:
             self.detection_metric = detection_metric
 
 
-        # Normalize qubit_levels to always be a list
+        # Normalize cavity_levels and qubit_levels to always be a list
+        if isinstance(self.experimental_params.cavity_levels, int):
+            self.experimental_params.cavity_levels = [self.experimental_params.cavity_levels]
+
         if isinstance(self.experimental_params.qubit_levels, int):
             self.experimental_params.qubit_levels = [self.experimental_params.qubit_levels] * self.experimental_params.n_qubits
 
@@ -147,8 +150,8 @@ class Experiment:
         # on traced states, which fails. Disabling this setting prevents the check.
         qt.settings.core["auto_real_casting"] = False  # type: ignore
 
-        self._generate_operators()
-        self._generate_hamiltonian()
+        self._generate_operators(self.input_field_present)
+        self._generate_hamiltonian(self.hamiltonian_terms)
         self._initialize_initial_state()
         self._generate_measure_function()
 
@@ -174,8 +177,8 @@ class Experiment:
                     chi=interaction.chi,
                     interaction_type=interaction.interaction_type
                 )
-                for interaction in self.experimental_params.physical_constants.qubit_interactions
-            ] if self.experimental_params.physical_constants.qubit_interactions else []
+                for interaction in self.experimental_params.physical_setup.qubit_interactions
+            ] if self.experimental_params.physical_setup.qubit_interactions else []
         }
 
     def _restore_sweep_state(self, state: Dict[str, Any]) -> None:
@@ -186,9 +189,9 @@ class Experiment:
             state: State dictionary from _save_sweep_state()
         """
         # Restore parameters
-        self.experimental_params.physical_constants.chi = state["chi"]
-        self.experimental_params.physical_constants.photon_cavity_coupling = state["gamma"]
-        self.experimental_params.physical_constants.qubit_interactions = state["qubit_interactions"]
+        self.experimental_params.physical_setup.chi = state["chi"]
+        self.experimental_params.physical_setup.photon_cavity_coupling = state["gamma"]
+        self.experimental_params.physical_setup.qubit_interactions = state["qubit_interactions"]
 
         # Regenerate Hamiltonian and clear solver caches
         self._generate_hamiltonian()
@@ -207,10 +210,10 @@ class Experiment:
             qubit_interactions: Optional list of QubitInteraction objects
         """
         # Update parameters
-        self.experimental_params.physical_constants.chi = chi
-        self.experimental_params.physical_constants.photon_cavity_coupling = gamma
+        self.experimental_params.physical_setup.chi = chi
+        self.experimental_params.physical_setup.photon_cavity_coupling = gamma
         if qubit_interactions is not None:
-            self.experimental_params.physical_constants.qubit_interactions = qubit_interactions
+            self.experimental_params.physical_setup.qubit_interactions = qubit_interactions
 
         # Regenerate Hamiltonian with new parameters
         self._generate_hamiltonian()
@@ -218,7 +221,7 @@ class Experiment:
         # Clear solver caches (they depend on Hamiltonian)
         self._cached_solvers.clear()
 
-    def _generate_operators(self) -> None:
+    def _generate_operators(self, input_field_present: bool=True) -> None:
         """
         Generate operators for n-qubit system.
 
@@ -240,7 +243,7 @@ class Experiment:
 
         # Generate n-qubit operators using utility function
         self.operators = generate_n_qubit_operators(
-            field_levels, cavity_levels, qubit_levels, n_qubits, detection_states
+            field_levels, cavity_levels, qubit_levels, n_qubits, detection_states, input_field_present=input_field_present
         )
 
     def _generate_measure_function(self) -> None:
@@ -311,7 +314,7 @@ class Experiment:
             )
 
         # Get qubit interactions from experimental parameters
-        interactions = self.experimental_params.physical_constants.qubit_interactions
+        interactions = self.experimental_params.physical_setup.qubit_interactions
 
         if not interactions:
             # No interactions - return zero operator
@@ -350,10 +353,9 @@ class Experiment:
         return H_interaction
 
 
-    def _generate_hamiltonian(self) -> None:
+    def _generate_hamiltonian(self, hamiltonian_terms: List[str] = None) -> None:
         """
-        Generate Hamiltonian for n-qubit system.
-
+        Generate Hamiltonian for n-qubit system
         Creates:
         1. Time-dependent cavity-field coupling: H_cavity = (i/2)√γ (a_in† a - a_in a†) g(t)
         2. Dispersive qubit-cavity interactions: H_dispersive = -Σᵢ (χᵢ/2) a† a σz_i
@@ -364,6 +366,7 @@ class Experiment:
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
+        
 
         # Extract coupling constants
         gm = self.experimental_params.photon_cavity_coupling
@@ -408,6 +411,11 @@ class Experiment:
         # H_interaction = Σⱼ (χⱼ/2) σᵢ ⊗ σⱼ
         # where σᵢ and σⱼ can be σx, σy, or σz depending on interaction type
         H_qubit_interaction = self._build_qubit_interaction_hamiltonian()
+
+        if hamiltonian_list == [] and hamiltonian_time == []:
+            raise ValueError(f'Invalid hamiltonian configuration: no or wrong hamiltonian terms specified.\nhamiltonian_terms can include any between the following:\
+                "cavity-field coupling", "resonator detuning", "resonator drive", "qubit-cavity interaction", "qubit-qubit interaction"')
+
 
         # Complete time-dependent Hamiltonian
         # H(t) = H_dispersive + H_qubit_interaction + H_coupling * g(t)
@@ -2099,7 +2107,7 @@ class Experiment:
             "dephasing_rate": dephasing_val,
             "relaxation_rate": relax_val,
             "initial_state": self.experimental_params.initial_state.state_type.name,
-            "inverse_pulse_width": self.experimental_params.physical_constants.inverse_pulse_width,
+            "inverse_pulse_width": self.experimental_params.physical_setup.inverse_pulse_width,
         }
 
         return SweepResults(

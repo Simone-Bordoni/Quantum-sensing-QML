@@ -33,11 +33,11 @@ class TestExperiment:
             InitialStateType,
             MeasurementProtocol,
             NoiseConfiguration,
-            PhysicalConstants,
+            PhysicalSetup,
             SystemDimensions,
         )
 
-        physical_constants = PhysicalConstants(
+        physical_setup = PhysicalSetup(
             n_qubits=1,
             chi=0.5 * 0.03 * 2 * np.pi,
             photon_cavity_coupling=0.03 * 2 * np.pi,
@@ -55,7 +55,7 @@ class TestExperiment:
         initial_state = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
 
         return ExperimentalParameters(
-            physical_constants=physical_constants,
+            physical_setup=physical_setup,
             system_dims=system_dims,
             measurement=measurement,
             initial_state=initial_state,
@@ -373,11 +373,11 @@ def test_experiment_creation_custom_params():
         InitialStateType,
         MeasurementProtocol,
         NoiseConfiguration,
-        PhysicalConstants,
+        PhysicalSetup,
         SystemDimensions,
     )
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=1,
         chi=0.25 * 0.02 * 2 * np.pi,
         photon_cavity_coupling=0.02 * 2 * np.pi,
@@ -395,7 +395,7 @@ def test_experiment_creation_custom_params():
     initial_state = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
 
     params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,

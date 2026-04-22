@@ -403,7 +403,7 @@ plt.show()
 Plot how noise affects optimal performance:
 
 ```python
-def plot_noise_sensitivity(constants, dims, measurement, initial_state, params,
+def plot_noise_sensitivity(setup, dims, measurement, initial_state, params,
                            relaxation_range, num_points=15):
     """Visualize sensing performance vs noise strength."""
     
@@ -418,7 +418,7 @@ def plot_noise_sensitivity(constants, dims, measurement, initial_state, params,
         # Create noisy experiment
         noise = NoiseConfiguration(relaxation=rate, dephasing=rate/2)
         exp_params = ExperimentalParameters(
-            physical_constants=constants,
+            physical_setup=setup,
             system_dims=dims,
             measurement=measurement,
             initial_state=initial_state,
@@ -474,7 +474,7 @@ def plot_noise_sensitivity(constants, dims, measurement, initial_state, params,
 
 # Use it
 fig, results = plot_noise_sensitivity(
-    constants=constants,
+    setup=setup,
     dims=dims,
     measurement=measurement,
     initial_state=initial_state,
@@ -536,8 +536,9 @@ ax.axvline(x=50, color='red', linestyle='--', alpha=0.7)
 ax.text(52, 0.5, 'Learning rate decreased', fontsize=10, color='red')
 
 # Add custom title with metadata
-chi = exp_params.physical_constants.chi
-ax.set_title(f'Optimization Results (χ = {chi:.4f} rad/s)', fontsize=14)
+chi = exp_params.physical_setup.chi
+chi_val = chi[0] if isinstance(chi, list) else chi
+ax.set_title(f'Optimization Results (χ = {chi_val:.4f} rad/s)', fontsize=14)
 
 plt.show()
 ```

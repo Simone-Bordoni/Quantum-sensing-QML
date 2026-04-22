@@ -2,7 +2,7 @@
   "experiment_type": "SingleQubitExperiment",
   "version": "0.1.0",
   "experimental_parameters": {
-    "physical_constants": {
+    "physical_setup": {
       "chi": 0.09424777960769379,
       "photon_cavity_coupling": 0.18849555921538758,
       "inverse_pulse_width": 0.01884955592153876

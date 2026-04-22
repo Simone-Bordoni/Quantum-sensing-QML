@@ -18,7 +18,7 @@ pytestmark = pytest.mark.skip(reason="TwoQubitExperiment and TrainableParameters
 #     InteractionType,
 #     MeasurementProtocol,
 #     NoiseConfiguration,
-#     PhysicalConstants,
+#     PhysicalSetup,
 #     QubitInteraction,
 #     SystemDimensions,
 # )
@@ -74,51 +74,51 @@ def test_qubit_interaction_validation():
         QubitInteraction(qubit_indices=(0, 1, 2))  # type: ignore
 
 
-def test_physical_constants_default_interactions():
-    """Test default qubit interactions in PhysicalConstants."""
+def test_physical_setup_default_interactions():
+    """Test default qubit interactions in PhysicalSetup."""
     # Single qubit - no interactions by default
-    pc_single = PhysicalConstants(n_qubits=1, chi=10.0)
-    assert pc_single.qubit_interactions == []
+    ps_single = PhysicalSetup(n_qubits=1, chi=10.0)
+    assert ps_single.qubit_interactions == []
 
     # Two qubits - no interactions by default (empty list)
-    pc_two = PhysicalConstants(n_qubits=2, chi=[10.0, 10.0])
-    assert pc_two.qubit_interactions == []
+    ps_two = PhysicalSetup(n_qubits=2, chi=[10.0, 10.0])
+    assert ps_two.qubit_interactions == []
 
 
-def test_physical_constants_custom_interactions():
-    """Test custom qubit interactions in PhysicalConstants."""
+def test_physical_setup_custom_interactions():
+    """Test custom qubit interactions in PhysicalSetup."""
     # Create custom interactions
     interactions = [
         QubitInteraction(qubit_indices=(0, 1), chi=5.0, interaction_type=InteractionType.XX),
         QubitInteraction(qubit_indices=(0, 1), chi=3.0, interaction_type=InteractionType.YY),
     ]
 
-    pc = PhysicalConstants(n_qubits=2, chi=[10.0, 10.0], qubit_interactions=interactions)
+    ps = PhysicalSetup(n_qubits=2, chi=[10.0, 10.0], qubit_interactions=interactions)
 
-    assert len(pc.qubit_interactions) == 2
-    assert pc.qubit_interactions[0].interaction_type == InteractionType.XX
-    assert pc.qubit_interactions[0].chi == 5.0
-    assert pc.qubit_interactions[1].interaction_type == InteractionType.YY
-    assert pc.qubit_interactions[1].chi == 3.0
+    assert len(ps.qubit_interactions) == 2
+    assert ps.qubit_interactions[0].interaction_type == InteractionType.XX
+    assert ps.qubit_interactions[0].chi == 5.0
+    assert ps.qubit_interactions[1].interaction_type == InteractionType.YY
+    assert ps.qubit_interactions[1].chi == 3.0
 
 
-def test_physical_constants_interaction_validation():
+def test_physical_setup_interaction_validation():
     """Test validation of qubit interactions."""
     # Should raise error if interaction involves invalid qubit index
     interactions = [QubitInteraction(qubit_indices=(0, 2), chi=5.0)]  # Qubit 2 doesn't exist
 
     with pytest.raises(ValueError, match="only 2 qubits in system"):
-        PhysicalConstants(n_qubits=2, chi=[10.0, 10.0], qubit_interactions=interactions)
+        PhysicalSetup(n_qubits=2, chi=[10.0, 10.0], qubit_interactions=interactions)
 
 
 def test_two_qubit_experiment_with_zz_interaction():
     """Test two-qubit experiment with ZZ interaction."""
-    # Create physical constants with ZZ interaction
+    # Create physical setup with ZZ interaction
     interactions = [
         QubitInteraction(qubit_indices=(0, 1), chi=2.0, interaction_type=InteractionType.ZZ)
     ]
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2,
         chi=[10.0, 10.0],
         photon_cavity_coupling=10.0,
@@ -136,7 +136,7 @@ def test_two_qubit_experiment_with_zz_interaction():
     )
 
     exp_params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -164,13 +164,13 @@ def test_two_qubit_experiment_with_zz_interaction():
 
 def test_two_qubit_experiment_with_xx_yy_interaction():
     """Test two-qubit experiment with XX and YY interactions."""
-    # Create physical constants with mixed interactions
+    # Create physical setup with mixed interactions
     interactions = [
         QubitInteraction(qubit_indices=(0, 1), chi=3.0, interaction_type=InteractionType.XX),
         QubitInteraction(qubit_indices=(0, 1), chi=2.0, interaction_type=InteractionType.YY),
     ]
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2,
         chi=[10.0, 10.0],
         photon_cavity_coupling=10.0,
@@ -188,7 +188,7 @@ def test_two_qubit_experiment_with_xx_yy_interaction():
     )
 
     exp_params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -219,11 +219,11 @@ def test_experimental_parameters_repr_with_interactions():
         QubitInteraction(qubit_indices=(0, 1), chi=3.0, interaction_type=InteractionType.XX),
     ]
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=2, chi=[10.0, 10.0], qubit_interactions=interactions
     )
 
-    exp_params = ExperimentalParameters(physical_constants=physical_constants)
+    exp_params = ExperimentalParameters(physical_setup=physical_setup)
 
     repr_str = repr(exp_params)
 
@@ -240,7 +240,7 @@ def test_single_qubit_experiment_ignores_interactions():
     """Test that single qubit experiment works with no interactions."""
     from qsopt.core.experiment import SingleQubitExperiment
 
-    physical_constants = PhysicalConstants(
+    physical_setup = PhysicalSetup(
         n_qubits=1, chi=10.0, photon_cavity_coupling=10.0, inverse_pulse_width=1.0
     )
 
@@ -252,7 +252,7 @@ def test_single_qubit_experiment_ignores_interactions():
     noise_config = NoiseConfiguration(depolarizing=0.0, dephasing=0.0, relaxation=0.0)
 
     exp_params = ExperimentalParameters(
-        physical_constants=physical_constants,
+        physical_setup=physical_setup,
         system_dims=system_dims,
         measurement=measurement,
         initial_state=initial_state,
@@ -270,4 +270,4 @@ def test_single_qubit_experiment_ignores_interactions():
     assert exp.operators is not None
 
     # Verify no interaction terms (empty list for single qubit)
-    assert exp.experimental_params.physical_constants.qubit_interactions == []
+    assert exp.experimental_params.physical_setup.qubit_interactions == []

@@ -70,7 +70,7 @@ class TestCoreImports:
                 InitialStateType,
                 MeasurementProtocol,
                 NoiseConfiguration,
-                PhysicalConstants,
+                PhysicalSetup,
                 SystemDimensions,
             )
         except ImportError as e:
@@ -215,23 +215,23 @@ class TestDependencies:
 class TestBasicFunctionality:
     """Test that basic functionality works after installation."""
 
-    def test_create_physical_constants(self):
-        """Test creating PhysicalConstants object."""
+    def test_create_physical_setup(self):
+        """Test creating PhysicalSetup object."""
         import numpy as np
 
-        from qsopt.core.experimental_parameters import PhysicalConstants
+        from qsopt.core.experimental_parameters import PhysicalSetup
 
         gm = 0.03 * 2 * np.pi
-        constants = PhysicalConstants(
+        setup = PhysicalSetup(
             n_qubits=1, chi=0.5 * gm, photon_cavity_coupling=gm, inverse_pulse_width=0.1 * gm
         )
 
         # chi is converted to a list internally for multi-qubit support
-        assert isinstance(constants.chi, list)
-        assert len(constants.chi) == 1
-        assert abs(constants.chi[0] - 0.5 * gm) < 1e-10
-        assert constants.photon_cavity_coupling == gm
-        assert constants.inverse_pulse_width == 0.1 * gm
+        assert isinstance(setup.chi, list)
+        assert len(setup.chi) == 1
+        assert abs(setup.chi[0] - 0.5 * gm) < 1e-10
+        assert setup.photon_cavity_coupling == gm
+        assert setup.inverse_pulse_width == 0.1 * gm
 
     def test_create_system_dimensions(self):
         """Test creating SystemDimensions object."""
@@ -382,13 +382,13 @@ class TestTopLevelImports:
             InitialStateType,
             MeasurementProtocol,
             NoiseConfiguration,
-            PhysicalConstants,
+            PhysicalSetup,
             SystemDimensions,
         )
 
         # Verify all are classes/types
         assert ExperimentalParameters is not None
-        assert PhysicalConstants is not None
+        assert PhysicalSetup is not None
         assert SystemDimensions is not None
 
     @pytest.mark.skip(reason="SingleQubitExperiment and TwoQubitExperiment have been deprecated")

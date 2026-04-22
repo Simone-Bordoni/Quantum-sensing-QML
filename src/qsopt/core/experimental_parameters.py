@@ -71,42 +71,54 @@ class QubitInteraction:
 
 
 @dataclass
-class PhysicalConstants:
+class PhysicalSetup:
     """
     Physical constants and coupling parameters for the quantum system.
 
     Attributes:
         n_qubits: Number of qubits in the system
-        chi: Dispersive coupling strength between resonator and qubit(s) (Hz).
-             Can be a float (same coupling for all qubits) or a list of floats
-             (individual coupling per qubit).
-        photon_cavity_coupling: Photon-cavity coupling strength (Hz)
-        inverse_pulse_width: Inverse of the pulse width (1/time units, typically 1/ns)
+        qubit_cavity_coupling: Dispersive coupling strength between resonator(s) and qubit(s) (Hz).
+             Can be a float (same coupling for all qubits) 
+             or a dictionary with keys as (qubit_index, cavity_index) tuples and values as float coupling strengths.
+        cavity_cavity_coupling: Coupling strength between cavities (Hz).
+             Can be a float (same coupling for all cavity pairs) 
+             or a dictionary with keys as (cavity_index1, cavity_index2) tuples and values as float coupling strengths.
         qubit_interactions: List of qubit-qubit interactions. For two-qubit systems,
                            defaults to a single ZZ interaction between qubits 0 and 1.
                            For single-qubit systems, this is ignored.
+        qubit_cavity_time_modulation: Time dependent modulation function of the coupling between qubits and cavities. 
+             Dictionary with keys as (qubit_index, cavity_index) tuples and values as functions of time.
+        cavity_cavity_time_modulation: Time dependent modulation function of the coupling between cavities.
+             Dictionary with keys as (cavity_index1, cavity_index2) tuples and values as functions of time.
+        inverse_pulse_width: Inverse of the pulse width (1/time units, typically 1/ns)
     """
 
     n_qubits: int = 1  # Number of qubits
-    chi: Union[float, List[float]] = 0.5  # Dispersive coupling in units of cavity decay rate
-    photon_cavity_coupling: float = 1.0  # Photon-cavity coupling
-    inverse_pulse_width: float = 0.1  # Inverse pulse width parameter
+    n_cavities: int = 2  # Number of cavities (default 2 for input field and resonator)
+    qubit_cavity_coupling: Union[float, Dict[Tuple[int, int], float]] = 0.5  # Dispersive coupling in units of cavity decay rate
+    cavity_cavity_coupling: Union[float, Dict[Tuple[int, int], float]] = 1.0  # Cavity-cavity coupling
+    qubit_cavity_time_modulation: Optional[Dict[Tuple[int, int], Callable[[float], float]]] = None  # Optional time modulation functions for qubit-cavity coupling
+    cavity_cavity_time_modulation: Optional[Dict[Tuple[int, int], Callable[[float], float]]] = None  # Optional time modulation functions for cavity-cavity coupling
     qubit_interactions: Optional[List[QubitInteraction]] = None  # Qubit-qubit interactions
+    inverse_pulse_width: float = 0.1  # Inverse pulse width parameter
 
     def __post_init__(self):
-        """Convert chi to list format if necessary and set default interactions."""
-        if isinstance(self.chi, (int, float)):
-            self.chi = [float(self.chi)] * self.n_qubits
-        elif isinstance(self.chi, list):
-            if len(self.chi) != self.n_qubits:
-                raise ValueError(
-                    f"chi list length ({len(self.chi)}) must match n_qubits ({self.n_qubits})"
-                )
-            self.chi = [float(c) for c in self.chi]
-        else:
-            raise TypeError("chi must be a float or a list of floats")
+        """Convert qubit_cavity_coupling to dictionary format if necessary and set default interactions."""
+        if isinstance(self.qubit_cavity_coupling, (int, float)):
+            self.qubit_cavity_coupling = { (i, j): float(self.qubit_cavity_coupling) for i in range(self.n_qubits) for j in range(self.n_cavities) }
+        elif not isinstance(self.qubit_cavity_coupling, dict):
+            raise TypeError("qubit_cavity_coupling must be a float or a dictionary")
 
-        # Set empty list if None
+        if isinstance(self.cavity_cavity_coupling, (int, float)):
+            self.cavity_cavity_coupling = { (i, j): float(self.cavity_cavity_coupling) for i in range(self.n_cavities) for j in range(i) }
+        elif not isinstance(self.cavity_cavity_coupling, dict):
+            raise TypeError("cavity_cavity_coupling must be a float or a dictionary")
+        
+        # Set default time modulations and qubit interactions if not provided
+        if self.cavity_cavity_time_modulation is None:
+            self.cavity_cavity_time_modulation = {}
+        if self.qubit_cavity_time_modulation is None:
+            self.qubit_cavity_time_modulation = {}
         if self.qubit_interactions is None:
             self.qubit_interactions = []
 
@@ -121,36 +133,39 @@ class PhysicalConstants:
                         f"Interaction involves qubit {idx}, but only {self.n_qubits} qubits in system"
                     )
 
-    def copy(self, **updates) -> "PhysicalConstants":
+    def copy(self, **updates) -> "PhysicalSetup":
         """
-        Create a copy of PhysicalConstants with optional parameter updates.
+        Create a copy of PhysicalSetup with optional parameter updates.
 
-        This method creates a new PhysicalConstants instance with all attributes
+        This method creates a new PhysicalSetup instance with all attributes
         copied from the current instance. You can override specific attributes
         by passing them as keyword arguments.
 
         Args:
             **updates: Keyword arguments for attributes to update in the copy.
-                      Valid keys: n_qubits, chi, photon_cavity_coupling,
-                      inverse_pulse_width, qubit_interactions
+                      Valid keys: n_qubits, n_cavities, qubit_cavity_coupling, cavity_cavity_coupling, 
+                      qubit_interactions, qubit_cavity_time_modulation, cavity_cavity_time_modulation,
+                      inverse_pulse_width
 
         Returns:
-            New PhysicalConstants instance with updated values
+            New PhysicalSetup instance with updated values
 
         Example:
-            >>> original = PhysicalConstants(chi=5.0, photon_cavity_coupling=10.0)
-            >>> modified = original.copy(chi=8.0)  # Keep all other params, change chi
-            >>> modified.chi
+            >>> original = PhysicalSetup(qubit_cavity_coupling=5.0, cavity_cavity_coupling=10.0)
+            >>> modified = original.copy(qubit_cavity_coupling=8.0)  # Keep all other params, change qubit_cavity_coupling
+            >>> modified.qubit_cavity_coupling
             8.0
-            >>> modified.photon_cavity_coupling
+            >>> modified.cavity_cavity_coupling
             10.0
         """
         # Start with current values
         params = {
             "n_qubits": self.n_qubits,
-            "chi": self.chi.copy() if isinstance(self.chi, list) else self.chi,
-            "photon_cavity_coupling": self.photon_cavity_coupling,
-            "inverse_pulse_width": self.inverse_pulse_width,
+            "n_cavities": self.n_cavities,
+            "qubit_cavity_coupling": self.qubit_cavity_coupling.copy(),
+            "cavity_cavity_coupling": self.cavity_cavity_coupling.copy(),
+            "qubit_cavity_time_modulation": self.qubit_cavity_time_modulation.copy(),
+            "cavity_cavity_time_modulation": self.cavity_cavity_time_modulation.copy(),
             "qubit_interactions": (
                 [
                     QubitInteraction(
@@ -163,12 +178,13 @@ class PhysicalConstants:
                 if self.qubit_interactions
                 else []
             ),
+            "inverse_pulse_width": self.inverse_pulse_width,
         }
 
         # Apply updates
         params.update(updates)
 
-        return PhysicalConstants(**params)
+        return PhysicalSetup(**params)
 
 
 @dataclass
@@ -191,21 +207,38 @@ class SystemDimensions:
         field_levels: Number of levels for field modes
     """
 
-    cavity_levels: int = 2  # Cavity truncation level
+    cavity_levels: Union[int, List[int]] = 2  # Cavity truncation level
     qubit_levels: Union[int, List[int]] = 2  # Qubit levels
-    field_levels: int = 2  # Field mode levels
 
     def __post_init__(self):
         """Store original input and convert qubit_levels to list format if necessary."""
-        # We need n_qubits from PhysicalConstants, but we can't access it here
+        # We need n_qubits from PhysicalSetup, but we can't access it here
         # So we'll handle this in the ExperimentalParameters.__init__
+
+    def _normalize_cavity_levels(self, n_cavities: int):
+        """
+        Normalize cavity_levels to list format.
+
+        Args:
+            n_cavities: Number of cavities from PhysicalSetup
+        """
+        if isinstance(self.cavity_levels, int):
+            self.cavity_levels = [self.cavity_levels] * n_cavities
+        elif isinstance(self.cavity_levels, list):
+            if len(self.cavity_levels) != n_cavities:
+                raise ValueError(
+                    f"cavity_levels list length ({len(self.cavity_levels)}) must match n_cavities ({n_cavities})"
+                )
+            self.cavity_levels = [int(c) for c in self.cavity_levels]
+        else:
+            raise TypeError("cavity_levels must be an int or a list of ints")
 
     def _normalize_qubit_levels(self, n_qubits: int):
         """
         Normalize qubit_levels to list format.
 
         Args:
-            n_qubits: Number of qubits from PhysicalConstants
+            n_qubits: Number of qubits from PhysicalSetup
         """
         if isinstance(self.qubit_levels, int):
             self.qubit_levels = [self.qubit_levels] * n_qubits
@@ -294,7 +327,7 @@ class NoiseConfiguration:
         Normalize noise rates to list format.
 
         Args:
-            n_qubits: Number of qubits from PhysicalConstants
+            n_qubits: Number of qubits from PhysicalSetup
         """
         for attr in ["depolarizing", "dephasing", "relaxation"]:
             value = getattr(self, attr)
@@ -325,34 +358,43 @@ class ExperimentalParameters:
 
     def __init__(
         self,
-        physical_constants: Optional[PhysicalConstants] = None,
+        physical_setup: Optional[PhysicalSetup] = None,
         system_dims: Optional[SystemDimensions] = None,
         measurement: Optional[MeasurementProtocol] = None,
         initial_state: Optional[InitialStateConfig] = None,
         noise_config: Optional[NoiseConfiguration] = None,
-        random_seed: Optional[int] = None,
+        random_seed: Optional[int] = None,        
     ):
         """
         Initialize experimental parameters.
 
         Args:
-            physical_constants: Physical coupling constants and rates
+            physical_setup: Physical coupling constants and rates
             system_dims: Hilbert space dimensions
             measurement: Measurement protocol configuration
             initial_state: Initial state configuration
             noise_config: Noise model configuration
             random_seed: Random seed for reproducibility of uncertainty calculations
         """
-        self.physical_constants = physical_constants or PhysicalConstants()
+        self.physical_setup = physical_setup or PhysicalSetup()
         self.system_dims = system_dims or SystemDimensions()
         self.measurement = measurement or MeasurementProtocol()
         self.noise_config = noise_config or NoiseConfiguration()
         self.initial_state = initial_state or InitialStateConfig()
 
         # Normalize multi-qubit parameters based on n_qubits
-        n_qubits = self.physical_constants.n_qubits
+        n_qubits = self.physical_setup.n_qubits
         self.system_dims._normalize_qubit_levels(n_qubits)
         self.noise_config._normalize_noise_rates(n_qubits)
+
+        # Normalize multi-cavity parameters based on n_cavities
+        n_cavities = self.physical_setup.n_cavities
+        self.system_dims._normalize_cavity_levels(n_cavities)
+
+        # Compute total system dimensions
+        qubit_dim = np.prod(self.system_dims.qubit_levels)
+        cavity_dim = np.prod(self.system_dims.cavity_levels)
+        self.system_dims.total_dim = cavity_dim * qubit_dim
 
         # Random seed for uncertainty calculations
         self.random_seed = random_seed
@@ -490,10 +532,11 @@ class ExperimentalParameters:
     def _validate_configuration(self) -> None:
         """Validate parameter consistency and physical constraints."""
         # Validate system dimensions
-        if self.system_dims.cavity_levels < 2:
-            raise ValueError("Cavity levels (cavity_levels) must be >= 2")
-        if self.system_dims.field_levels < 2:
-            raise ValueError("External field levels (field_levels) must be >= 2")
+        if not isinstance(self.system_dims.cavity_levels, list):
+            raise TypeError("cavity_levels must be normalized to a list")
+        for i, levels in enumerate(self.system_dims.cavity_levels):
+            if levels < 2:
+                raise ValueError(f"Cavity {i} levels must be >= 2, got {levels}")
 
         # Validate qubit levels (now a list)
         if not isinstance(self.system_dims.qubit_levels, list):
@@ -502,32 +545,81 @@ class ExperimentalParameters:
             if levels < 2:
                 raise ValueError(f"Qubit {i} levels must be >= 2, got {levels}")
 
-        # Validate coupling constants (chi is now a list)
-        if not isinstance(self.physical_constants.chi, list):
-            raise TypeError("chi must be normalized to a list")
-        for i, chi_val in enumerate(self.physical_constants.chi):
+        # Validate coupling constants (qubit_cavity_coupling is now a list)
+        if not isinstance(self.physical_setup.qubit_cavity_coupling, Dict[Tuple[int,int], float]):
+            raise TypeError("qubit_cavity_coupling must be normalized to a dictionary")
+        for (qubit, cavity), chi_val in self.physical_setup.qubit_cavity_coupling.items():
             if chi_val < 0:
                 raise ValueError(
-                    f"Dispersive coupling (chi) for qubit {i} must be >= 0, got {chi_val}"
+                    f"Dispersive coupling (qubit_cavity_coupling) for qubit {qubit} with cavity {cavity} must be >= 0, got {chi_val}"
                 )
             elif chi_val == 0:
                 warnings.warn(
-                    f"Dispersive coupling (chi) for qubit {i} is zero. "
+                    f"Dispersive coupling (qubit_cavity_coupling) for qubit {qubit} with cavity {cavity} is zero. "
                     "This means no qubit-cavity interaction for this qubit, "
-                    "which may not produce meaningful sensing results.",
+                    "which may not produce meaningful sensing results."
+                    "Removing this coupling altogheter might be advisable if intentional.",
                     UserWarning,
                 )
+            
+            if not isinstance(qubit, int):
+                raise TypeError(f"Qubit indices in qubit_cavity_coupling must be integers, got {qubit}")
+            elif not (0 <= qubit < self.physical_setup.n_qubits):
+                raise ValueError(f"Qubit index ({qubit}) in qubit_cavity_coupling ({qubit}, {cavity}) is out of range for n_qubits={self.physical_setup.n_qubits}")
 
-        if self.physical_constants.photon_cavity_coupling < 0:
-            raise ValueError("Photon-cavity coupling (photon_cavity_coupling) must be >= 0")
-        elif self.physical_constants.photon_cavity_coupling == 0:
-            warnings.warn(
-                "Photon-cavity coupling (gamma/photon_cavity_coupling) is zero. This means no "
-                "coupling between the input field and the cavity, which will result in no sensing dynamics.",
-                UserWarning,
-            )
+            if not isinstance(cavity, int):
+                raise TypeError(f"Cavity indices in qubit_cavity_coupling must be integers, got {cavity}")
+            elif not (0 <= cavity < self.physical_setup.n_cavities):
+                raise ValueError(f"Cavity index ({cavity}) in qubit_cavity_coupling ({qubit}, {cavity}) is out of range for n_cavities={self.physical_setup.n_cavities}")
 
-        if self.physical_constants.inverse_pulse_width <= 0:
+
+        for (cavity1, cavity2), coupling_val in self.physical_setup.cavity_cavity_coupling.items():
+            if coupling_val < 0:
+                raise ValueError(f"Cavity-cavity coupling (cavity_cavity_coupling) for cavities {cavity1} and {cavity2} must be >= 0")
+            elif coupling_val == 0:
+                warnings.warn(
+                    f"Cavity-cavity coupling (cavity_cavity_coupling) for cavities {cavity1} and {cavity2} is zero. This means no "
+                    "coupling between cavities, which may not produce meaningful sensing results."
+                    "Removing this coupling altogheter might be advisable if intentional.",
+                    UserWarning,
+                )
+        
+            if not isinstance(cavity1, int):
+                raise TypeError(f"Cavity indices in cavity_cavity_coupling must be integers, got {cavity1}")
+            elif not (0 <= cavity1 < self.physical_setup.n_cavities):
+                raise ValueError(f"Cavity index 1 in cavity_cavity_coupling ({cavity1}, {cavity2}) is out of range for n_cavities={self.physical_setup.n_cavities}")
+            if not isinstance(cavity2, int):
+                raise TypeError(f"Cavity indices in cavity_cavity_coupling must be integers, got {cavity2}")
+            elif not (0 <= cavity2 < self.physical_setup.n_cavities):
+                raise ValueError(f"Cavity index 2 in cavity_cavity_coupling ({cavity1}, {cavity2}) is out of range for n_cavities={self.physical_setup.n_cavities}")
+
+        for (qubit,cavity), function in self.physical_setup.qubit_cavity_time_modulation.items():
+            if not isinstance(qubit, int):
+                raise TypeError(f"Qubit indices in qubit_cavity_time_modulation must be integers, got {qubit}")
+            elif not (0 <= qubit < self.physical_setup.n_qubits):
+                raise ValueError(f"Qubit index ({qubit}) in qubit_cavity_time_modulation ({qubit}, {cavity}) is out of range for n_qubits={self.physical_setup.n_qubits}")
+            if not isinstance(cavity, int):
+                raise TypeError(f"Cavity indices in qubit_cavity_time_modulation must be integers, got {cavity}")
+            elif not (0 <= cavity < self.physical_setup.n_cavities):
+                raise ValueError(f"Cavity index ({cavity}) in qubit_cavity_time_modulation ({qubit}, {cavity}) is out of range for n_cavities={self.physical_setup.n_cavities}")
+            if not isinstance(function, Callable[[float], float]):
+                raise TypeError(f"The values of the qubit_cavity_time_modulation dictionary must be a callable function"
+                                f" that takes a single float argument (time) and returns a float. Got {type(function)} for key ({qubit}, {cavity})")
+
+        for (cavity1,cavity2), function in self.physical_setup.cavity_cavity_time_modulation.items():
+            if not isinstance(cavity1, int):
+                raise TypeError(f"Cavity indices in cavity_cavity_time_modulation must be integers, got {cavity1}")
+            elif not (0 <= cavity1 < self.physical_setup.n_cavities):
+                raise ValueError(f"Cavity index 1 in cavity_cavity_time_modulation ({cavity1}, {cavity2}) is out of range for n_cavities={self.physical_setup.n_cavities}")
+            if not isinstance(cavity2, int):
+                raise TypeError(f"Cavity indices in cavity_cavity_time_modulation must be integers, got {cavity2}")
+            elif not (0 <= cavity2 < self.physical_setup.n_cavities):
+                raise ValueError(f"Cavity index 2 in cavity_cavity_time_modulation ({cavity1}, {cavity2}) is out of range for n_cavities={self.physical_setup.n_cavities}")
+            if not isinstance(function, Callable[[float], float]):
+                raise TypeError(f"The values of the cavity_cavity_time_modulation dictionary must be a callable function"
+                                f" that takes a single float argument (time) and returns a float. Got {type(function)} for key ({cavity1}, {cavity2})") 
+
+        if self.physical_setup.inverse_pulse_width <= 0:
             raise ValueError("Pulse width parameter (inverse_pulse_width) must be > 0")
 
         # Validate noise rates (now lists)
@@ -572,19 +664,27 @@ class ExperimentalParameters:
     # Direct access to commonly used parameters for easier integration
 
     @property
-    def n_qubits(self) -> int:
-        """Direct access to number of qubits."""
-        return self.physical_constants.n_qubits
+    def n_cavities(self) -> int:
+        """Direct access to number of cavities."""
+        return self.physical_setup.n_cavities
 
     @property
-    def cavity_levels(self) -> int:
+    def n_qubits(self) -> int:
+        """Direct access to number of qubits."""
+        return self.physical_setup.n_qubits
+
+    @property
+    def cavity_levels(self) -> Union[int, List[int]]:
         """Direct access to cavity levels."""
         return self.system_dims.cavity_levels
 
     @cavity_levels.setter
-    def cavity_levels(self, value: int) -> None:
+    def cavity_levels(self, value: Union[int, List[int]]) -> None:
         """Set cavity levels."""
         self.system_dims.cavity_levels = value
+        # Re-normalize if necessary
+        if hasattr(self, "physical_setup"):
+            self.system_dims._normalize_cavity_levels(self.physical_setup.n_cavities)
 
     @property
     def qubit_levels(self) -> Union[int, List[int]]:
@@ -596,57 +696,62 @@ class ExperimentalParameters:
         """Set qubit levels."""
         self.system_dims.qubit_levels = value
         # Re-normalize if necessary
-        if hasattr(self, "physical_constants"):
-            self.system_dims._normalize_qubit_levels(self.physical_constants.n_qubits)
+        if hasattr(self, "physical_setup"):
+            self.system_dims._normalize_qubit_levels(self.physical_setup.n_qubits)
 
     @property
-    def field_levels(self) -> int:
-        """Direct access to field levels."""
-        return self.system_dims.field_levels
+    def qubit_cavity_coupling(self) -> Union[float, Dict[Tuple[int,int], float]]:
+        """Direct access to qubit-cavity coupling (returns dictionary after normalization)."""
+        return self.physical_setup.qubit_cavity_coupling
 
-    @field_levels.setter
-    def field_levels(self, value: int) -> None:
-        """Set field levels."""
-        self.system_dims.field_levels = value
-
-    @property
-    def chi(self) -> Union[float, List[float]]:
-        """Direct access to dispersive coupling (returns list after normalization)."""
-        return self.physical_constants.chi
-
-    @chi.setter
-    def chi(self, value: Union[float, List[float]]) -> None:
-        """Set dispersive coupling."""
+    @qubit_cavity_coupling.setter
+    def qubit_cavity_coupling(self, value: Union[float, Dict[Tuple[int,int], float]]) -> None:
+        """Set qubit-cavity coupling."""
         # Store the value and re-normalize through __post_init__
-        n_qubits = self.physical_constants.n_qubits
-        if isinstance(value, (int, float)):
-            self.physical_constants.chi = [float(value)] * n_qubits
-        elif isinstance(value, list):
-            if len(value) != n_qubits:
-                raise ValueError(f"chi list length ({len(value)}) must match n_qubits ({n_qubits})")
-            self.physical_constants.chi = [float(c) for c in value]
-        else:
-            raise TypeError("chi must be a float or a list of floats")
+        self.physical_setup.qubit_cavity_coupling = value
+        self.physical_setup.__post_init__()
 
     @property
-    def photon_cavity_coupling(self) -> float:
-        """Direct access to photon-cavity coupling."""
-        return self.physical_constants.photon_cavity_coupling
+    def cavity_cavity_coupling(self) -> Union[float, Dict[Tuple[int,int], float]]:
+        """Direct access to cavity-cavity coupling."""
+        return self.physical_setup.cavity_cavity_coupling
 
-    @photon_cavity_coupling.setter
-    def photon_cavity_coupling(self, value: float) -> None:
-        """Set photon-cavity coupling."""
-        self.physical_constants.photon_cavity_coupling = value
+    @cavity_cavity_coupling.setter
+    def cavity_cavity_coupling(self, value: Union[float, Dict[Tuple[int,int], float]]) -> None:
+        """Set cavity-cavity coupling."""
+        # Store the value and re-normalize through __post_init__
+        self.physical_setup.cavity_cavity_coupling = value
+        self.physical_setup.__post_init__()
+        
+    @property
+    def qubit_cavity_time_modulation(self) -> Callable[[float], float]:
+        """Direct access to qubit-cavity time modulation."""
+        return self.physical_setup.qubit_cavity_time_modulation      
+
+    @qubit_cavity_time_modulation.setter
+    def qubit_cavity_time_modulation(self, value: Callable[[float], float]) -> None:
+        """Set qubit-cavity time modulation."""
+        self.physical_setup.qubit_cavity_time_modulation = value
+
+    @property
+    def cavity_cavity_time_modulation(self) -> Callable[[float], float]:
+        """Direct access to cavity-cavity time modulation."""
+        return self.physical_setup.cavity_cavity_time_modulation 
+
+    @cavity_cavity_time_modulation.setter
+    def cavity_cavity_time_modulation(self, value: Callable[[float], float]) -> None:
+        """Set cavity-cavity time modulation."""
+        self.physical_setup.cavity_cavity_time_modulation = value
 
     @property
     def inverse_pulse_width(self) -> float:
         """Direct access to pulse width parameter."""
-        return self.physical_constants.inverse_pulse_width
+        return self.physical_setup.inverse_pulse_width
 
     @inverse_pulse_width.setter
     def inverse_pulse_width(self, value: float) -> None:
         """Set pulse width parameter."""
-        self.physical_constants.inverse_pulse_width = value
+        self.physical_setup.inverse_pulse_width = value
 
     @property
     def measurement_times(self) -> np.ndarray:
@@ -769,13 +874,13 @@ class ExperimentalParameters:
         Create a copy of ExperimentalParameters with optional updates.
 
         This method creates a new ExperimentalParameters instance with all
-        configuration copied. The nested objects (physical_constants, system_dims,
+        configuration copied. The nested objects (physical_setup, system_dims,
         measurement, initial_state, noise_config) are deep copied to avoid
         unintended sharing of mutable state.
 
         Args:
             **updates: Keyword arguments for attributes to update. Can be:
-                - physical_constants: PhysicalConstants instance or dict of updates
+                - physical_setup: PhysicalSetup instance or dict of updates
                 - system_dims: SystemDimensions instance
                 - measurement: MeasurementProtocol instance
                 - initial_state: InitialStateConfig instance
@@ -786,18 +891,18 @@ class ExperimentalParameters:
             New ExperimentalParameters instance with updated values
 
         Example:
-            >>> # Copy and update physical constants
+            >>> # Copy and update physical setup
             >>> new_params = exp_params.copy(
-            ...     physical_constants=exp_params.physical_constants.copy(chi=10.0)
+            ...     physical_setup=exp_params.physical_setup.copy(chi=10.0)
             ... )
             >>>
             >>> # Or pass updates as dict (for convenience)
             >>> new_params = exp_params.copy(
-            ...     physical_constants={'chi': 10.0, 'photon_cavity_coupling': 20.0}
+            ...     physical_setup={'chi': 10.0, 'photon_cavity_coupling': 20.0}
             ... )
         """
         # Deep copy nested configurations
-        new_phys_const = self.physical_constants
+        new_phys_setup = self.physical_setup
         new_system_dims = self.system_dims
         new_measurement = self.measurement
         new_initial_state = self.initial_state
@@ -805,30 +910,36 @@ class ExperimentalParameters:
         new_random_seed = self.random_seed
 
         # Handle updates
-        if "physical_constants" in updates:
-            pc_update = updates["physical_constants"]
+        if "physical_setup" in updates:
+            pc_update = updates["physical_setup"]
             if isinstance(pc_update, dict):
                 # If dict, use copy method with updates
-                new_phys_const = self.physical_constants.copy(**pc_update)
+                new_phys_setup = self.physical_setup.copy(**pc_update)
+            elif isinstance(pc_update, PhysicalSetup):
+                # If PhysicalSetup instance, use directly
+                new_phys_setup = pc_update
             else:
-                # If PhysicalConstants instance, use directly
-                new_phys_const = pc_update
+                raise TypeError("physical_setup update must be a PhysicalSetup instance or a dict of updates")
         else:
-            # Deep copy existing physical constants
-            new_phys_const = self.physical_constants.copy()
+            # Deep copy existing physical setup
+            new_phys_setup = self.physical_setup.copy()
 
         if "system_dims" in updates:
             new_system_dims = updates["system_dims"]
         else:
             # Create new instance with same values
             new_system_dims = SystemDimensions(
-                cavity_levels=self.system_dims.cavity_levels,
+                cavity_levels=(
+                    self.system_dims.cavity_levels.copy()
+                    if isinstance(self.system_dims.cavity_levels, list)
+                    else self.system_dims.cavity_levels
+                ),
                 qubit_levels=(
                     self.system_dims.qubit_levels.copy()
                     if isinstance(self.system_dims.qubit_levels, list)
                     else self.system_dims.qubit_levels
                 ),
-                field_levels=self.system_dims.field_levels,
+
             )
 
         if "measurement" in updates:
@@ -886,7 +997,7 @@ class ExperimentalParameters:
             new_random_seed = updates["random_seed"]
 
         return ExperimentalParameters(
-            physical_constants=new_phys_const,
+            physical_setup=new_phys_setup,
             system_dims=new_system_dims,
             measurement=new_measurement,
             initial_state=new_initial_state,
@@ -902,38 +1013,47 @@ class ExperimentalParameters:
         parameters, organized by their logical groups with validation status flags.
         """
         lines = []
-        # System Dimensions Group
+
+        def _callable_name(fn: Callable[[float], float]) -> str:
+            return getattr(fn, "__name__", type(fn).__name__)
+
+        # System dimensions group
         lines.append("SYSTEM DIMENSIONS")
 
-        # Calculate total dimension
-        n_qubits = self.physical_constants.n_qubits
-        qubit_levels_list = self.system_dims.qubit_levels
-        if isinstance(qubit_levels_list, list):
-            qubit_dim = np.prod(qubit_levels_list)
-        else:
-            qubit_dim = qubit_levels_list
+        n_qubits = self.physical_setup.n_qubits
+        n_cavities = self.physical_setup.n_cavities
+        qubit_levels = self.system_dims.qubit_levels
+        cavity_levels = self.system_dims.cavity_levels
+        total_dim = self.system_dims.total_dim
 
-        total_dim = self.system_dims.cavity_levels * qubit_dim * self.system_dims.field_levels
+        lines.append(f"  Number of cavities:   {n_cavities:>6}")
         lines.append(f"  Number of qubits:     {n_qubits:>6}")
-        lines.append(f"  Cavity levels:        {self.system_dims.cavity_levels:>6}")
-        lines.append(f"  Qubit levels:         {self.system_dims.qubit_levels}")
-        lines.append(f"  Field levels:         {self.system_dims.field_levels:>6}")
+        lines.append(f"  Cavity levels:        {cavity_levels}")
+        lines.append(f"  Qubit levels:         {qubit_levels}")
         lines.append(f"  Total dimension:      {total_dim:>6}")
 
-        # Physical Constants Group
-        lines.append("PHYSICAL CONSTANTS")
-        lines.append(f"  Chi:                  {self.physical_constants.chi}")
-        lines.append(
-            f"  Photon cavity coupling: {self.physical_constants.photon_cavity_coupling:>6.4f}"
-        )
-        lines.append(f"  Inverse pulse width:  {self.physical_constants.inverse_pulse_width:>8.4f}")
+        # Physical Setup Group
+        lines.append("PHYSICAL SETUP")
+        lines.append(f"  Qubit-Cavity coupling:")
+        for (qubit, cavity), coupling in self.physical_setup.qubit_cavity_coupling.items():
+            lines.append(f"      Qubit {qubit}, Cavity {cavity}: {coupling}")
+        lines.append(f"  Cavity-Cavity coupling:")
+        for (cavity1, cavity2), coupling in self.physical_setup.cavity_cavity_coupling.items():
+            lines.append(f"      Cavity {cavity1}, Cavity {cavity2}: {coupling}")
+        lines.append(f"  Qubit-Cavity time modulation:")
+        for (qubit, cavity), function in self.physical_setup.qubit_cavity_time_modulation.items():
+            lines.append(f"      Qubit {qubit}, Cavity {cavity}: {function} (callable: {_callable_name(function)})")
+        lines.append(f"  Cavity-Cavity time modulation:")
+        for (cavity1, cavity2), function in self.physical_setup.cavity_cavity_time_modulation.items():
+            lines.append(f"      Cavity {cavity1}, Cavity {cavity2}: {function} (callable: {_callable_name(function)})")
+        lines.append(f"  Inverse pulse width:  {self.physical_setup.inverse_pulse_width:>8.4f}")
 
         # Qubit Interactions
-        if self.physical_constants.qubit_interactions:
+        if self.physical_setup.qubit_interactions:
             lines.append(
-                f"  Qubit interactions:   {len(self.physical_constants.qubit_interactions)} interaction(s)"
+                f"  Qubit interactions:   {len(self.physical_setup.qubit_interactions)} interaction(s)"
             )
-            for i, interaction in enumerate(self.physical_constants.qubit_interactions):
+            for i, interaction in enumerate(self.physical_setup.qubit_interactions):
                 lines.append(
                     f"    [{i}] Qubits {interaction.qubit_indices}: "
                     f"{interaction.interaction_type.value}, χ={interaction.chi:.4f}"
@@ -985,12 +1105,14 @@ class ExperimentalParameters:
         # Overall System Status
         lines.append("SYSTEM STATUS")
 
+        lines.append(f"  Random seed:          {self.random_seed}")
+
         try:
             self._validate_configuration()
             lines.append("  Configuration:        VALID")
-        except ValueError as e:
+        except (TypeError, ValueError) as exc:
             lines.append("  Configuration:        INVALID")
-            lines.append(f"  Error:                {str(e)}")
+            lines.append(f"  Error:                {str(exc)}")
 
         return "\n".join(lines)
 

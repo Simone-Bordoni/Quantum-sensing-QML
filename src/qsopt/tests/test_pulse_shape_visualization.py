@@ -21,7 +21,7 @@ from qsopt.core.experimental_parameters import (
     InitialStateConfig,
     InitialStateType,
     MeasurementProtocol,
-    PhysicalConstants,
+    PhysicalSetup,
     SystemDimensions,
 )
 from qsopt.utils.visualization import plot_pulse_shape_with_measurements
@@ -71,7 +71,7 @@ class TestPulseShapeVisualization:
     @pytest.fixture
     def exp_params(self):
         """Create test experimental parameters."""
-        physical_constants = PhysicalConstants(
+        physical_setup = PhysicalSetup(
             chi=0.01, photon_cavity_coupling=0.1, inverse_pulse_width=0.1
         )
         system_dims = SystemDimensions(cavity_levels=2, qubit_levels=2, field_levels=2)
@@ -83,7 +83,7 @@ class TestPulseShapeVisualization:
         )
 
         return ExperimentalParameters(
-            physical_constants=physical_constants,
+            physical_setup=physical_setup,
             system_dims=system_dims,
             measurement=measurement,
             initial_state=initial_state,
