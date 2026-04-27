@@ -65,9 +65,9 @@ class DetectionMetric:
             
             - 'max computational distance': doesn't detect and maximizes the distance between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: Callable[[array, array], array] distance function. default is contrast
+                detection_param: Tuple[Callable[[array, array], array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
 
-    detection_param : Union[int, List[str], List[int]], optional
+    detection_param : Union[int, List[str], List[int], Tuple[Callable[[array, array], array], float]], optional
         Parameter for the detection criterion, defaults to None
     multiple_measurement_logic: Tuple[type,Callable[[type,type], type], optional
         Protocol that aggregates detection measures from multiple measurements. Contains an initialization value, an aggregator function and a post-aggregation function. 
@@ -107,7 +107,7 @@ class DetectionMetric:
 
     def __init__(
         self,  n_qubits: int, metric: Optional[Callable[[float,float], float]] = None, \
-            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int]]] = None, \
+            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[array, array], array], float]]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator[Array], Aggregator[list]]] = None, \
             batching_logic: Optional[Callable[...,Tuple[float]]] = None, \
             protocol_name: Optional[str] = None, \
@@ -208,7 +208,7 @@ class DetectionMetric:
             
             - 'max computational distance': maximizes the distance between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: Callable[[array, array], array] distance function. default is contrast
+                detection_param: Tuple[Callable[[array, array], array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
         
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
@@ -402,7 +402,7 @@ class DetectionMetric:
                 detection_param: None\n\n\
             - 'max computational distance': maximizes the distance between interaction and \n\
                 non interaction measurements (on the computational basis) for all the states \n\
-                detection_param: Callable[[array, array], array] distance function. default is contrast" \
+                detection_param: Tuple[Callable[[array, array], array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9" \
             )
 
     def __repr__(self) -> str:
