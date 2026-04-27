@@ -322,32 +322,44 @@ class DetectionMetric:
                 self.post_aggregation = lambda x: x
                 self.multiple_measurement_name = 'list aggregation'
 
-            if detection_param is None:
-                detection_param = lambda x, y: (x - y)
+            if detection_param is None: # default distance is squared Euclidean and default hardness is 0.9
+                distance_metric = lambda x, y: jnp.power(x - y, 2)
+                hardness = 0.9 
             else:
-                if not callable(detection_param):
+                x,y = detection_param
+                if x and not callable(x):
                     raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': expected a callable "
-                        "that takes two arrays and returns an array of the same shape."
+                        "Invalid detection_param for criterion 'max computational distance': expected a tuple with"
+                        "first element a callable that takes two arrays and returns an array of the same shape."
                     )
 
                 probe_with = jnp.asarray(np.random.rand(100))
                 probe_without = jnp.asarray(np.random.rand(100))
                 try:
-                    probe_distance = detection_param(probe_with, probe_without)
+                    probe_distance = x(probe_with, probe_without)
                 except (TypeError, ValueError) as exc:
                     raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': callable must accept "
+                        "Invalid detection_param for criterion 'max computational distance': the callable must accept "
                         "two arrays (interacting and non interacting detection measures) and return "
                         "an array of the same shape."
                     ) from exc
 
                 if jnp.shape(probe_distance) != jnp.shape(probe_with):
                     raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': return value must "
-                        "have the same shape as inputs."
+                        "Invalid detection_param for criterion 'max computational distance':"
+                        "the callable's return value must have the same shape as inputs."
                     )
-            distance_metric = detection_param
+                if y and not (isinstance(y, (int, float)) and 0 < y < 1):
+                    raise ValueError(
+                        "Invalid detection_param for criterion 'max computational distance': expected a tuple with"
+                        "second element a float between 0 and 1 representing the hardness of the detection."
+                    )
+                if x is None:
+                    distance_metric = lambda x, y: jnp.power(x - y, 2)
+                elif y is None:
+                    hardness = 0.9
+                
+            (distance_metric, hardness) = detection_param
             
             # batching logic is updated to             
             @staticmethod
@@ -358,9 +370,10 @@ class DetectionMetric:
                 detect_without = jnp.array(detect_without_batch)
                 # Shape: (batch_size, n_measurements, n_states)
                 # Sum over states (axis=-1), then average over batch and measurements
-                distance = jnp.mean(jnp.sum(jnp.abs(distance_metric(detect_with, detect_without)), axis=-1)) / 2
+                distance = distance_metric(detect_with, detect_without) - 2*hardness*distance_metric(detect_with, jnp.zeros_like(detect_with)) - 2*hardness*distance_metric(detect_without, jnp.zeros_like(detect_without))
+                average_dist = jnp.mean(jnp.sum(distance, axis=-1))/2
 
-                return distance, 0
+                return average_dist, 0
             
             if not self.custom_batch:
                 self.batching_logic = max_dist_batching
