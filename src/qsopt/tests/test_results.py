@@ -298,6 +298,39 @@ class TestSweepResults:
             assert np.allclose(loaded.results["detection_map"], detection_map)
             assert loaded.metadata["optimal_chi"] == 0.5
 
+    def test_save_load_sweep_results_with_numpy_metadata_scalars(self):
+        """Regression test for numpy scalar metadata JSON serialization."""
+        chi_vals = np.linspace(0.1, 1.0, 3)
+        gamma_vals = np.linspace(0.01, 0.1, 3)
+        metric_map = np.random.rand(3, 3)
+
+        original = SweepResults(
+            param1_name="gamma",
+            param1_vals=gamma_vals,
+            param1_scale="linear",
+            param2_name="chi",
+            param2_vals=chi_vals,
+            param2_scale="linear",
+            results={"metric_map": metric_map},
+            metadata={
+                "optimal_gamma": np.float64(0.05),
+                "optimal_chi": np.float32(0.5),
+                "best_index": np.int64(2),
+                "index_vector": np.array([1, 2, 3], dtype=np.int64),
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = Path(tmpdir) / "sweep_numpy_metadata.npz"
+            save_results(original, str(filepath))
+            loaded = load_results(str(filepath))
+
+            assert isinstance(loaded, SweepResults)
+            assert loaded.metadata["best_index"] == 2
+            assert loaded.metadata["optimal_gamma"] == pytest.approx(0.05)
+            assert loaded.metadata["optimal_chi"] == pytest.approx(0.5)
+            assert loaded.metadata["index_vector"] == [1, 2, 3]
+
     def test_str_multi_qubit_detection(self):
         """Test n-qubit detection in str representation."""
         times = np.linspace(0, 5, 10)

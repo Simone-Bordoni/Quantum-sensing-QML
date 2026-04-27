@@ -65,9 +65,9 @@ class DetectionMetric:
             
             - 'max computational distance': doesn't detect and maximizes the distance between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: Tuple[Callable[[array, array], array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
+                detection_param: Tuple[Callable[[Array, Array], Array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
 
-    detection_param : Union[int, List[str], List[int], Tuple[Callable[[array, array], array], float]], optional
+    detection_param : Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]], optional
         Parameter for the detection criterion, defaults to None
     multiple_measurement_logic: Tuple[type,Callable[[type,type], type], optional
         Protocol that aggregates detection measures from multiple measurements. Contains an initialization value, an aggregator function and a post-aggregation function. 
@@ -107,7 +107,7 @@ class DetectionMetric:
 
     def __init__(
         self,  n_qubits: int, metric: Optional[Callable[[float,float], float]] = None, \
-            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[array, array], array], float]]] = None, \
+            detection_criterion: str = "any excited", detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator[Array], Aggregator[list]]] = None, \
             batching_logic: Optional[Callable[...,Tuple[float]]] = None, \
             protocol_name: Optional[str] = None, \
@@ -208,7 +208,7 @@ class DetectionMetric:
             
             - 'max computational distance': maximizes the distance between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: Tuple[Callable[[array, array], array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
+                detection_param: Tuple[Callable[[Array, Array], Array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
         
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
@@ -323,9 +323,13 @@ class DetectionMetric:
                 self.multiple_measurement_name = 'list aggregation'
 
             if detection_param is None: # default distance is squared Euclidean and default hardness is 0.9
-                distance_metric = lambda x, y: jnp.power(x - y, 2)
-                hardness = 0.9 
+                detection_param = (lambda x, y: jnp.power(x - y, 2), 0.9)
             else:
+                if not (isinstance(detection_param, tuple) and len(detection_param) == 2):
+                    raise ValueError(
+                        "Invalid detection_param for criterion 'max computational distance': expected a tuple with a callable and a float."
+                    )
+
                 x,y = detection_param
                 if x and not callable(x):
                     raise ValueError(
@@ -355,17 +359,17 @@ class DetectionMetric:
                         "second element a float between 0 and 1 representing the hardness of the detection."
                     )
                 if x is None:
-                    distance_metric = lambda x, y: jnp.power(x - y, 2)
-                elif y is None:
-                    hardness = 0.9
-                
+                    detection_param[0] = lambda x, y: jnp.power(x - y, 2)
+                if y is None:
+                    detection_param[1] = 0.9
+            
             (distance_metric, hardness) = detection_param
             
             # batching logic is updated to             
             @staticmethod
             @jit
             def max_dist_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
-                -> Tuple[float, float, float]:
+                -> Tuple[float, float]:
                 detect_with = jnp.array(detect_with_batch)
                 detect_without = jnp.array(detect_without_batch)
                 # Shape: (batch_size, n_measurements, n_states)
@@ -402,7 +406,7 @@ class DetectionMetric:
                 detection_param: None\n\n\
             - 'max computational distance': maximizes the distance between interaction and \n\
                 non interaction measurements (on the computational basis) for all the states \n\
-                detection_param: Tuple[Callable[[array, array], array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9" \
+                detection_param: Tuple[Callable[[Array, Array], Array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9" \
             )
 
     def __repr__(self) -> str:
@@ -437,7 +441,7 @@ def std_batching(detect_with_batch: List[float],detect_without_batch: List[float
 @staticmethod
 @jit
 def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
-    -> Tuple[float, float, float]:
+    -> Tuple[float, float]:
 
     n_subsystems = len(detect_with_batch[0][0].dims[0])
     n = range(n_subsystems)
@@ -454,7 +458,7 @@ def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: Lis
 @staticmethod
 @jit
 def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
-    -> Tuple[float, float, float]:
+    -> Tuple[float, float]:
 
     n_subsystems = len(detect_with_batch[0][0].dims[0])
     n = range(n_subsystems)

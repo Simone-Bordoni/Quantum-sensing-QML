@@ -22,6 +22,17 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 
 
+def _json_default_serializer(value: object) -> object:
+    """Convert NumPy and path objects into JSON-serializable Python values."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 @dataclass
 class TimeEvolutionResults:
     """
@@ -239,7 +250,9 @@ def save_results(
             data["measurement_times"] = np.asarray(results.measurement_times)
 
         # Save metadata as JSON string
-        data["metadata"] = np.array([json.dumps(results.metadata)], dtype="U")
+        data["metadata"] = np.array(
+            [json.dumps(results.metadata, default=_json_default_serializer)], dtype="U"
+        )
 
     elif isinstance(results, SweepResults):
         data["_type"] = np.array(["SweepResults"], dtype="U")
@@ -255,7 +268,9 @@ def save_results(
             data[f"result_{key}"] = val
 
         # Save metadata as JSON string
-        data["metadata"] = np.array([json.dumps(results.metadata)], dtype="U")
+        data["metadata"] = np.array(
+            [json.dumps(results.metadata, default=_json_default_serializer)], dtype="U"
+        )
 
     else:
         raise TypeError(f"Expected TimeEvolutionResults or SweepResults, got {type(results)}")
