@@ -21,18 +21,6 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 
-
-def _json_default_serializer(value: object) -> object:
-    """Convert NumPy and path objects into JSON-serializable Python values."""
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, Path):
-        return str(value)
-    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-
 @dataclass
 class TimeEvolutionResults:
     """
