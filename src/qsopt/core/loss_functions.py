@@ -353,10 +353,10 @@ class DetectionMetric:
                         "Invalid detection_param for criterion 'max computational distance':"
                         "the callable's return value must have the same shape as inputs."
                     )
-                if y and not (isinstance(y, (int, float)) and 0 < y < 1):
+                if y and not (isinstance(y, (int, float)) and 0 < y <= 1):
                     raise ValueError(
                         "Invalid detection_param for criterion 'max computational distance': expected a tuple with"
-                        "second element a float between 0 and 1 representing the hardness of the detection."
+                        "second element a float between 0 (excluded) and 1 (included) representing the hardness of the detection."
                     )
                 if x is None:
                     detection_param[0] = lambda x, y: jnp.power(x - y, 2)
@@ -365,6 +365,8 @@ class DetectionMetric:
             
             (distance_metric, hardness) = detection_param
             
+            hardness = float(2+hardness-3) # rescale hardness so that 0.5 corresponds to no rescaling, 1 corresponds to maximum hardness and 0 corresponds to minimum hardness
+
             # batching logic is updated to             
             @staticmethod
             @jit
