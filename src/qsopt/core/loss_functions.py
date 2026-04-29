@@ -365,7 +365,7 @@ class DetectionMetric:
             
             (distance_metric, hardness) = detection_param
             
-            hardness = float(2+hardness-3) # rescale hardness so that 0.5 corresponds to no rescaling, 1 corresponds to maximum hardness and 0 corresponds to minimum hardness
+            cost_scaling = float(2+hardness-3)*2 # rescale hardness so that 0.5 corresponds to no rescaling, 1 corresponds to maximum hardness and 0 corresponds to minimum hardness
 
             # batching logic is updated to             
             @staticmethod
@@ -376,7 +376,7 @@ class DetectionMetric:
                 detect_without = jnp.array(detect_without_batch)
                 # Shape: (batch_size, n_measurements, n_states)
                 # Sum over states (axis=-1), then average over batch and measurements
-                distance = distance_metric(detect_with, detect_without) - 2*hardness*distance_metric(detect_with, jnp.zeros_like(detect_with)) - 2*hardness*distance_metric(detect_without, jnp.zeros_like(detect_without))
+                distance = distance_metric(detect_with, detect_without) - cost_scaling*distance_metric(detect_with, jnp.zeros_like(detect_with)) - cost_scaling*distance_metric(detect_without, jnp.zeros_like(detect_without))
                 average_dist = jnp.mean(jnp.sum(distance, axis=-1))/2
 
                 return average_dist, 0
