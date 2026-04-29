@@ -808,6 +808,8 @@ class Experiment:
         )
         metric_value = self.detection_metric.metric(detect_with, detect_without)
 
+        if 
+
 
         if debug:
             self.debug_times.append({ f'save_callback' : t.time()})
@@ -1319,6 +1321,9 @@ class Experiment:
             static_args.append(2)  # objective_function arg: measurement_noise_batch
             zero_uncertainty_batch = tuple(0.0 for _ in range(batch_size))
 
+            def generate_uncertainty_batch():
+                    return zero_uncertainty_batch
+
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Objective with no uncertainty."""
 
@@ -1339,9 +1344,15 @@ class Experiment:
 
                 metric = detection_metric.metric(detect_with, detect_without)
 
-                return -metric, (detect_with, detect_without, metric)
+                return -metric, (detect_with, detect_without, metric, [result_with], [result_without])
 
         else:
+
+            def generate_uncertainty_batch():
+                return jnp.asarray(
+                    np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
+                    dtype=float,
+                )
 
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
@@ -1363,7 +1374,7 @@ class Experiment:
 
                 metric = detection_metric.metric(detect_with, detect_without)
 
-                return -metric, (detect_with, detect_without, metric)
+                return -metric, (detect_with, detect_without, metric, batch_result_with, batch_result_without)
 
         jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 
@@ -1421,16 +1432,11 @@ class Experiment:
         grad_norm = float("inf")
 
         for step in range(start_step, num_steps):
-            if time_uncertainty > 0:
-                measurement_uncertainty_batch = jnp.asarray(
-                    np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
-                    dtype=float,
-                )
-            else:
-                measurement_uncertainty_batch = zero_uncertainty_batch
+            
+            measurement_uncertainty_batch = generate_uncertainty_batch()  # Generate new uncertainty batch for this step (even if not used, to keep randomness in hot start)
 
             # Compute gradients using JAX autodiff
-            grads, (detection_with, detection_without, step_metric) = jax.grad(
+            grads, (detection_with, detection_without, step_metric, batch_result_with, batch_result_without) = jax.grad(
                 jitted_objective, has_aux=True
             )(params, base_measurement_times, measurement_uncertainty_batch)
 
