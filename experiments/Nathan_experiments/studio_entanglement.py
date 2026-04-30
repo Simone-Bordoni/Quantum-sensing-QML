@@ -54,8 +54,8 @@ DEFAULT_SETUP_CONFIG = {
 
 DEFAULT_TRAINING_CONFIG = {
     "tot_steps": 10000,
-    "checkpoint_interval": 200,
-    "tolerance": 1e-9,
+    "checkpoint_interval": 500,
+    "tolerance": 1e-8,
     "optimizer_name": "sgd",
     "learning_rate": 0.05,
 }
@@ -71,11 +71,14 @@ EXPERIMENT_GROUP_CONFIGS = [
         "default_training_overrides": {},
         "experiments": [
             {"variant": "no_no"},
-            {"variant": "ent_no"},
-            {"variant": "ent_ent"},
-            {"variant": "z_no"},
-            {
-                "variant": "zent_ent",
+            {"variant": "ent_no",
+                "training_overrides": {"tolerance": 1e-13, "tot_steps": 20000, "optimizer": optax.adam(0.05)}},
+            {"variant": "ent_ent",
+                "training_overrides": {"tot_steps": 30000, "optimizer": optax.adam(0.05)}},
+            {"variant": "z_no",
+                "training_overrides": {"tot_steps": 30000, "optimizer": optax.adam(0.05)}},
+            {"variant": "zent_ent",
+                "training_overrides": {"tot_steps": 20000, "optimizer": optax.adam(0.05)}
                 # Example: uncomment to tune one experiment only.
                 # "training_overrides": {"learning_rate": 0.02, "tot_steps": 14000},
                 # "training_overrides": {"optimizer": optax.adam(0.02)},
@@ -90,11 +93,15 @@ EXPERIMENT_GROUP_CONFIGS = [
         "default_setup_overrides": {},
         "default_training_overrides": {},
         "experiments": [
-            {"variant": "no_no"},
-            {"variant": "ent_no"},
-            {"variant": "ent_ent"},
+            {"variant": "no_no",
+                "training_overrides": {"tot_steps": 20000, "optimizer": optax.adam(0.05)}},
+            {"variant": "ent_no",
+                "training_overrides": {"tot_steps": 30000, "optimizer": optax.adam(0.05)}},
+            {"variant": "ent_ent",
+                "training_overrides": {"tot_steps": 20000, "optimizer": optax.adam(0.05)}},
             {"variant": "z_no"},
-            {"variant": "zent_ent"},
+            {"variant": "zent_ent",
+                "training_overrides": {"tot_steps": 20000, "tolerance": 1e-13, "optimizer": optax.adam(0.05)},},
         ],
     },
 ]
@@ -417,15 +424,7 @@ def run_experiment_with_checkpoints(
     )
 
     if history is not None and history.converged:
-        log_event(
-            "TRAINING_END",
-            exp_name,
-            (
-                f"status=already_converged epoch={history.epoch} "
-                f"best_metric={history.best_metric} {get_last_gradient_info(history)}"
-            ),
-        )
-        return history
+        history.converged = False
 
     while missing_steps > 0:
         steps_to_run = min(checkpoint_interval, missing_steps)
@@ -453,6 +452,7 @@ def run_experiment_with_checkpoints(
 
     if history is None:
         log_event("TRAINING_END", exp_name, "status=skipped reason=tot_steps<=0")
+        log_event("", "", "-" * 80)
         return None
 
     log_event(
@@ -530,4 +530,5 @@ for group_cfg in EXPERIMENT_GROUP_CONFIGS:
     )
 
 
-log_event("END PROGRAM", "All experiments completed", "-" * 70)
+log_event("END PROGRAM", "All experiments completed", "*" * 70)
+log_event("", "", "-" * 80)

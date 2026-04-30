@@ -1319,6 +1319,9 @@ class Experiment:
             static_args.append(2)  # objective_function arg: measurement_noise_batch
             zero_uncertainty_batch = tuple(0.0 for _ in range(batch_size))
 
+            def get_measurement_batch():
+                return zero_uncertainty_batch
+
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Objective with no uncertainty."""
 
@@ -1343,6 +1346,12 @@ class Experiment:
 
         else:
 
+            def get_measurement_batch():
+                measurement_uncertainty_batch = jnp.asarray(
+                    np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
+                    dtype=float,
+                )
+                return measurement_uncertainty_batch
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
 
@@ -1421,13 +1430,8 @@ class Experiment:
         grad_norm = float("inf")
 
         for step in range(start_step, num_steps):
-            if time_uncertainty > 0:
-                measurement_uncertainty_batch = jnp.asarray(
-                    np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
-                    dtype=float,
-                )
-            else:
-                measurement_uncertainty_batch = zero_uncertainty_batch
+
+            measurement_uncertainty_batch = get_measurement_batch()
 
             # Compute gradients using JAX autodiff
             grads, (detection_with, detection_without, step_metric) = jax.grad(
