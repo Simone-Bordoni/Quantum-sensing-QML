@@ -463,11 +463,13 @@ def run_experiment_with_checkpoints(
             f"best_metric={history.best_metric} {get_last_gradient_info(history)}"
         ),
     )
+    log_event("", "", "-" * 80)
     return history
 
 
 def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=False):
     for exp_name in list(experiment_bundle.keys()):
+        
         history = None
 
         try:

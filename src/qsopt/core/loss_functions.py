@@ -353,10 +353,10 @@ class DetectionMetric:
                         "Invalid detection_param for criterion 'max computational distance':"
                         "the callable's return value must have the same shape as inputs."
                     )
-                if y and not (isinstance(y, (int, float)) and 0 < y < 1):
+                if y and not (isinstance(y, (int, float)) and 0 < y <= 1):
                     raise ValueError(
                         "Invalid detection_param for criterion 'max computational distance': expected a tuple with"
-                        "second element a float between 0 and 1 representing the hardness of the detection."
+                        "second element a float between 0 (excluded) and 1 (included) representing the hardness of the detection."
                     )
                 if x is None:
                     detection_param[0] = lambda x, y: jnp.power(x - y, 2)
@@ -365,6 +365,8 @@ class DetectionMetric:
             
             (distance_metric, hardness) = detection_param
             
+            cost_scaling = float(2+hardness-3)*2 # rescale hardness so that 0.5 corresponds to no rescaling, 1 corresponds to maximum hardness and 0 corresponds to minimum hardness
+
             # batching logic is updated to             
             @staticmethod
             @jit
@@ -374,7 +376,7 @@ class DetectionMetric:
                 detect_without = jnp.array(detect_without_batch)
                 # Shape: (batch_size, n_measurements, n_states)
                 # Sum over states (axis=-1), then average over batch and measurements
-                distance = distance_metric(detect_with, detect_without) - 2*hardness*distance_metric(detect_with, jnp.zeros_like(detect_with)) - 2*hardness*distance_metric(detect_without, jnp.zeros_like(detect_without))
+                distance = distance_metric(detect_with, detect_without) - cost_scaling*distance_metric(detect_with, jnp.zeros_like(detect_with)) - cost_scaling*distance_metric(detect_without, jnp.zeros_like(detect_without))
                 average_dist = jnp.mean(jnp.sum(distance, axis=-1))/2
 
                 return average_dist, 0
