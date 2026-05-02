@@ -1316,9 +1316,9 @@ class Experiment:
 
         if time_uncertainty == 0:
             static_args.append(2)  # objective_function arg: measurement_noise_batch
-            zero_uncertainty_batch = tuple(0.0 for _ in range(batch_size))
+            zero_uncertainty_batch = tuple(0.0 for _ in range(len(base_measurement_times)))
 
-            def generate_uncertainty_batch():
+            def get_measurement_batch():
                     return zero_uncertainty_batch
 
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):

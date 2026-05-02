@@ -67,6 +67,7 @@ EXPERIMENT_GROUP_CONFIGS = [
     {
         "n_qubits": 2,
         "detection_criterion": "max computational distance",
+        "detection_param": None,
         "default_setup_overrides": {},
         "default_training_overrides": {},
         "experiments": [
@@ -90,6 +91,7 @@ EXPERIMENT_GROUP_CONFIGS = [
     {
         "n_qubits": 3,
         "detection_criterion": "max computational distance",
+        "detection_param": None,
         "default_setup_overrides": {},
         "default_training_overrides": {},
         "experiments": [
@@ -321,6 +323,7 @@ def build_experiment_bundle(group_config):
     detection_metric = DetectionMetric(
         n_qubits=n_qubits,
         detection_criterion=group_config.get("detection_criterion", "max computational distance"),
+        detection_param=group_config.get("detection_param", None),
     )
 
     base_setup = merge_nested_dict(DEFAULT_SETUP_CONFIG, group_config.get("default_setup_overrides", {}))
@@ -504,6 +507,7 @@ def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=Fal
 
         except Exception as error:
             log_event("TRAINING_ERROR", exp_name, f"error={error}")
+            log_event("", "", "-" * 80)
             with open(os.path.join(error_folder, "error_log.txt"), "a", encoding="utf-8") as handle:
                 handle.write(f"Error in experiment {exp_name}: {str(error)}\n")
 

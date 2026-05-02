@@ -63,9 +63,8 @@ class DetectionMetric:
             - 'max trace distance': doesn't detect and evolves the mixture of states, maximizes the trace distance
                 Doesn't take any parameter, detection_param default None
             
-            - 'max computational distance': doesn't detect and maximizes the distance between interaction and 
+            - 'max computational distance': doesn't detect and maximizes the orthogonality between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: Tuple[Callable[[Array, Array], Array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
 
     detection_param : Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]], optional
         Parameter for the detection criterion, defaults to None
@@ -206,9 +205,9 @@ class DetectionMetric:
             - 'max trace distance': doesn't detect and evolves the mixture of states, maximizes the trace distance
                 detection_param: None
             
-            - 'max computational distance': maximizes the distance between interaction and 
+            - 'max computational distance': maximizes the orthogonality between interaction and 
             non interaction measurements (on the computational basis) for all the states
-                detection_param: Tuple[Callable[[Array, Array], Array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9
+                detection_param: None
         
         """
         if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
@@ -322,64 +321,62 @@ class DetectionMetric:
                 self.post_aggregation = lambda x: x
                 self.multiple_measurement_name = 'list aggregation'
 
-            if detection_param is None: # default distance is squared Euclidean and default hardness is 0.9
-                detection_param = (lambda x, y: jnp.power(x - y, 2), 0.9)
+            if self.detection_param is None:
+                self.detection_param = (4,2)
             else:
-                if not (isinstance(detection_param, tuple) and len(detection_param) == 2):
-                    raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': expected a tuple with a callable and a float."
-                    )
+                if not isinstance(self.detection_param, tuple) or len(self.detection_param) != 2:
+                    raise ValueError("max computational distance detection expects detection_param to be a tuple of two numbers: (inverse_pow_coefficient, pow_exp)"
+                                     "if inverse_pow_coefficient is set to 0, the higher term correction will not be used. Default value is (4,2)"
+                                     f"Value given: {self.detection_param}")
+                
+            a = self.detection_param[0]
+            if a == 0:
+                pow_coeff = 0
+            else:
+                pow_coeff = -1/a
+            pow_exp = b = self.detection_param[1]
+            linear_coeff = c = 1 - pow_coeff
 
-                x,y = detection_param
-                if x and not callable(x):
-                    raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': expected a tuple with"
-                        "first element a callable that takes two arrays and returns an array of the same shape."
-                    )
+            if (a != 0) and (b<=1):
+                raise ValueError("max computational distance detection expects the pow_exp parameter (the exponent of the higher term correction) to be greater than 1 to ensure that the correction is subdominant. Default value is 2."
+                                 f"Value given: {pow_exp}")
+            elif (a != 0) and (a+1) <= b:
+                raise ValueError("max computational distance detection expects the parameters to satisfy the relation inverse_pow_coefficient+1 > pow_exp to ensure that the maximum of the corrected orthogonality is equal to 1. Default values are (4,2)"
+                                 f"Values given: inverse_pow_coefficient={a}, pow_exp={pow_exp}")
 
-                probe_with = jnp.asarray(np.random.rand(100))
-                probe_without = jnp.asarray(np.random.rand(100))
-                try:
-                    probe_distance = x(probe_with, probe_without)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': the callable must accept "
-                        "two arrays (interacting and non interacting detection measures) and return "
-                        "an array of the same shape."
-                    ) from exc
+                
+            if pow_coeff != 0:
+                # batching logic is updated to             
+                @staticmethod
+                @jit
+                def max_dist_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
+                    -> Tuple[float, float]:
+                    detect_with = jnp.array(detect_with_batch)
+                    detect_without = jnp.array(detect_without_batch)
+                    # Shape: (batch_size, n_measurements, n_states)
+                    # Sum over states (axis=-1), then average over batch and measurements
+                    single_measurement_orthogonality = jnp.sum(detect_with*detect_without, axis=-1) # Shape: (batch_size, n_measurements)
+                    power_correction = pow_coeff * jnp.pow(single_measurement_orthogonality, pow_exp)
+                    corrected_orthogonality = linear_coeff * single_measurement_orthogonality + power_correction
+                    tot_orthogonality = jnp.prod(corrected_orthogonality, axis=-1) # Shape: (batch_size)
+                    mean_orthogonality = jnp.mean(tot_orthogonality)
 
-                if jnp.shape(probe_distance) != jnp.shape(probe_with):
-                    raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance':"
-                        "the callable's return value must have the same shape as inputs."
-                    )
-                if y and not (isinstance(y, (int, float)) and 0 < y <= 1):
-                    raise ValueError(
-                        "Invalid detection_param for criterion 'max computational distance': expected a tuple with"
-                        "second element a float between 0 (excluded) and 1 (included) representing the hardness of the detection."
-                    )
-                if x is None:
-                    detection_param[0] = lambda x, y: jnp.power(x - y, 2)
-                if y is None:
-                    detection_param[1] = 0.9
-            
-            (distance_metric, hardness) = detection_param
-            
-            cost_scaling = float(2+hardness-3)*2 # rescale hardness so that 0.5 corresponds to no rescaling, 1 corresponds to maximum hardness and 0 corresponds to minimum hardness
+                    return 0, mean_orthogonality
+            else:
+                # batching logic is updated to             
+                @staticmethod
+                @jit
+                def max_dist_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
+                    -> Tuple[float, float]:
+                    detect_with = jnp.array(detect_with_batch)
+                    detect_without = jnp.array(detect_without_batch)
+                    # Shape: (batch_size, n_measurements, n_states)
+                    # Sum over states (axis=-1), then average over batch and measurements
+                    single_measurement_orthogonality = jnp.sum(detect_with*detect_without, axis=-1) # Shape: (batch_size, n_measurements)
+                    tot_orthogonality = jnp.prod(single_measurement_orthogonality, axis=-1) # Shape: (batch_size)
+                    mean_orthogonality = jnp.mean(tot_orthogonality)
 
-            # batching logic is updated to             
-            @staticmethod
-            @jit
-            def max_dist_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
-                -> Tuple[float, float]:
-                detect_with = jnp.array(detect_with_batch)
-                detect_without = jnp.array(detect_without_batch)
-                # Shape: (batch_size, n_measurements, n_states)
-                # Sum over states (axis=-1), then average over batch and measurements
-                distance = distance_metric(detect_with, detect_without) - cost_scaling*distance_metric(detect_with, jnp.zeros_like(detect_with)) - cost_scaling*distance_metric(detect_without, jnp.zeros_like(detect_without))
-                average_dist = jnp.mean(jnp.sum(distance, axis=-1))/2
-
-                return average_dist, 0
+                    return 0, mean_orthogonality
             
             if not self.custom_batch:
                 self.batching_logic = max_dist_batching
@@ -406,9 +403,8 @@ class DetectionMetric:
                 detection_param: None\n\n\
             - 'max trace distance': computes the trace distance between the interacting and non interacting states \n\
                 detection_param: None\n\n\
-            - 'max computational distance': maximizes the distance between interaction and \n\
-                non interaction measurements (on the computational basis) for all the states \n\
-                detection_param: Tuple[Callable[[Array, Array], Array], float] distance function and hardness. default is squared Euclidean distance with hardness 0.9" \
+            - 'max computational distance': maximizes the orthogonality between interaction and \n\
+                non interaction measurements (on the computational basis) for all the states."\
             )
 
     def __repr__(self) -> str:
