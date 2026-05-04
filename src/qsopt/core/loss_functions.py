@@ -38,33 +38,34 @@ class DetectionMetric:
     Parameters
     ----------
     n_qubits : int
+        Number of qubits in the system.
     metric : Callable[[float,float], float], optional
         Custom function that takes detection measures with and without photon and derives a metric value (loss).
-        If None, defaults to lambda x,y: -(x-y)
-        Number of qubits, defaults to 2
+        If None, defaults to std_metric (contrast: x - y).
     detection_criterion : str, optional
-        Critirion of detection, each criterion uses differently detection_param:
+        Criterion of detection, each criterion uses differently detection_param:
 
-            - 'any excited' (default): detects if there is any excitation. Corresponds to
-                Doesn't take any parameter, detection_param default None
+            - 'any excited' (default): detects if there is any excitation.
+                Takes no parameter, detection_param default None
 
             - 'min excited': detects if there are more than a set number of excitations.
-                Takes int number of excitation as parameter, detection_param default 2
+                Takes int number of excitations as parameter, detection_param default 1
 
             - 'excited qubits': detects if one or more of the qubits in a list are excited
                 Takes List[int] list of qubit indexes, detection_param default [0]
 
             - 'custom states': detects states that belong to a list of states
-                Takes List[str] list of state keys, detection_param default ['00...0']
+                Takes List[str] list of state keys (e.g., ['00', '11']), detection_param default None (all-zeros state)
 
-            - 'min fidelity': doesn't detect and evolves the mixture of states, minimizes the fidelity 
-                Doesn't take any parameter, detection_param default None
+            - 'min fidelity': evolves the mixture of states, minimizes the fidelity between with/without photon
+                Takes no parameter, detection_param default None
 
-            - 'max trace distance': doesn't detect and evolves the mixture of states, maximizes the trace distance
-                Doesn't take any parameter, detection_param default None
+            - 'max trace distance': evolves the mixture of states, maximizes the trace distance between with/without photon
+                Takes no parameter, detection_param default None
             
-            - 'max computational distance': doesn't detect and maximizes the orthogonality between interaction and 
-            non interaction measurements (on the computational basis) for all the states
+            - 'max computational distance': maximizes the orthogonality between interaction and 
+            non-interaction measurements (on the computational basis) for all states
+                Takes optional Tuple[float, float] (inverse_pow_coefficient, pow_exp), default (4, 2)
 
     detection_param : Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]], optional
         Parameter for the detection criterion, defaults to None
@@ -82,25 +83,20 @@ class DetectionMetric:
 
     Examples (for 2 qubits)
     --------
-    >>> # Default: detect anything except |00⟩
-    >>> detector = DetectionMetric()
-    >>> probs = {'p00': 0.1, 'p01': 0.2, 'p10': 0.3, 'p11': 0.4}
-    >>> detector(probs)
-    0.9
-
-    >>> # Custom: detect only |11⟩
-    >>> def detect_11(probs):
-    ...     return probs['p11']
-    >>> detector = DetectionMetric(detect_11, name="P(11)")
-    >>> detector(probs)
-    0.4
-
-    >>> # Custom: detect qubit 2 in |1⟩
-    >>> def detect_q2(probs):
-    ...     return probs['p01'] + probs['p11']
-    >>> detector = DetectionMetric(detect_q2, name="P(q2=1)")
-    >>> detector(probs)
+    >>> # Default: detect anything except |00⟩ with contrast metric
+    >>> detector = DetectionMetric(n_qubits=2)
+    >>> # Simulate measurement: 90% excited state detected with photon, 30% without
+    >>> contrast = detector(measure_with_photon=0.9, measure_without_photon=0.3)
+    >>> contrast
     0.6
+
+    >>> # Custom: detect only |11⟩ state
+    >>> detector = DetectionMetric(n_qubits=2, detection_criterion='custom states', detection_param=['11'])
+    >>> detector(measure_with_photon=0.4, measure_without_photon=0.1)
+    0.3
+
+    >>> # Minimize fidelity between with/without photon density matrices
+    >>> detector = DetectionMetric(n_qubits=2, detection_criterion='min fidelity')
     """
  
 
@@ -185,7 +181,22 @@ class DetectionMetric:
         return self.metric(measure_with_photon, measure_without_photon)
 
     def build_detection(self, criterion, detection_param):
-        """Possible criterions:
+        """
+        Build detection criterion and return corresponding states and criterion name.
+
+        Parameters
+        ----------
+        criterion : str
+            Detection criterion type
+        detection_param : optional
+            Parameters specific to the criterion
+
+        Returns
+        -------
+        tuple
+            (detection_states, criterion_name)
+        
+        Criterion types:
 
             - 'any excited': detects if there is any excitation.
                 detection_param: None
@@ -335,7 +346,7 @@ class DetectionMetric:
             else:
                 pow_coeff = -1/a
             pow_exp = b = self.detection_param[1]
-            linear_coeff = c = 1 - pow_coeff
+            linear_coeff = 1 - pow_coeff
 
             if (a != 0) and (b<=1):
                 raise ValueError("max computational distance detection expects the pow_exp parameter (the exponent of the higher term correction) to be greater than 1 to ensure that the correction is subdominant. Default value is 2."

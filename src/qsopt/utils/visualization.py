@@ -27,6 +27,7 @@ def plot_optimization_dashboard(
     show_parameters: bool = True,
     show_trajectory: bool = True,
     show_detection_measures: bool = True,
+    show_confusion_matrix_summary: bool = False,
     figsize: Tuple[int, int] = (16, 18),
     save_path: Optional[str] = None,
     dpi: int = 300,
@@ -49,6 +50,8 @@ def plot_optimization_dashboard(
         show_gradients: Display gradient magnitude evolution plot when True
         show_parameters: Display parameter evolution plot when True
         show_detection_measures: Display detection measures plot
+        show_confusion_matrix_summary: Display confusion matrix and protocol/state summary
+            when True and callback values are available
         figsize: Figure size as ``(width, height)`` in inches (default: 16x18)
         save_path: Optional path to save the figure (e.g., ``'dashboard.pdf'``)
             If None, figure is displayed but not saved
@@ -73,6 +76,24 @@ def plot_optimization_dashboard(
         ...                                   show_gradients=False,
         ...                                   show_detection_measures=False)
     """
+    # Confusion-matrix summary panel is shown only if explicitly requested and
+    # callback carries at least one related piece of information.
+    has_state_probabilities = (
+        optimization_callback.state_probabilities_with is not None
+        and optimization_callback.state_probabilities_without is not None
+    )
+    has_detection_protocol = bool(
+        optimization_callback.interaction_detection_states
+        or optimization_callback.noninteraction_detection_states
+    )
+    has_confusion_values = any(
+        getattr(optimization_callback, key, 0.0) > 0.0
+        for key in ("true_positive", "true_negative", "false_positive", "false_negative")
+    )
+    show_confusion_summary_panel = show_confusion_matrix_summary and (
+        has_state_probabilities or has_detection_protocol or has_confusion_values
+    )
+
     # Count active plots to determine layout
     active_plots = [
         show_metric,
@@ -80,6 +101,7 @@ def plot_optimization_dashboard(
         show_trajectory,
         show_parameters,
         show_detection_measures,
+        show_confusion_summary_panel,
     ]
     n_plots = sum(active_plots)
 
@@ -334,6 +356,73 @@ def plot_optimization_dashboard(
         # Add colorbar
         cbar = plt.colorbar(scatter, ax=ax)
         cbar.set_label("Epoch", fontsize=10)
+
+    # Plot 6: Confusion Matrix + Protocol/Probabilities Summary
+    if show_confusion_summary_panel:
+        ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
+        axes.append(ax)
+        plot_idx += 1
+
+        tp = float(getattr(optimization_callback, "true_positive", 0.0))
+        fn = float(getattr(optimization_callback, "false_negative", 0.0))
+        fp = float(getattr(optimization_callback, "false_positive", 0.0))
+        tn = float(getattr(optimization_callback, "true_negative", 0.0))
+
+        cm_values = np.array([[tp, fn], [fp, tn]], dtype=float)
+        im = ax.imshow(cm_values, cmap="Blues", vmin=0.0, vmax=max(1.0, float(np.max(cm_values))))
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["Pred: Interaction", "Pred: No interaction"], rotation=20, ha="right")
+        ax.set_yticks([0, 1])
+        ax.set_yticklabels(["True: Photon", "True: No photon"])
+        ax.set_title("Confusion Matrix", fontsize=14)
+
+        labels = [["TP", "FN"], ["FP", "TN"]]
+        for i in range(2):
+            for j in range(2):
+                ax.text(
+                    j,
+                    i,
+                    f"{labels[i][j]}\n{cm_values[i, j]:.4f}",
+                    ha="center",
+                    va="center",
+                    color="black",
+                    fontsize=10,
+                    fontweight="bold",
+                )
+
+        summary_lines = []
+        if has_detection_protocol:
+            interaction_states = optimization_callback.interaction_detection_states
+            noninteraction_states = optimization_callback.noninteraction_detection_states
+            summary_lines.append("Protocol:")
+            summary_lines.append(f"  Interaction: {interaction_states}")
+            summary_lines.append(f"  No interaction: {noninteraction_states}")
+
+        if has_state_probabilities:
+            with_probs = optimization_callback.state_probabilities_with or {}
+            without_probs = optimization_callback.state_probabilities_without or {}
+            ordered_states = sorted(set(with_probs.keys()) | set(without_probs.keys()))
+            summary_lines.append("State probabilities:")
+            for state in ordered_states:
+                p_with = float(with_probs.get(state, 0.0))
+                p_without = float(without_probs.get(state, 0.0))
+                summary_lines.append(f"  {state}: with={p_with:.4f}, without={p_without:.4f}")
+
+        if summary_lines:
+            ax.text(
+                1.05,
+                0.5,
+                "\n".join(summary_lines),
+                transform=ax.transAxes,
+                va="center",
+                ha="left",
+                fontsize=9,
+                family="monospace",
+                bbox=dict(boxstyle="round", facecolor="#f8f9fa", alpha=0.9),
+                clip_on=False,
+            )
 
     # Overall title
     plt.suptitle("Optimization Dashboard", fontsize=18)

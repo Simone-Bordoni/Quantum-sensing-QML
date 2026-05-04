@@ -22,6 +22,7 @@ class OptimizationCallback:
     - Trainable parameters (initial and final circuit trainable parameters)
     - Gradients and optimizer state
     - Best parameters found (maximizing the metric)
+    - Detection state classification and confusion matrix metrics
 
     Attributes:
         save_every (int): Save history every N epochs
@@ -30,6 +31,14 @@ class OptimizationCallback:
         history (Dict): Complete optimization history
         best_trainable_params (Optional): Best trainable parameters found
         best_metrics (Optional[Dict]): Metrics at best parameters
+        interaction_detection_states (List[str]): Binary strings representing quantum states 
+            where photon interaction is detected (e.g., '001', '010')
+        noninteraction_detection_states (List[str]): Binary strings representing quantum states
+            where no photon interaction is detected (e.g., '000', '100')
+        true_positive (float): Sum of probabilities for interaction detection states with photons
+        true_negative (float): Sum of probabilities for non-interaction states without photons
+        false_positive (float): Sum of probabilities for interaction detection states without photons
+        false_negative (float): Sum of probabilities for non-interaction states with photons
     """
 
     def __init__(self, save_every: int = 1, save_best: bool = True):
@@ -52,9 +61,21 @@ class OptimizationCallback:
         self.best_metric: float = -float("inf")
         self.best_metrics: Optional[Dict[str, float]] = None
 
+        # Optional per-run state probabilities populated by experiment.run_simulation
+        self.state_probabilities_with: Optional[Dict[str, float]] = None
+        self.state_probabilities_without: Optional[Dict[str, float]] = None
+
         # Optimization completion info
         self.converged: bool = False
         self.final_grad_norm: Optional[float] = None
+
+        # Detection state tracking from set_measurement_protocol
+        self.interaction_detection_states: List[str] = []
+        self.noninteraction_detection_states: List[str] = []
+        self.true_positive: float = 0.0
+        self.true_negative: float = 0.0
+        self.false_positive: float = 0.0
+        self.false_negative: float = 0.0
 
     @staticmethod
     def _empty_history_template() -> Dict[str, List[Any]]:
@@ -85,6 +106,8 @@ class OptimizationCallback:
         metric: float = 0.0,
         optimizer_state: Any = None,
         grads: Any = None,
+        state_probabilities_with: Optional[Dict[str, float]] = None,
+        state_probabilities_without: Optional[Dict[str, float]] = None,
     ) -> None:
         """
         Record metrics from current optimization step.
@@ -140,6 +163,52 @@ class OptimizationCallback:
                 "detection_with": float(detection_with),
                 "detection_without": float(detection_without),
             }
+
+        if state_probabilities_with is not None and state_probabilities_without is not None:
+            self.set_measurement_protocol(state_probabilities_with, state_probabilities_without)
+
+    def set_measurement_protocol(self, with_photon: Optional[Dict[str, float]], without_photon: Optional[Dict[str, float]]) -> None:
+        """
+        Set state probabilities for the current optimization step and classify detection states.
+
+        Classifies quantum states based on measurement outcomes:
+        - Interaction detection states: where P(with_photon) > P(without_photon)
+        - Non-interaction states: where P(without_photon) >= P(with_photon)
+        
+        States are represented as binary strings, e.g., for 3 qubits: '000', '001', ..., '111'
+        formatted as format(i, f"0{n_qubits}b") for i in range(2**n_qubits).
+
+        This can be used to update the state probabilities at any point during optimization,
+        such as after a final evaluation run.
+
+        Args:
+            with_photon: Dict mapping binary state strings to probabilities with photon interaction
+            without_photon: Dict mapping binary state strings to probabilities without photon interaction
+        """
+    
+        self.state_probabilities_with = copy.deepcopy(with_photon)
+        self.state_probabilities_without = copy.deepcopy(without_photon)
+
+        self.interaction_detection_states = []  # Binary strings where interaction is detected
+        self.noninteraction_detection_states = []  # Binary strings where no interaction is detected
+        self.true_positive = 0.0  # P(interaction state | with photon)
+        self.true_negative = 0.0  # P(non-interaction state | without photon)
+        self.false_positive = 0.0  # P(interaction state | without photon)
+        self.false_negative = 0.0  # P(non-interaction state | with photon)
+
+        # Classify states based on measurement outcome probabilities
+        for (state, p_with) in with_photon.items():
+            p_without = without_photon.get(state, 0.0)
+            if p_with > p_without:
+                # Photon interaction more likely - classify as interaction detection state
+                self.interaction_detection_states.append(state)
+                self.true_positive += p_with
+                self.false_positive += p_without
+            elif p_without >= p_with:
+                # Photon absence more likely - classify as non-interaction state
+                self.noninteraction_detection_states.append(state)
+                self.true_negative += p_without
+                self.false_negative += p_with
 
     def get_best_trainable_params(self) -> Optional[tuple[list, list]]:
         """
@@ -292,6 +361,20 @@ class OptimizationCallback:
             "final_grad_norm": np.array(final_grad_norm_value),
         }
 
+        # Save optional per-run state probabilities if available
+        if self.state_probabilities_with is not None:
+            save_dict["state_probabilities_with"] = np.array(self.state_probabilities_with, dtype=object)
+        if self.state_probabilities_without is not None:
+            save_dict["state_probabilities_without"] = np.array(self.state_probabilities_without, dtype=object)
+
+        # Save detection states and metrics
+        save_dict["interaction_detection_states"] = np.array(self.interaction_detection_states, dtype=object)
+        save_dict["noninteraction_detection_states"] = np.array(self.noninteraction_detection_states, dtype=object)
+        save_dict["true_positive"] = np.array(self.true_positive)
+        save_dict["true_negative"] = np.array(self.true_negative)
+        save_dict["false_positive"] = np.array(self.false_positive)
+        save_dict["false_negative"] = np.array(self.false_negative)
+
         # Add best parameters if available
         if self.best_trainable_params is not None:
             initial_best, final_best = self.best_trainable_params
@@ -411,6 +494,39 @@ class OptimizationCallback:
                 "detection_without": float(np.asarray(data["best_detection_without"]).item()),
             }
 
+        # Restore optional per-run state probabilities if present
+        if "state_probabilities_with" in data:
+            try:
+                callback.state_probabilities_with = data["state_probabilities_with"].tolist()
+            except Exception:
+                try:
+                    callback.state_probabilities_with = data["state_probabilities_with"].item()
+                except Exception:
+                    callback.state_probabilities_with = data["state_probabilities_with"]
+
+        if "state_probabilities_without" in data:
+            try:
+                callback.state_probabilities_without = data["state_probabilities_without"].tolist()
+            except Exception:
+                try:
+                    callback.state_probabilities_without = data["state_probabilities_without"].item()
+                except Exception:
+                    callback.state_probabilities_without = data["state_probabilities_without"]
+
+        # Restore detection states and metrics
+        if "interaction_detection_states" in data:
+            callback.interaction_detection_states = data["interaction_detection_states"].tolist()
+        if "noninteraction_detection_states" in data:
+            callback.noninteraction_detection_states = data["noninteraction_detection_states"].tolist()
+        if "true_positive" in data:
+            callback.true_positive = float(np.asarray(data["true_positive"]).item())
+        if "true_negative" in data:
+            callback.true_negative = float(np.asarray(data["true_negative"]).item())
+        if "false_positive" in data:
+            callback.false_positive = float(np.asarray(data["false_positive"]).item())
+        if "false_negative" in data:
+            callback.false_negative = float(np.asarray(data["false_negative"]).item())
+
         return callback
 
     def reset(self) -> None:
@@ -447,6 +563,14 @@ class OptimizationCallback:
         self.best_metrics = None
         self.converged = False
         self.final_grad_norm = None
+        self.state_probabilities_with = None
+        self.state_probabilities_without = None
+        self.interaction_detection_states = []
+        self.noninteraction_detection_states = []
+        self.true_positive = 0.0
+        self.true_negative = 0.0
+        self.false_positive = 0.0
+        self.false_negative = 0.0
 
     def __repr__(self) -> str:
         """
@@ -500,6 +624,33 @@ class OptimizationCallback:
             lines.append(f"     With photon:    {self.best_metrics['detection_with']:.6f}")
             lines.append(f"     Without photon: {self.best_metrics['detection_without']:.6f}")
             lines.append(f"     Metric:            {self.best_metrics['metric']:.6f}")
+
+        if self.state_probabilities_with is not None and self.state_probabilities_without is not None:
+            lines.append("  State Probabilities:")
+            lines.append("     With photon:")
+            for state, prob in self.state_probabilities_with.items():
+                lines.append(f"        {state}: {prob:.6f}")
+            lines.append("     Without photon:")
+            for state, prob in self.state_probabilities_without.items():
+                lines.append(f"        {state}: {prob:.6f}")
+
+        # Show detection protocol and confusion matrix
+        if self.interaction_detection_states or self.noninteraction_detection_states:
+            lines.append("  Detection Protocol:")
+            if self.interaction_detection_states:
+                lines.append(f"     Interaction states: {self.interaction_detection_states}")
+            if self.noninteraction_detection_states:
+                lines.append(f"     Non-interaction states: {self.noninteraction_detection_states}")
+
+        if self.true_positive > 0 or self.true_negative > 0 or self.false_positive > 0 or self.false_negative > 0:
+            lines.append("  Confusion Matrix:")
+            lines.append(f"     " + "-"*20)
+            lines.append(f"     True Positive:  {self.true_positive:.6f}")
+            lines.append(f"     False Negative: {self.false_negative:.6f}")
+            lines.append(f"     " + "-"*20)
+            lines.append(f"     True Negative:  {self.true_negative:.6f}")
+            lines.append(f"     False Positive: {self.false_positive:.6f}")
+            lines.append(f"     " + "-"*20)
 
         return "\n".join(lines)
 

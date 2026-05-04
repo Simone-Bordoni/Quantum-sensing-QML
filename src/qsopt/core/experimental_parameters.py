@@ -447,7 +447,7 @@ class ExperimentalParameters:
             raise ValueError("Initial time uncertainty must be >= 0")
         return value
 
-    def get_measurement_times_with_uncertainty(self, batch_size: int = 1) -> np.ndarray:
+    def get_measurement_times_with_uncertainty(self, batch_size: int = 1, base_times: np.ndarray = None) -> np.ndarray:
         """
         Get measurement times with random shift due to initial time uncertainty.
 
@@ -467,7 +467,8 @@ class ExperimentalParameters:
             - batch_size>1: 2D array of shape (batch_size, n_times)
         """
         # Get base measurement times (absolute time values)
-        base_times = self.measurement_times
+        if base_times is None:
+            base_times = self.measurement_times
         uncertainty = self._resolve_initial_time_uncertainty()
 
         if batch_size == 1:

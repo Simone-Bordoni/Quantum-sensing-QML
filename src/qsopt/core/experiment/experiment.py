@@ -223,13 +223,13 @@ class Experiment:
         Generate operators for n-qubit system.
 
         Creates operators in composite Hilbert space:
-        input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2
+        input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
 
         Operators include:
         - Field and cavity creation/annihilation operators
         - Individual qubit Pauli operators (σx, σy, σz) for each qubit
-        - Joint measurement projectors |00⟩, |01⟩, |10⟩, |11⟩
-        - Individual qubit projectors
+        - Joint measurement projectors for all computational basis states
+        - Individual qubit projectors based on detection criterion
         """
         # Get system dimensions
         field_levels = self.experimental_params.field_levels
@@ -615,14 +615,14 @@ class Experiment:
             
             aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, detection_measure)
 
-        return detection_metric.post_aggregation(aggregate_measure) #rho_final
+        return detection_metric.post_aggregation(aggregate_measure)
 
 
     def debug_simulation(
         self,
         solver: qt.MESolver,
         rho: qt.Qobj,
-        measurements: Union[List[float], np.ndarray],
+        measurements: Union[List[float], np.ndarray, jnp.ndarray],
         args: Optional[Dict] = None,
         precomputed_unitaries: Optional[tuple] = None,
     ) -> jnp.ndarray:
@@ -652,15 +652,9 @@ class Experiment:
         # Get detection metric
         detection_metric = self.detection_metric
 
-        # Get measurement operators
-        # measure_reset = self.operators["measure_reset"]
-        # measure_reset_dag = self.operators["measure_reset_dag"]
-
-        measurement_array = np.asarray(measurements, dtype=float)
-        if measurement_array.ndim != 1 or measurement_array.size < 2:
-            raise ValueError("measurements must be a 1D array with at least 2 time points")
-
         # Get circuit unitaries
+        if precomputed_unitaries is None:
+            precomputed_unitaries = self._prepare_circuit_unitaries()
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
         # Initial state
@@ -671,9 +665,10 @@ class Experiment:
 
         self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
         n_meas=0                      ############################
+        rho_list = []                   #*****************************
 
         # Loop over measurement intervals
-        for t0, t1 in zip(measurement_array[:-1], measurement_array[1:]):
+        for t0, t1 in zip(measurements[:-1], measurements[1:]):
 
             rho_after_circuit = initial_unitary * rho_current * initial_unitary_dag  # type: ignore
             
@@ -686,24 +681,20 @@ class Experiment:
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
+            rho_list.append(rho_final)       #*****************************
+    
             # Measure probability of non detection and reset the qubit
-            rho_current, measurement_data = self.measure_reset(rho = rho_final)
-            #rho_reset = measure_reset * rho_final * measure_reset_dag
-            #prob_no_detect = jnp.real(rho_reset.tr())
-            #rho_current = rho_reset if prob_no_detect == 0 else rho_reset/prob_no_detect
+            rho_current, detection_measure = self.measure_reset(rho = rho_final)
             
-            aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, measurement_data)
+            aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, detection_measure)
 
-            #prob = prob * prob_no_detect
-            
             n_meas+=1       ####################
 
         self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
 
+        return detection_metric.post_aggregation(aggregate_measure), rho_list   #*****************************
 
-        return detection_metric.post_aggregation(aggregate_measure) #rho_final
-
-    def run_simulation(self, batch_size: int = 1, debug: bool=False) -> OptimizationCallback:
+    def run_simulation(self, batch_size: int = 1, measurement_times = None, states_probabilities: bool = False, debug: bool=False) -> OptimizationCallback:
         """
         Run n-qubit sensing protocol with current parameters.
 
@@ -717,7 +708,9 @@ class Experiment:
             batch_size: Number of random realizations to average over for measurement
                        uncertainty (default: 1). Each realization uses a different
                        random shift in measurement times based on initial_time_uncertainty.
-                    
+            measurement_times: Optional measurement times instead of the ones determined by the experimental parameters.
+            states_probabilities: Whether to return the probabilities of the final quantum states (default: False)
+            debug: Whether to enable detailed timing debug output (default: False)
         Returns:
             OptimizationCallback: Callback containing simulation results with:
                 - Single epoch (epoch=1)
@@ -730,10 +723,13 @@ class Experiment:
         """
         # Get initial state and solvers
 
-        if debug:
+        if debug or states_probabilities:
             self.debug_times = []
             self.step=0
             self.debug_times.append({ f'initialize_solvers' : t.time()})
+            batch_rho_with = []
+            batch_rho_without = []
+
  
         rho0 = self._cached_initial_state
         if rho0 is None:
@@ -745,15 +741,31 @@ class Experiment:
             self.debug_times.append({ f'get_measurements' : t.time()})
  
         # Prepare measurement time realizations for batch averaging
-        measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(
-            batch_size
-        )
+        if measurement_times is not None:
+            if isinstance(measurement_times, list):
+                measurement_times = np.array(measurement_times)
+            elif isinstance(measurement_times, np.ndarray):
+                measurement_times = measurement_times
+            elif isinstance(measurement_times, jnp.ndarray):
+                measurement_times = np.array(measurement_times)
+            else:
+                raise TypeError(f"measurement_times must be list, np.ndarray, or jnp.ndarray, got {type(measurement_times)}")
+
+            if measurement_times.shape[0] < 2:
+                raise ValueError(f"measurement_times must be at least of lenght 2, with a starting time and a final time, got lenght {measurement_times.shape}")
+            measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size, base_times=measurement_times)
+        else:
+            measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(
+                batch_size
+            )
         
         if measurement_times_batch.ndim == 1:
             measurement_sequences = [measurement_times_batch]
         else:
             measurement_sequences = [measurement_times_batch[i, :] for i in range(batch_size)]
 
+        if states_probabilities and len(measurement_sequences[0]) != 2:
+            raise ValueError("states_probabilities=True is only supported for single measurements")
 
         if debug:
             self.debug_times.append({ f'get_circuits' : t.time()})
@@ -768,31 +780,45 @@ class Experiment:
         if debug:
             self.debug_times.append({ f'start_measurement_loop' : t.time()})
 
-        simulation_fn = self.debug_simulation if debug else self.simulation
+        simulation_fn = self.debug_simulation if (debug or states_probabilities) else self.simulation
  
         for measurement_times in measurement_sequences:
             if debug:
                 self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})
     
             # Simulation with photon interaction
-            detection_with = simulation_fn(
+            result_with = simulation_fn(
                 solver=solver_with,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
+
+            if debug or states_probabilities:
+                detection_with, rho_list_with = result_with
+                batch_rho_with.append(rho_list_with)
+            else:
+                detection_with = result_with
+
             batch_with.append(detection_with)
 
             if debug:
                 self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})
 
             # Simulation without photon interaction (reference)
-            detection_without = simulation_fn(
+            result_without = simulation_fn(
                 solver=solver_without,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
+
+            if debug or states_probabilities:
+                detection_without, rho_list_without = result_without
+                batch_rho_without.append(rho_list_without)
+            else:
+                detection_without = result_without
+
             batch_without.append(detection_without)
             if debug:
                 self.step += 1
@@ -808,18 +834,59 @@ class Experiment:
         )
         metric_value = self.detection_metric.metric(detect_with, detect_without)
 
+        if states_probabilities:
+            P_all = self.operators['P_all']
+            
+            prob_with = []
+            for rho_list in batch_rho_with:
+                rho = rho_list[0]      # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
+                prob_with.append([np.real((proj * rho * proj).tr()) for proj in P_all])
+            
+            prob_without = []
+            for rho_list in batch_rho_without:
+                rho = rho_list[0]      # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
+                prob_without.append([np.real((proj * rho * proj).tr()) for proj in P_all])
+
+            # Shape before averaging:
+            #   prob_with / prob_without -> (batch_size, n_states)
+            # Note: only first measurement is used (rho_list[0]), so no measurement axis.
+            # Average across the batch axis only.
+            prob_with = np.array(prob_with)
+            prob_without = np.array(prob_without)
+
+            # Resulting shape after mean(axis=0): (n_states,)
+            avg_prob_with = np.mean(prob_with, axis=0).tolist()
+            avg_prob_without = np.mean(prob_without, axis=0).tolist()
+            state_prob_with = {format(i, f"0{self.n_qubits}b"): avg_prob_with[i] for i in range(len(avg_prob_with))}
+            state_prob_without = {format(i, f"0{self.n_qubits}b"): avg_prob_without[i] for i in range(len(avg_prob_without))}
+
         if debug:
             self.debug_times.append({ f'save_callback' : t.time()})
 
         # Create callback with single epoch for simulation results
         callback = OptimizationCallback(save_every=1, save_best=True)
-        callback(
-            trainable_params_initial=self.trainable_params_initial,
-            trainable_params_final=self.trainable_params_final,
-            detection_with=float(detect_with),
-            detection_without=float(detect_without),
-            metric=float(metric_value),
-        )
+
+        if states_probabilities:
+            
+            callback(
+                trainable_params_initial=self.trainable_params_initial,
+                trainable_params_final=self.trainable_params_final,
+                detection_with=float(detect_with),
+                detection_without=float(detect_without),
+                metric=float(metric_value),
+                state_probabilities_with=state_prob_with,
+                state_probabilities_without=state_prob_without,
+            )
+
+        else:
+
+            callback(
+                trainable_params_initial=self.trainable_params_initial,
+                trainable_params_final=self.trainable_params_final,
+                detection_with=float(detect_with),
+                detection_without=float(detect_without),
+                metric=float(metric_value),
+            )
 
         if debug:
             self.debug_times.append({ f'end_time' : t.time()})
@@ -839,6 +906,13 @@ class Experiment:
             print(f'\nTempo totale di simulazione = {sum}')
             print('='*50+'\n\n')
 
+        # Cleanup temporary debug attributes to free memory
+        for _attr in ("debug_times", "step"):
+            if hasattr(self, _attr):
+                try:
+                    delattr(self, _attr)
+                except Exception:
+                    pass
 
         return callback
 
@@ -1344,6 +1418,9 @@ class Experiment:
                 return -metric, (detect_with, detect_without, metric, [result_with], [result_without])
 
         else:
+            
+            if batch_size < 16 and verbose:
+                warnings.warn(f"Using a small batch size of {batch_size} for optimization with measurement uncertainty may lead to noisy gradients and slow convergence. Consider increasing the batch size for better performance.")
 
             def get_measurement_batch():
                 measurement_uncertainty_batch = jnp.asarray(
@@ -1461,7 +1538,7 @@ class Experiment:
             )
 
             # Progress output
-            if verbose and (step % verbose_step == 0 or grad_norm < tolerance or step <3):
+            if verbose and (step % verbose_step == 0 or grad_norm < tolerance or step-start_step <3):
                 new_time = t.time() - start_time
                 # Build parameter display (up to 4 each)
                 n_init_show = min(n_initial, 4)
@@ -1490,6 +1567,21 @@ class Experiment:
         best_final = [best_values[i] for i in range(n_initial, n_total)]
         self.initial_circuit.set_trainable_parameters(best_initial)
         self.final_circuit.set_trainable_parameters(best_final)
+
+        # Run simulation to get probabilities for each state with the best parameters
+        if time_uncertainty != 0 and batch_size < 16:
+            batch_size = 16 # Use a larger batch size for final evaluation to reduce noise in results when uncertainty is present
+
+        final_results_callback = self.run_simulation(batch_size=batch_size, 
+                                            measurement_times=[base_measurement_times[0], base_measurement_times[-1]], # run_simulation only accepts 1 measurement
+                                            states_probabilities=True,
+                                            debug=False
+                                            )
+
+        state_probs_with = final_results_callback.state_probabilities_with
+        state_probs_without = final_results_callback.state_probabilities_without
+            
+        callback.set_measurement_protocol(state_probs_with, state_probs_without)
 
         if verbose:
             print("=" * (5+len(header)))

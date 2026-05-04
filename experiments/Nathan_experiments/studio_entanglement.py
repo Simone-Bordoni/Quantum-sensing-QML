@@ -30,10 +30,10 @@ from qsopt.utils.visualization import plot_optimization_dashboard
 # Example Windows: r"C:\Users\your_name\Desktop"
 # Example Linux: "/home/your_name"
 MANUAL_HOME_FOLDER = r"/raid/home/ncampioni/Quantum-sensing-QML"
-override_default = False
+override_default = True
 
 # If True, runs continue from saved histories when available.
-CONTINUE_SAVED_RUNS = True
+CONTINUE_SAVED_RUNS = False
 
 # Optional deterministic run setup.
 RANDOM_SEED = None
@@ -62,29 +62,34 @@ DEFAULT_TRAINING_CONFIG = {
 
 
 # Configure here per-qubit-group and per-experiment overrides.
-# Each experiment can override both setup variables and training parameters.
+# Each experiment can override setup variables, training options, and optional
+# trainable circuit parameters (to replace random initialization).
 EXPERIMENT_GROUP_CONFIGS = [
     {
         "n_qubits": 2,
         "detection_criterion": "max computational distance",
         "detection_param": None,
-        "default_setup_overrides": {},
+        "default_setup_overrides": {"gm_factor": 15.0, "chi_factor": 2.0},
         "default_training_overrides": {},
         "experiments": [
             {"variant": "no_no"},
             {"variant": "ent_no",
-                "training_overrides": {"tolerance": 1e-13, "tot_steps": 20000, "optimizer": optax.adam(0.05)}},
+                "training_overrides": {"tolerance": 1e-13, "tot_steps": 20000}},
             {"variant": "ent_ent",
-                "training_overrides": {"tot_steps": 30000, "optimizer": optax.adam(0.05)}},
+                "training_overrides": {"tot_steps": 30000}},
             {"variant": "z_no",
-                "training_overrides": {"tot_steps": 30000, "optimizer": optax.adam(0.05)}},
+                "training_overrides": {"tot_steps": 30000}},
             {"variant": "zent_ent",
-                "training_overrides": {"tot_steps": 20000, "optimizer": optax.adam(0.05)}
+                "training_overrides": {"tot_steps": 20000}
                 # Example: uncomment to tune one experiment only.
                 # "training_overrides": {"learning_rate": 0.02, "tot_steps": 14000},
                 # "training_overrides": {"optimizer": optax.adam(0.02)},
                 # "training_overrides": {"optimizer_name": "adam", "learning_rate": 0.02},
                 # "setup_overrides": {"noise": {"dephasing": 5e-4}},
+                # "trainable_params_overrides": {
+                #     "initial": [0.1] * 9,
+                #     "final": [-0.1] * 6,
+                # },
             },
         ],
     },
@@ -96,14 +101,14 @@ EXPERIMENT_GROUP_CONFIGS = [
         "default_training_overrides": {},
         "experiments": [
             {"variant": "no_no",
-                "training_overrides": {"tot_steps": 20000, "optimizer": optax.adam(0.05)}},
+                "training_overrides": {"tot_steps": 20000}},
             {"variant": "ent_no",
-                "training_overrides": {"tot_steps": 30000, "optimizer": optax.adam(0.05)}},
+                "training_overrides": {"tot_steps": 30000}},
             {"variant": "ent_ent",
-                "training_overrides": {"tot_steps": 20000, "optimizer": optax.adam(0.05)}},
+                "training_overrides": {"tot_steps": 20000}},
             {"variant": "z_no"},
             {"variant": "zent_ent",
-                "training_overrides": {"tot_steps": 20000, "tolerance": 1e-13, "optimizer": optax.adam(0.05)},},
+                "training_overrides": {"tot_steps": 20000, "tolerance": 1e-13},},
         ],
     },
 ]
@@ -318,6 +323,70 @@ def build_circuit_variant(n_qubits, variant):
     raise ValueError(f"Unknown experiment variant={variant}")
 
 
+def _normalize_trainable_params(exp_name, param_group, values, expected_count):
+    parsed = np.asarray(values, dtype=float).reshape(-1)
+    if len(parsed) != expected_count:
+        raise ValueError(
+            f"{exp_name}: {param_group} trainable parameter count mismatch. "
+            f"Provided {len(parsed)}, expected {expected_count}."
+        )
+    return parsed
+
+
+def apply_trainable_params_overrides(experiment, exp_name, params_overrides):
+    if not params_overrides:
+        return
+
+    if not isinstance(params_overrides, dict):
+        raise TypeError(f"{exp_name}: trainable_params_overrides must be a dict")
+
+    initial_override = params_overrides.get("initial", None)
+    final_override = params_overrides.get("final", None)
+
+    n_initial = experiment.initial_circuit.count_trainable_parameters()
+    n_final = experiment.final_circuit.count_trainable_parameters()
+
+    if initial_override is not None:
+        initial_values = _normalize_trainable_params(
+            exp_name=exp_name,
+            param_group="initial",
+            values=initial_override,
+            expected_count=n_initial,
+        )
+        experiment.initial_circuit.set_trainable_parameters(initial_values.tolist())
+
+    if final_override is not None:
+        final_values = _normalize_trainable_params(
+            exp_name=exp_name,
+            param_group="final",
+            values=final_override,
+            expected_count=n_final,
+        )
+        experiment.final_circuit.set_trainable_parameters(final_values.tolist())
+
+
+def validate_experiment_parameter_counts(experiment_bundle):
+    for exp_name, exp_info in experiment_bundle.items():
+        experiment = exp_info["experiment"]
+
+        expected_initial = experiment.initial_circuit.count_trainable_parameters()
+        expected_final = experiment.final_circuit.count_trainable_parameters()
+
+        current_initial = len(experiment.initial_circuit.get_trainable_parameters())
+        current_final = len(experiment.final_circuit.get_trainable_parameters())
+
+        if current_initial != expected_initial:
+            raise ValueError(
+                f"{exp_name}: initial trainable parameter count mismatch. "
+                f"Current {current_initial}, expected {expected_initial}."
+            )
+        if current_final != expected_final:
+            raise ValueError(
+                f"{exp_name}: final trainable parameter count mismatch. "
+                f"Current {current_final}, expected {expected_final}."
+            )
+
+
 def build_experiment_bundle(group_config):
     n_qubits = int(group_config["n_qubits"])
     detection_metric = DetectionMetric(
@@ -339,6 +408,7 @@ def build_experiment_bundle(group_config):
 
         setup_config = merge_nested_dict(base_setup, experiment_cfg.get("setup_overrides", {}))
         training_config = merge_nested_dict(base_training, experiment_cfg.get("training_overrides", {}))
+        params_overrides = experiment_cfg.get("trainable_params_overrides", {})
 
         initial_circuit, final_circuit = build_circuit_variant(n_qubits, variant)
         experiment = create_std_experiment_setup(
@@ -347,6 +417,11 @@ def build_experiment_bundle(group_config):
             final_circuit=final_circuit,
             detection_metric=detection_metric,
             setup_config=setup_config,
+        )
+        apply_trainable_params_overrides(
+            experiment=experiment,
+            exp_name=exp_name,
+            params_overrides=params_overrides,
         )
 
         experiment_bundle[exp_name] = {
@@ -500,7 +575,7 @@ def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=Fal
                     show_gradients=True,
                     show_parameters=True,
                     show_detection_measures=True,
-                    show_trajectory=True,
+                    show_trajectory=False,
                     save_path=os.path.join(save_dir, f"dashboard_{exp_name}.pdf"),
                 )
                 plt.close(fig)
@@ -525,8 +600,14 @@ if RANDOM_SEED is not None:
     np.random.seed(int(RANDOM_SEED))
 
 
+all_experiment_bundles = []
 for group_cfg in EXPERIMENT_GROUP_CONFIGS:
     exp_bundle = build_experiment_bundle(group_cfg)
+    validate_experiment_parameter_counts(exp_bundle)
+    all_experiment_bundles.append(exp_bundle)
+
+
+for exp_bundle in all_experiment_bundles:
     run_experiment_ensemble(
         experiment_bundle=exp_bundle,
         save_dir=save_folder,

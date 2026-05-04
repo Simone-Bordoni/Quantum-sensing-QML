@@ -87,14 +87,20 @@ def generate_n_qubit_operators(
 
     Returns:
         Dictionary containing all operators in composite space:
-        - Field operators: a_in, a_in_dag
-        - Cavity operators: a, a_dag
-        - Lists of qubits operators: sigma_z, sigma_x, sigma_y, sigma_minus, sigma_plus
-        - Dictionary of all 2^n measurement projectors: P (matrix of joint qubit states)
-        - Lists of individual qubit projectors: P0_q, P1_q
+        - Field operators: a_in, a_in_dag (annihilation/creation for input field)
+        - Cavity operators: a, a_dag (annihilation/creation for cavity)
+        - Qubit operators: sigma_z, sigma_x, sigma_y, sigma_minus, sigma_plus (lists of embeddings)
+        - Joint measurement projectors:
+            * P_all0: Projector onto |00...0⟩ state
+            * P_all: List of projectors for all 2^n computational basis states
+            * P_detect: Projector onto detection states (based on detection_states parameter)
+            * P_no_detect: Projector onto non-detection states
+        - Individual qubit projectors: P0_q (ground states), P1_q (excited states)
+        - Measurement/reset operators: measure_reset, measure_reset_dag
         - Rotation operators:
-            * roty_q: list of Y-rotations on individual qubits
+            * roty_q: List of Y-rotation gates on individual qubits
             * roty: Simultaneous Y-rotation on all qubits
+        - Identity operators: I_field, I_cavity, I_q (for composite space construction)
     """
     # Handle qubit_levels as list or int
     if isinstance(qubit_levels, int):
@@ -137,6 +143,14 @@ def generate_n_qubit_operators(
         # Reset operators, individual qubits and global reset
         reset_q = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
         reset_all = qt.tensor([I_field, I_cavity]+ reset_q)
+        
+        # Projectors for all 2^n qubit states (joint projectors)
+        
+        Ptemp = [P0,P1]
+
+        all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]            
+        P_all = [qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
+            
 
         # Helper function to embed single-qubit operator in composite space
         def embed_qubit_op(op, qubit_idx):
@@ -163,6 +177,7 @@ def generate_n_qubit_operators(
             "P1_q": [embed_qubit_op(P1[i], i) for i in range(n_qubits)],
             # Global qubit projectors
             "P_all0": qt.tensor([I_field, I_cavity] + P0),  # Joint projector onto |00...0⟩
+            "P_all": P_all,  # List of all joint projectors for 2^n states
             # Reset operators
             "reset_q": reset_q, 
             "reset_all": reset_all, 
@@ -175,17 +190,7 @@ def generate_n_qubit_operators(
             "I_q": I_q,
         }
 
-        
-        Ptemp = [P0,P1]
-        
         if detection_states == 'all states':
-
-            all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]
-            P_all = [qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
-            
-            # Insert in dictionary all states projectors
-            operators['Pall'] = P_all
-            
             # Calculate measure reset operators
             measure_reset = [reset_all*p for p in P_all]
             measure_reset_dag = [x.dag() for x in measure_reset]
@@ -853,7 +858,7 @@ def embed_circuit_unitary(
     The circuit acts only on the qubit subspace (qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn).
 
     Args:
-        circuit_unitary: (Σ qubit_levels)x(Σ qubit_levels) unitary matrix for the n-qubit circuit as JAX array
+        circuit_unitary: (∏ qubit_levels)×(∏ qubit_levels) unitary matrix for n-qubit circuit (JAX array)
         field_levels: Number of levels in the input field subsystem
         cavity_levels: Number of levels in the resonator cavity subsystem
 
@@ -864,7 +869,7 @@ def embed_circuit_unitary(
         >>> # 2-qubit circuit unitary (4x4 for 2-level qubits)
         >>> U_circuit = jnp.eye(4, dtype=jnp.complex128)
         >>> U_full = embed_circuit_unitary(U_circuit, field_levels=2, cavity_levels=3)
-        >>> # U_full is now (2*3*4)x(2*3*4) = 24x24
+        >>> # U_full shape: (2*3*4)×(2*3*4) = 24×24
     """
     # Build full operator using JAX Kronecker products
     # I_field ⊗ I_cavity ⊗ U_circuit

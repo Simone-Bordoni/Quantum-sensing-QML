@@ -360,6 +360,72 @@ def test_plot_optimization_dashboard_no_plots_raises():
         )
 
 
+def test_plot_optimization_dashboard_confusion_summary_panel_enabled_with_data():
+    """Test confusion matrix summary panel renders when toggle is on and callback has data."""
+    from qsopt import OptimizationCallback
+    from qsopt.utils import plot_optimization_dashboard
+
+    callback = OptimizationCallback(save_every=1, save_best=True)
+    callback(
+        trainable_params_initial=[1.0],
+        trainable_params_final=[0.5],
+        detection_with=0.7,
+        detection_without=0.3,
+        metric=0.4,
+    )
+    callback.set_measurement_protocol(
+        with_photon={"0": 0.2, "1": 0.8},
+        without_photon={"0": 0.7, "1": 0.3},
+    )
+
+    fig = plot_optimization_dashboard(
+        callback,
+        show_metric=False,
+        show_gradients=False,
+        show_parameters=False,
+        show_trajectory=False,
+        show_detection_measures=True,
+        show_confusion_matrix_summary=True,
+    )
+
+    assert fig is not None
+    assert isinstance(fig, Figure)
+    # Detection plot + confusion matrix + its colorbar
+    assert len(fig.axes) == 3
+    plt.close(fig)
+
+
+def test_plot_optimization_dashboard_confusion_summary_panel_skipped_without_data():
+    """Toggle on should not render summary panel when callback has no confusion/protocol data."""
+    from qsopt import OptimizationCallback
+    from qsopt.utils import plot_optimization_dashboard
+
+    callback = OptimizationCallback(save_every=1, save_best=True)
+    callback(
+        trainable_params_initial=[1.0],
+        trainable_params_final=[0.5],
+        detection_with=0.7,
+        detection_without=0.3,
+        metric=0.4,
+    )
+
+    fig = plot_optimization_dashboard(
+        callback,
+        show_metric=False,
+        show_gradients=False,
+        show_parameters=False,
+        show_trajectory=False,
+        show_detection_measures=True,
+        show_confusion_matrix_summary=True,
+    )
+
+    assert fig is not None
+    assert isinstance(fig, Figure)
+    # Only detection plot should be present
+    assert len(fig.axes) == 1
+    plt.close(fig)
+
+
 def test_plot_time_evolution_with_cavity_population():
     """Test plot_time_evolution with cavity population enabled."""
     from qsopt.utils import plot_time_evolution

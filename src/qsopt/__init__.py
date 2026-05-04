@@ -13,6 +13,7 @@ __email__ = "simone.bordoni@uniroma1.it, nathan.campioni@gmail.com"
 from .core.callback import OptimizationCallback
 from .core.circuit import QuantumCircuit, create_ry_circuit
 from .core.experiment import Experiment
+from .core.gates import CNOTGate, CZGate, HadamardGate, RXGate, RYGate, RZGate
 from .core.loss_functions import DetectionMetric
 
 # Core experimental framework
