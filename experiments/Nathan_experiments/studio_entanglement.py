@@ -44,7 +44,7 @@ DEFAULT_SETUP_CONFIG = {
     "gm_factor": 15.0,
     "chi_factor": 2.0,
     "pair_chi": 0.1,
-    "measurement_times_scaled": [-5.0, -2.5, 0.0, 2.5, 5.0],
+    "measurement_times_scaled": [-5.0, 0.0, 5.0],
     "noise": {
         "depolarizing": 1e-4,
         "dephasing": 1e-4,
@@ -64,6 +64,24 @@ DEFAULT_TRAINING_CONFIG = {
 # Configure here per-qubit-group and per-experiment overrides.
 # Each experiment can override setup variables, training options, and optional
 # trainable circuit parameters (to replace random initialization).
+#
+# Example usage of trainable parameter overrides:
+# - Without previous params (explicit values):
+#   "trainable_params_overrides": {
+#       "initial": [0.1] * 6,
+#       "final": [-0.1] * 3,
+#   }
+#
+# - With previous params (reuse best saved params):
+#   "trainable_params_overrides": {
+#       "initial": {"best_from": "2qb_ent_ent", "which": "initial"},
+#       "final": {"best_from": "2qb_ent_ent", "which": "final"},
+#   }
+#
+# - Mixing new params with previous best (append/prepend):
+#   "trainable_params_overrides": {
+#       "initial": [0.0, 0.0, {"best_from": "2qb_ent_ent", "which": "initial", "position": "append"}],
+#   }
 EXPERIMENT_GROUP_CONFIGS = [
     {
         "n_qubits": 2,
@@ -74,13 +92,32 @@ EXPERIMENT_GROUP_CONFIGS = [
         "experiments": [
             {"variant": "no_no"},
             {"variant": "ent_no",
-                "training_overrides": {"tolerance": 1e-13, "tot_steps": 20000}},
+                "trainable_params_overrides": {
+                    "initial": [0,0, {"best_from": "2qb_no_no", "which": "initial", "position": "append"}],
+                    "final": {"best_from": "2qb_no_no", "which": "final"},
+                }
+            },
             {"variant": "ent_ent",
-                "training_overrides": {"tot_steps": 30000}},
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [0,0, {"best_from": "2qb_no_no", "which": "initial", "position": "append"}],
+                    "final": [0,0, {"best_from": "2qb_no_no", "which": "final", "position": "append"}],
+                }
+            },
             {"variant": "z_no",
-                "training_overrides": {"tot_steps": 30000}},
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [{"best_from": "2qb_no_no", "which": "initial", "position": "prepend"},0,0],
+                    "final": {"best_from": "2qb_no_no", "which": "final"},
+                }
+            },
             {"variant": "zent_ent",
-                "training_overrides": {"tot_steps": 20000}
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [0,0, {"best_from": "2qb_z_no", "which": "initial", "position": "append"}],
+                    "final": [0,0, {"best_from": "2qb_z_no", "which": "final", "position": "append"}],
+                }
+            },
                 # Example: uncomment to tune one experiment only.
                 # "training_overrides": {"learning_rate": 0.02, "tot_steps": 14000},
                 # "training_overrides": {"optimizer": optax.adam(0.02)},
@@ -90,7 +127,6 @@ EXPERIMENT_GROUP_CONFIGS = [
                 #     "initial": [0.1] * 9,
                 #     "final": [-0.1] * 6,
                 # },
-            },
         ],
     },
     {
@@ -101,14 +137,39 @@ EXPERIMENT_GROUP_CONFIGS = [
         "default_training_overrides": {},
         "experiments": [
             {"variant": "no_no",
-                "training_overrides": {"tot_steps": 20000}},
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [0, {"best_from": "2qb_no_no", "which": "initial", "position": "append"}],
+                    "final": [0, {"best_from": "2qb_no_no", "which": "final", "position": "append"}],
+                }
+            },
             {"variant": "ent_no",
-                "training_overrides": {"tot_steps": 30000}},
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [0,0,0, {"best_from": "3qb_no_no", "which": "initial", "position": "append"}],
+                    "final": {"best_from": "3qb_no_no", "which": "final"},
+                }
+            },
             {"variant": "ent_ent",
-                "training_overrides": {"tot_steps": 20000}},
-            {"variant": "z_no"},
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [0,0,0, {"best_from": "3qb_no_no", "which": "initial", "position": "append"}],
+                    "final": [0,0,0, {"best_from": "3qb_no_no", "which": "final", "position": "append"}],
+                }
+            },
+            {"variant": "z_no",
+                "trainable_params_overrides": {
+                    "initial": [{"best_from": "3qb_no_no", "which": "initial", "position": "prepend"}, 0,0,0],
+                    "final": {"best_from": "3qb_no_no", "which": "final"},
+                }
+            },
             {"variant": "zent_ent",
-                "training_overrides": {"tot_steps": 20000, "tolerance": 1e-13},},
+                "training_overrides": {"tot_steps": 10000},
+                "trainable_params_overrides": {
+                    "initial": [0,0,0, {"best_from": "3qb_z_no", "which": "initial", "position": "append"}],
+                    "final": [0,0,0, {"best_from": "3qb_z_no", "which": "final", "position": "append"}],
+                }
+            }
         ],
     },
 ]
@@ -333,12 +394,20 @@ def _normalize_trainable_params(exp_name, param_group, values, expected_count):
     return parsed
 
 
-def apply_trainable_params_overrides(experiment, exp_name, params_overrides):
+def apply_trainable_params_overrides(
+    experiment,
+    exp_name,
+    params_overrides,
+    completed_best_params=None,
+):
     if not params_overrides:
         return
 
     if not isinstance(params_overrides, dict):
         raise TypeError(f"{exp_name}: trainable_params_overrides must be a dict")
+
+    if completed_best_params is None:
+        completed_best_params = {}
 
     initial_override = params_overrides.get("initial", None)
     final_override = params_overrides.get("final", None)
@@ -347,22 +416,124 @@ def apply_trainable_params_overrides(experiment, exp_name, params_overrides):
     n_final = experiment.final_circuit.count_trainable_parameters()
 
     if initial_override is not None:
-        initial_values = _normalize_trainable_params(
+        resolved_initial = _resolve_and_merge_params(
             exp_name=exp_name,
             param_group="initial",
             values=initial_override,
             expected_count=n_initial,
+            completed_best_params=completed_best_params,
         )
-        experiment.initial_circuit.set_trainable_parameters(initial_values.tolist())
+        experiment.initial_circuit.set_trainable_parameters(resolved_initial)
 
     if final_override is not None:
-        final_values = _normalize_trainable_params(
+        resolved_final = _resolve_and_merge_params(
             exp_name=exp_name,
             param_group="final",
             values=final_override,
             expected_count=n_final,
+            completed_best_params=completed_best_params,
         )
-        experiment.final_circuit.set_trainable_parameters(final_values.tolist())
+        experiment.final_circuit.set_trainable_parameters(resolved_final)
+
+
+def _resolve_best_placeholder(item, which_group, completed_best_params):
+    """
+    Resolve a placeholder dict of form {"best_from": "exp_name", "which": "initial"|"final"}
+    using best parameters of experiments already completed in the current program run
+    or from saved histories on disk.
+
+    Returns a list of floats for the requested parameter group, or raises if unavailable.
+    """
+    if not isinstance(item, dict):
+        raise TypeError("best placeholder must be a dict with key 'best_from'")
+    source = item.get("best_from")
+    if source is None:
+        raise ValueError("best placeholder missing 'best_from' key")
+
+    if source in completed_best_params:
+        best = completed_best_params[source]
+    else:
+        history, _ = try_load_saved_history(save_folder, source)
+        if history is None:
+            raise ValueError(
+                f"best_from={source} is not available yet. "
+                f"Complete it earlier in this run or ensure a saved history exists in {save_folder}."
+            )
+        best = history.get_best_trainable_params()
+        if best is None:
+            raise ValueError(f"No best parameters in history for {source}")
+
+    best_initial, best_final = best
+    if which_group == "initial":
+        return list(best_initial)
+    if which_group == "final":
+        return list(best_final)
+    raise ValueError("which_group must be 'initial' or 'final'")
+
+
+def _resolve_and_merge_params(exp_name, param_group, values, expected_count, completed_best_params):
+    """
+    Resolve a values spec which may include numeric entries and dict placeholders
+    referring to best parameters from completed runs or saved histories. Supported
+    placeholder dicts:
+      {"best_from": "other_exp", "which": "initial"|"final", "position": "append"|"prepend"}
+
+    The `values` argument may be:
+      - a list/iterable of numbers -> returned as-is (after length check)
+      - a dict placeholder -> resolved to the referenced best list
+      - a list mixing numbers and a single placeholder dict -> merges according to position
+    """
+    # If a plain numeric list, just validate and return
+    try:
+        arr = np.asarray(values, dtype=float).reshape(-1).tolist()
+        if len(arr) == expected_count:
+            return arr
+    except Exception:
+        pass
+
+    # Handle dict placeholder directly
+    if isinstance(values, dict) and "best_from" in values:
+        resolved = _resolve_best_placeholder(values, param_group, completed_best_params)
+        if len(resolved) != expected_count:
+            raise ValueError(
+                f"{exp_name}: {param_group} resolved best parameter count mismatch. "
+                f"Resolved {len(resolved)}, expected {expected_count}."
+            )
+        return resolved
+
+    # Handle list that may mix numbers and a placeholder dict
+    if isinstance(values, (list, tuple)):
+        placeholders = [v for v in values if isinstance(v, dict) and "best_from" in v]
+        if len(placeholders) > 1:
+            raise ValueError(f"{exp_name}: only a single best_from placeholder is supported in a list")
+
+        numeric_parts = [v for v in values if not (isinstance(v, dict) and "best_from" in v)]
+        if not placeholders:
+            raise ValueError(
+                f"{exp_name}: {param_group} trainable parameter count mismatch. "
+                f"Provided {len(values)}, expected {expected_count}."
+            )
+
+        placeholder = placeholders[0]
+        which = placeholder.get("which", param_group)
+        position = placeholder.get("position", "append")
+        resolved_best = _resolve_best_placeholder(placeholder, which, completed_best_params)
+
+        if position == "append":
+            merged = list(numeric_parts) + list(resolved_best)
+        elif position == "prepend":
+            merged = list(resolved_best) + list(numeric_parts)
+        else:
+            raise ValueError("Unsupported position value for best placeholder; use 'append' or 'prepend'")
+
+        if len(merged) != expected_count:
+            raise ValueError(
+                f"{exp_name}: {param_group} merged parameter count mismatch. "
+                f"Merged {len(merged)}, expected {expected_count}."
+            )
+        return merged
+
+    raise TypeError(f"{exp_name}: unsupported type for {param_group} trainable parameter override")
 
 
 def validate_experiment_parameter_counts(experiment_bundle):
@@ -385,6 +556,56 @@ def validate_experiment_parameter_counts(experiment_bundle):
                 f"{exp_name}: final trainable parameter count mismatch. "
                 f"Current {current_final}, expected {expected_final}."
             )
+
+
+def _placeholder_best_params_for_experiment(experiment):
+    n_initial = experiment.initial_circuit.count_trainable_parameters()
+    n_final = experiment.final_circuit.count_trainable_parameters()
+    return ([0.0] * n_initial, [0.0] * n_final)
+
+
+def preflight_validate_param_overrides(experiment_bundles):
+    """
+    Validate that all parameter overrides resolve to the correct trainable
+    parameter counts before any experiment is launched.
+    """
+    available_best_params = {}
+
+    for exp_bundle in experiment_bundles:
+        for exp_name, exp_info in exp_bundle.items():
+            experiment = exp_info["experiment"]
+            params_overrides = exp_info.get("params_overrides", {})
+
+            if params_overrides:
+                n_initial = experiment.initial_circuit.count_trainable_parameters()
+                n_final = experiment.final_circuit.count_trainable_parameters()
+
+                initial_override = params_overrides.get("initial", None)
+                final_override = params_overrides.get("final", None)
+
+                try:
+                    if initial_override is not None:
+                        _resolve_and_merge_params(
+                            exp_name=exp_name,
+                            param_group="initial",
+                            values=initial_override,
+                            expected_count=n_initial,
+                            completed_best_params=available_best_params,
+                        )
+                    if final_override is not None:
+                        _resolve_and_merge_params(
+                            exp_name=exp_name,
+                            param_group="final",
+                            values=final_override,
+                            expected_count=n_final,
+                            completed_best_params=available_best_params,
+                        )
+                except Exception as error:
+                    raise ValueError(
+                        f"Preflight validation failed for {exp_name}: {error}"
+                    ) from error
+
+            available_best_params[exp_name] = _placeholder_best_params_for_experiment(experiment)
 
 
 def build_experiment_bundle(group_config):
@@ -418,16 +639,11 @@ def build_experiment_bundle(group_config):
             detection_metric=detection_metric,
             setup_config=setup_config,
         )
-        apply_trainable_params_overrides(
-            experiment=experiment,
-            exp_name=exp_name,
-            params_overrides=params_overrides,
-        )
-
         experiment_bundle[exp_name] = {
             "experiment": experiment,
             "setup": setup_config,
             "training": training_config,
+            "params_overrides": params_overrides,
         }
 
     return experiment_bundle
@@ -435,6 +651,26 @@ def build_experiment_bundle(group_config):
 
 def get_history_path(save_dir, exp_name):
     return os.path.join(save_dir, f"history_{exp_name}.npz")
+
+
+def get_callback_text_path(save_dir, exp_name):
+    return os.path.join(save_dir, f"results_{exp_name}.txt")
+
+
+def save_callback_text(save_dir, exp_name, history):
+    path = get_callback_text_path(save_dir, exp_name)
+    if history is None:
+        text = f"{exp_name}: no callback available (history is None)."
+    else:
+        text = str(history)
+        if "°" in text:
+            text = text.replace("°", " deg")
+
+    if not text.endswith("\n"):
+        text += "\n"
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 def try_load_saved_history(save_dir, exp_name):
@@ -515,6 +751,7 @@ def run_experiment_with_checkpoints(
             optimizer=optimizer,
             verbose=False,
             hot_start=history is not None,
+            noisy_training=True
         )
 
         history.save(history_path)
@@ -545,15 +782,32 @@ def run_experiment_with_checkpoints(
     return history
 
 
-def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=False):
+def run_experiment_ensemble(
+    experiment_bundle,
+    save_dir,
+    continue_saved_runs=False,
+    completed_best_params=None,
+):
+    if completed_best_params is None:
+        completed_best_params = {}
+
     for exp_name in list(experiment_bundle.keys()):
         
         history = None
+        callback_written = False
 
         try:
             experiment_info = experiment_bundle[exp_name]
             experiment = experiment_info["experiment"]
             training_config = experiment_info["training"]
+            params_overrides = experiment_info.get("params_overrides", {})
+
+            apply_trainable_params_overrides(
+                experiment=experiment,
+                exp_name=exp_name,
+                params_overrides=params_overrides,
+                completed_best_params=completed_best_params,
+            )
 
             optimizer = build_optimizer(training_config)
 
@@ -569,6 +823,14 @@ def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=Fal
             )
 
             if history is not None:
+                best = history.get_best_trainable_params()
+                if best is not None:
+                    best_initial, best_final = best
+                    completed_best_params[exp_name] = (
+                        list(np.asarray(best_initial, dtype=float).reshape(-1)),
+                        list(np.asarray(best_final, dtype=float).reshape(-1)),
+                    )
+
                 fig = plot_optimization_dashboard(
                     optimization_callback=history,
                     show_metric=True,
@@ -580,6 +842,9 @@ def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=Fal
                 )
                 plt.close(fig)
 
+                save_callback_text(save_dir, exp_name, history)
+                callback_written = True
+
         except Exception as error:
             log_event("TRAINING_ERROR", exp_name, f"error={error}")
             log_event("", "", "-" * 80)
@@ -587,6 +852,8 @@ def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=Fal
                 handle.write(f"Error in experiment {exp_name}: {str(error)}\n")
 
         finally:
+            if not callback_written:
+                save_callback_text(save_dir, exp_name, history)
             if history is not None:
                 history.reset()
             if exp_name in experiment_bundle:
@@ -594,6 +861,8 @@ def run_experiment_ensemble(experiment_bundle, save_dir, continue_saved_runs=Fal
             if history is not None:
                 del history
             gc.collect()
+
+    return completed_best_params
 
 
 if RANDOM_SEED is not None:
@@ -607,11 +876,15 @@ for group_cfg in EXPERIMENT_GROUP_CONFIGS:
     all_experiment_bundles.append(exp_bundle)
 
 
+preflight_validate_param_overrides(all_experiment_bundles)
+
+completed_best_params = {}
 for exp_bundle in all_experiment_bundles:
-    run_experiment_ensemble(
+    completed_best_params = run_experiment_ensemble(
         experiment_bundle=exp_bundle,
         save_dir=save_folder,
         continue_saved_runs=CONTINUE_SAVED_RUNS,
+        completed_best_params=completed_best_params,
     )
 
 

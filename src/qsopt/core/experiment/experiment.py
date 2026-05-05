@@ -1214,6 +1214,7 @@ class Experiment:
         optimizer = None,
         optimize_measurement_times: bool = False,
         renormalize_grad: Optional[Union[bool,float]] = False,
+        noisy_training: bool = False,
         hot_start: bool = False
     ) -> OptimizationCallback:
         """
@@ -1234,9 +1235,7 @@ class Experiment:
                     If None, uses current values from circuits.
             optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
                     If None, uses SGD.
-            learning_rate: Optional learning rate for the optimizer.
-                    If None defaults to 0.5.
-            renormalize_grad: Radious of the sphere inside which the gradients are renormalized. (default: 1)
+            renormalize_grad: Renormalizes the gradients to be within a certain radius. (default: 1)
                     If False (0), does not renormalize the gradients.
             hot_start: If True, continues optimization from the last parameters and optimizer state in the callback.
                     If either the optimizer or the params are given they override the hot start values. (default: False) 
@@ -1560,6 +1559,8 @@ class Experiment:
             # Update parameters
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
+            if noisy_training:
+                params += jnp.asarray(np.random.normal(0, 0.0001*grad_norm, size=params.shape), dtype=float)
 
         # Ensure best parameters are set at the end
         best_values = np.asarray(best_params, dtype=float)

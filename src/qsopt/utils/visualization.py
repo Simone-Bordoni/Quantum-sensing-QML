@@ -411,17 +411,28 @@ def plot_optimization_dashboard(
                 summary_lines.append(f"  {state}: with={p_with:.4f}, without={p_without:.4f}")
 
         if summary_lines:
-            ax.text(
-                1.05,
-                0.5,
+            # Position the summary in figure coordinates to the right of the confusion
+            # matrix axis so it won't be occluded by the image or colorbar. Use the
+            # axis bounding box to choose a sensible location and fall back to the
+            # left side if there is no space on the right.
+            bbox = ax.get_position()
+            # Place summary to the LEFT of the confusion matrix, slightly lower
+            # and a bit less left so it doesn't collide with figure elements.
+            x_fig = bbox.x0 + 0.055
+            y_fig = bbox.y0 + bbox.height * 0.31
+            # Clamp to avoid going off-figure
+            x_fig = max(0.02, x_fig)
+
+            fig.text(
+                x_fig,
+                y_fig,
                 "\n".join(summary_lines),
-                transform=ax.transAxes,
+                transform=fig.transFigure,
                 va="center",
-                ha="left",
+                ha="right",
                 fontsize=9,
                 family="monospace",
-                bbox=dict(boxstyle="round", facecolor="#f8f9fa", alpha=0.9),
-                clip_on=False,
+                bbox=dict(boxstyle="round", facecolor="#f8f9fa", alpha=0.95, pad=0.6),
             )
 
     # Overall title
