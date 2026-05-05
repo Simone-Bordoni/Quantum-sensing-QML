@@ -751,7 +751,7 @@ def run_experiment_with_checkpoints(
             optimizer=optimizer,
             verbose=False,
             hot_start=history is not None,
-            noisy_training=True
+            noisy_training=0.0001
         )
 
         history.save(history_path)
