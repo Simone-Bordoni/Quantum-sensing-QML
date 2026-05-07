@@ -1385,7 +1385,6 @@ class Experiment:
 
         static_args = []
         time_uncertainty = float(self.experimental_params.initial_time_uncertainty)
-        base_measurement_times = jnp.asarray(self.experimental_params.measurement_times, dtype=float)
 
         if not optimize_measurement_times:
             static_args.append(1)  # objective_function arg: measurement_times
@@ -1396,17 +1395,22 @@ class Experiment:
             base_measurement_times = jnp.asarray(self.experimental_params.measurement_times, dtype=float)
 
         if time_uncertainty == 0:
-            static_args.append(2)  # objective_function arg: measurement_noise_batch
-            zero_uncertainty_batch = tuple(0.0 for _ in range(len(base_measurement_times)))
 
-            def get_measurement_batch():
+            if batch_size != 1:
+                if verbose:
+                    warnings.warn(f"Batch size > 1 has no effect when there is no measurement uncertainty.")
+                batch_size = 1
+
+            static_args.append(2)  # objective_function arg: measurement_noise_batch
+            zero_uncertainty_batch = 0.0
+
+            def get_noise_batch():
                     return zero_uncertainty_batch
 
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Objective with no uncertainty."""
 
                 measurement_times = np.asarray(measurement_times, dtype=float)
-                measurement_noise_batch = np.asarray(measurement_noise_batch, dtype=float)
 
                 # Compute circuit unitaries
                 self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
@@ -1429,14 +1433,17 @@ class Experiment:
             if batch_size < 16 and verbose:
                 warnings.warn(f"Using a small batch size of {batch_size} for optimization with measurement uncertainty may lead to noisy gradients and slow convergence. Consider increasing the batch size for better performance.")
 
-            def get_measurement_batch():
+            def get_noise_batch():
                 measurement_uncertainty_batch = jnp.asarray(
                     np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
                     dtype=float,
                 )
                 return measurement_uncertainty_batch
+            
             def objective_function(circuit_params, measurement_times, measurement_noise_batch):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
+
+                measurement_times = jnp.asarray(measurement_times, dtype=float)
 
                 # Compute circuit unitaries
                 self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
@@ -1514,7 +1521,7 @@ class Experiment:
 
         for step in range(start_step, num_steps):
 
-            measurement_uncertainty_batch = get_measurement_batch()
+            measurement_uncertainty_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
             grads, (detection_with, detection_without, step_metric, batch_result_with, batch_result_without) = jax.grad(
