@@ -69,8 +69,8 @@ def u0(t, **kwargs):
     dx = sigma * t
     return jnp.exp(-(dx**2))
 
-def generate_n_qubit_operators(
-    field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int, detection_states: Optional[[List[str]]] = None
+def generate_system_operators(
+    n_qubits: int, field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]]
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for an n-qubit composite system.
@@ -79,6 +79,7 @@ def generate_n_qubit_operators(
     Each qubit can have different level truncation for flexibility.
 
     Args:
+        n_qubits: Number of qubits in the system
         field_levels: Number of Fock levels for input field mode
         cavity_levels: Number of Fock levels for resonator cavity mode
         qubit_levels: Number of levels for each qubit. Can be:
@@ -139,18 +140,17 @@ def generate_n_qubit_operators(
         # Lists of measurement projectors for n qubits with q-levels
         P0 = [qt.Qobj([[1, 0] + [0]*(l-2)] + [[0]*l]*(l-1)) for l in q_levels]    # Ground state |0⟩⟨0|
         P1 = [qt.Qobj([[0]*l] + [[0, 1] + [0]*(l-2)] + [[0]*l]*(l-2)) for l in q_levels] # Excited state |1⟩⟨1|
-        
-        # Reset operators, individual qubits and global reset
-        reset_q = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
-        reset_all = qt.tensor([I_field, I_cavity]+ reset_q)
-        
-        # Projectors for all 2^n qubit states (joint projectors)
-        
-        Ptemp = [P0,P1]
 
+        # Projectors for all 2^n qubit states (joint projectors)
+        Ptemp = [P0,P1]
         all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]            
         P_all = [qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
             
+        # Reset operators, individual qubits and global reset
+        reset_q = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
+        reset_all = qt.tensor([I_field, I_cavity]+ reset_q)
+        measure_reset = [reset_all*p for p in P_all]
+        measure_reset_dag = [x.dag() for x in measure_reset]
 
         # Helper function to embed single-qubit operator in composite space
         def embed_qubit_op(op, qubit_idx):
@@ -181,6 +181,8 @@ def generate_n_qubit_operators(
             # Reset operators
             "reset_q": reset_q, 
             "reset_all": reset_all, 
+            "measure_reset": measure_reset,
+            "measure_reset_dag": measure_reset_dag,
             # Rotation operators (Y-rotation by π/2, can be applied independently)
             "roty_q": [embed_qubit_op(rot_single, i) for i in range(n_qubits)],
             "roty": qt.tensor([I_field, I_cavity] + [rot_single]*n_qubits),  # Simultaneous Ry on all qubits
@@ -189,40 +191,6 @@ def generate_n_qubit_operators(
             "I_cavity": I_cavity,
             "I_q": I_q,
         }
-
-        if detection_states == 'all states':
-            # Calculate measure reset operators
-            measure_reset = [reset_all*p for p in P_all]
-            measure_reset_dag = [x.dag() for x in measure_reset]
-
-        else:
-
-            # Detection and non-detection projectors using the detection states:
-                # Default detection states are all the non zero states
-            if detection_states is None:
-                detection_states = [format(i, f'0{n_qubits}b') for i in range(1,2**n_qubits)]
-
-            # Calculate detection projectors
-            P_detection = sum([ \
-                qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) \
-                for state in detection_states])
-            P_no_detection = sum([ \
-                qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] \
-                    for qb,q_state in enumerate(list(map(int,format(i, f'0{n_qubits}b'))))]) \
-                for i in range(2**n_qubits) if not any(state == format(i, f'0{n_qubits}b') for state in detection_states)])
-
-            # Insert in dictionary detection projectors
-            operators["P_detect"] = P_detection
-            operators["P_no_detect"] = P_no_detection
-            
-            # Calculate measure reset operators            
-            measure_reset = reset_all*P_no_detection
-            measure_reset_dag = measure_reset.dag()
-
-
-        # Insert in dictionary measure reset operators
-        operators["measure_reset"] = measure_reset
-        operators["measure_reset_dag"] = measure_reset_dag
 
         return operators
 

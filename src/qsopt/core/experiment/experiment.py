@@ -36,7 +36,7 @@ from .quantum_utils import (
     build_qubit_noise_operators,
     embed_circuit_unitary,
     generate_initial_state,
-    generate_n_qubit_operators,
+    generate_system_operators,
     gu,
     measure_qubits_probability,
     u0,
@@ -239,8 +239,8 @@ class Experiment:
         detection_states = self.detection_metric.detection_states
 
         # Generate n-qubit operators using utility function
-        self.operators = generate_n_qubit_operators(
-            field_levels, cavity_levels, qubit_levels, n_qubits, detection_states
+        self.operators = generate_system_operators(
+            field_levels, cavity_levels, qubit_levels, n_qubits
         )
 
     def _generate_measure_function(self) -> None:
@@ -817,7 +817,7 @@ class Experiment:
             if states_probabilities:
                 batch_for_prob.append((rho_with_list, rho_without_list))
 
-            metric_value, detection_with, detection_without = self.detection_metric(rho_with_list,rho_without_list)
+            metric_value, (detection_with, detection_without) = self.detection_metric(rho_with_list,rho_without_list)
 
             batch_metric.append(metric_value)            
             batch_detect_with.append(detection_with)
@@ -833,7 +833,7 @@ class Experiment:
         # With the default setup this metric can coincide with a simple difference (contrast),
         # but custom detection metrics may define any scalar objective.
 
-        mean_metric = sum(batch)/len(batch)
+        mean_metric = sum(batch_metric)/len(batch_metric)
         mean_detect_with = sum(batch_detect_with)/len(batch_detect_with)
         mean_detect_without = sum(batch_detect_without)/len(batch_detect_without)
 
@@ -1385,7 +1385,7 @@ class Experiment:
                 precomputed_unitaries=circuit_unitaries,
             )
 
-            metric_value, detection_with , detection_without = self.detection_metric(rho_with_list, rho_without_list)
+            metric_value, (detection_with, detection_without) = self.detection_metric(rho_with_list, rho_without_list)
 
             return metric_value, detection_with , detection_without
 
