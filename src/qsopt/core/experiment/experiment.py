@@ -589,16 +589,19 @@ class Experiment:
         # Get detection metric
         detection_metric = self.detection_metric
 
+        # Get reset operators
+        zipped_reset = zip(self.operators['measure_reset'], self.operators['measure_reset_dag'])
+
         # Get circuit unitaries
         if precomputed_unitaries is None:
             precomputed_unitaries = self._prepare_circuit_unitaries()
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
-        # Initial state
+        # Set initial state
         rho_current = rho
 
-        # Track cumulative probability of non-detection
-        aggregate_measure = detection_metric.aggregate_init
+        # Initialise ouput list
+        rho_list = []
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurements[:-1], measurements[1:]):
@@ -610,12 +613,13 @@ class Experiment:
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
-            # Measure probability of non detection and reset the qubit
-            rho_current, detection_measure = self.measure_reset(rho = rho_final)
+            # Reset the qubit
+            rho_reset = [op * rho_final * op_dag for op,op_dag in zipped_reset]
+            rho_current = sum(rho_reset)
             
-            aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, detection_measure)
+            rho_list.append(rho_final)
 
-        return detection_metric.post_aggregation(aggregate_measure)
+        return rho_list
 
 
     def debug_simulation(
@@ -652,6 +656,9 @@ class Experiment:
         # Get detection metric
         detection_metric = self.detection_metric
 
+        # Get reset operators
+        zipped_reset = zip(self.operators['measure_reset'], self.operators['measure_reset_dag'])
+
         # Get circuit unitaries
         if precomputed_unitaries is None:
             precomputed_unitaries = self._prepare_circuit_unitaries()
@@ -660,12 +667,11 @@ class Experiment:
         # Initial state
         rho_current = rho
 
-        # Track cumulative probability of non-detection
-        aggregate_measure = detection_metric.aggregate_init
+        # Initialise ouput list
+        rho_list = []
 
         self.debug_times.append({ f'start_simulation{self.step}' : t.time()})   ################################
         n_meas=0                      ############################
-        rho_list = []                   #*****************************
 
         # Loop over measurement intervals
         for t0, t1 in zip(measurements[:-1], measurements[1:]):
@@ -681,18 +687,17 @@ class Experiment:
             rho_evolved = evolution_result.states[-1]
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
-            rho_list.append(rho_final)       #*****************************
-    
-            # Measure probability of non detection and reset the qubit
-            rho_current, detection_measure = self.measure_reset(rho = rho_final)
+            # Reset the qubit
+            rho_reset = [op * rho_final * op_dag for op,op_dag in zipped_reset]
+            rho_current = sum(rho_reset)
             
-            aggregate_measure = detection_metric.measurement_aggregation(aggregate_measure, detection_measure)
+            rho_list.append(rho_final)
 
             n_meas+=1       ####################
 
         self.debug_times.append({ f'returning_simulation{self.step}' : t.time()})   ################################
 
-        return detection_metric.post_aggregation(aggregate_measure), rho_list   #*****************************
+        return rho_list
 
     def run_simulation(self, batch_size: int = 1, measurement_times = None, states_probabilities: bool = False, debug: bool=False) -> OptimizationCallback:
         """
@@ -727,8 +732,6 @@ class Experiment:
             self.debug_times = []
             self.step=0
             self.debug_times.append({ f'initialize_solvers' : t.time()})
-            batch_rho_with = []
-            batch_rho_without = []
 
  
         rho0 = self._cached_initial_state
@@ -773,9 +776,12 @@ class Experiment:
         # Prepare circuit unitaries once for the entire batch
         circuit_unitaries = self._prepare_circuit_unitaries()
 
-        # Run simulations with batch averaging over uncertainty realizations
-        batch_with = []
-        batch_without = []
+        # initialize batches
+        batch_metric = []
+        batch_detect_with = []
+        batch_detect_without = []
+        if states_probabilities:
+            batch_for_prob = []
 
         if debug:
             self.debug_times.append({ f'start_measurement_loop' : t.time()})
@@ -787,65 +793,64 @@ class Experiment:
                 self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})
     
             # Simulation with photon interaction
-            result_with = simulation_fn(
+            rho_with_list = simulation_fn(
                 solver=solver_with,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
 
-            if debug or states_probabilities:
-                detection_with, rho_list_with = result_with
-                batch_rho_with.append(rho_list_with)
-            else:
-                detection_with = result_with
-
-            batch_with.append(detection_with)
-
             if debug:
                 self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})
 
             # Simulation without photon interaction (reference)
-            result_without = simulation_fn(
+            rho_without_list = simulation_fn(
                 solver=solver_without,
                 rho=rho0,
                 measurements=measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
+            
+            if debug:
+                self.debug_times.append({ f'calculate_detection_metric{self.step}' : t.time()})
 
-            if debug or states_probabilities:
-                detection_without, rho_list_without = result_without
-                batch_rho_without.append(rho_list_without)
-            else:
-                detection_without = result_without
+            if states_probabilities:
+                batch_for_prob.append((rho_with_list, rho_without_list))
 
-            batch_without.append(detection_without)
+            metric_value, detection_with, detection_without = self.detection_metric(rho_with_list,rho_without_list)
+
+            batch_metric.append(metric_value)            
+            batch_detect_with.append(detection_with)
+            batch_detect_without.append(detection_without)
+
             if debug:
                 self.step += 1
 
         if debug:
-            self.debug_times.append({ f'compute_probs' : t.time()})
+            self.debug_times.append({ f'compute_means_from_batches' : t.time()})
 
         # Use detection metric's batching logic and then evaluate the configured metric.
         # With the default setup this metric can coincide with a simple difference (contrast),
         # but custom detection metrics may define any scalar objective.
-        detect_with, detect_without = self.detection_metric.batching_logic(
-            batch_with, batch_without
-        )
-        metric_value = self.detection_metric.metric(detect_with, detect_without)
+
+        mean_metric = sum(batch)/len(batch)
+        mean_detect_with = sum(batch_detect_with)/len(batch_detect_with)
+        mean_detect_without = sum(batch_detect_without)/len(batch_detect_without)
 
         if states_probabilities:
+
             P_all = self.operators['P_all']
-            
             prob_with = []
-            for rho_list in batch_rho_with:
-                rho = rho_list[0]      # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
-                prob_with.append([np.real((proj * rho * proj).tr()) for proj in P_all])
-            
             prob_without = []
-            for rho_list in batch_rho_without:
-                rho = rho_list[0]      # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
-                prob_without.append([np.real((proj * rho * proj).tr()) for proj in P_all])
+
+            for rho_list_with, rho_list_without in batch_for_prob:
+                
+                # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
+                rho_with = rho_list_with[0]      
+                rho_without = rho_list_without[0]     
+                
+                prob_with.append([np.real((proj * rho_with * proj).tr()) for proj in P_all])                
+                prob_without.append([np.real((proj * rho_without * proj).tr()) for proj in P_all])
 
             # Shape before averaging:
             #   prob_with / prob_without -> (batch_size, n_states)
@@ -871,9 +876,9 @@ class Experiment:
             callback(
                 trainable_params_initial=self.trainable_params_initial,
                 trainable_params_final=self.trainable_params_final,
-                detection_with=float(detect_with),
-                detection_without=float(detect_without),
-                metric=float(metric_value),
+                detection_with=float(mean_detect_with),
+                detection_without=float(mean_detect_without),
+                metric=float(mean_metric),
                 state_probabilities_with=state_prob_with,
                 state_probabilities_without=state_prob_without,
             )
@@ -883,9 +888,9 @@ class Experiment:
             callback(
                 trainable_params_initial=self.trainable_params_initial,
                 trainable_params_final=self.trainable_params_final,
-                detection_with=float(detect_with),
-                detection_without=float(detect_without),
-                metric=float(metric_value),
+                detection_with=float(mean_detect_with),
+                detection_without=float(mean_detect_without),
+                metric=float(mean_metric),
             )
 
         if debug:
@@ -1366,21 +1371,23 @@ class Experiment:
 
             noisy_measurement_times = measurement_times + measurement_noise
 
-            result_with = self.simulation(
+            rho_with_list = self.simulation(
                 solver_with,
                 rho0,
                 noisy_measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
 
-            result_without = self.simulation(
+            rho_without_list = self.simulation(
                 solver_without,
                 rho0,
                 noisy_measurement_times,
                 precomputed_unitaries=circuit_unitaries,
             )
 
-            return result_with, result_without
+            metric_value, detection_with , detection_without = self.detection_metric(rho_with_list, rho_without_list)
+
+            return metric_value, detection_with , detection_without
 
 
         static_args = []
@@ -1398,7 +1405,7 @@ class Experiment:
 
             if batch_size != 1:
                 if verbose:
-                    warnings.warn(f"Batch size > 1 has no effect when there is no measurement uncertainty.")
+                    warnings.warn(f"Batch size > 1 has no effect when there is no measurement uncertainty. Setting batch size to 1.")
                 batch_size = 1
 
             static_args.append(2)  # objective_function arg: measurement_noise_batch
@@ -1417,16 +1424,9 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                result_with, result_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
+                metric, detect_with, detect_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
 
-                detect_with, detect_without = detection_metric.batching_logic(
-                    [result_with],
-                    [result_without],
-                )
-
-                metric = detection_metric.metric(detect_with, detect_without)
-
-                return -metric, (detect_with, detect_without, metric, [result_with], [result_without])
+                return -metric, (detect_with, detect_without, metric)
 
         else:
             
@@ -1450,19 +1450,16 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                batch_result_with, batch_result_without = jax.vmap(
+                batch_metric, batch_detect_with, batch_detect_without = jax.vmap(
                     coupled_simulation,
                     in_axes=(None, None, 0),
                 )(circuit_unitaries, measurement_times, measurement_noise_batch)
+                
+                mean_metric = jnp.mean(batch_metric)
+                mean_detect_with = jnp.mean(batch_detect_with)
+                mean_detect_without = jnp.mean(batch_detect_without)
 
-                detect_with, detect_without = detection_metric.batching_logic(
-                    batch_result_with,
-                    batch_result_without,
-                )
-
-                metric = detection_metric.metric(detect_with, detect_without)
-
-                return -metric, (detect_with, detect_without, metric, batch_result_with, batch_result_without)
+                return -mean_metric, (mean_detect_with, mean_detect_without, mean_metric)
 
         jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 
@@ -1524,7 +1521,7 @@ class Experiment:
             measurement_uncertainty_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
-            grads, (detection_with, detection_without, step_metric, batch_result_with, batch_result_without) = jax.grad(
+            grads, (detection_with, detection_without, step_metric) = jax.grad(
                 jitted_objective, has_aux=True
             )(params, base_measurement_times, measurement_uncertainty_batch)
 
