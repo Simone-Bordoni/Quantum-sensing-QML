@@ -246,7 +246,7 @@ class DetectionMetric:
                 detection_param: Callable[[Array, Array], float], a function that takes as input the two density matrices and outputs a distance measure to be maximized.
         
         """
-        state_detection = ['any excited', 'min excited', 'excited qubits', 'custom states']
+        state_detection = ['any excited', 'min excited', 'control qubits', 'excited qubits' 'custom states']
         matrix_distance = ['min fidelity', 'max trace distance', 'max computational distance', 'custom matrix distance']
 
         if criterion in state_detection:
@@ -300,7 +300,41 @@ class DetectionMetric:
                 
                 metric = jit(metric)
 
-            if criterion == 'custom states':
+            if criterion == 'any excited':
+
+                detection_states = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
+                detection_name = "at least 1 excitation"
+
+                if parameter is not None:
+                    warnings.warn(f"'any excited' detection criterion does not take any parameter. Value given: {parameter}. The parameter will be ignored.")
+            
+            elif criterion == 'min excited':
+
+                if parameter is None:
+                    raise ValueError("'min excited' detection expects detection_param to be a number of excitation, int between 1 and n_qubits-1. Value given: None")
+                elif not isinstance(parameter, int) or not (0 < parameter < self.n_qubits):
+                    raise ValueError(f"'min excited' detection expects detection_param to be a number of excitations, int between 1 and {self.n_qubits-1}. Value given: {parameter}")
+                
+                detection_states = [format(i, f'0{self.n_qubits}b') \
+                    for i in range(2**self.n_qubits) \
+                    if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) >= parameter]
+                detection_name = f'at least {parameter} excitation'
+
+            elif criterion in ['control qubits', 'excited qubits']:
+
+                if parameter is None:
+                    raise ValueError(f"'control qubits' detection expects detection_param to be an List of unique qubit indexes, ints between 0 and n_qubits-1.\nValue given: None")
+                elif not isinstance(parameter, List[int]) or not all([0 <= i < n_qubits for i in parameter]):
+                    raise ValueError(f"'control qubits' detection expects detection_param to be an List of unique qubit indexes, ints between 0 and n_qubits-1.\nValue given: {parameter}")
+                elif parameter != list(set(parameter)):
+                    warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
+                    parameter = set(parameter)
+
+                detection_states = [format(i, f'0{self.n_qubits}b') \
+                    for i in range(2**self.n_qubits) if any([format(i, f'0{self.n_qubits}b')[j] == 1 for j in parameter])]
+                detection_name = f"control qubits ({','.join(map(str, parameter))})"
+
+            elif criterion == 'custom states':
                 if parameter is None:
                     raise ValueError("custom states detection expects detection_param to be a list of str states to detect. Value given: None")
                 elif not isinstance(parameter, list) or not all(isinstance(state, str) for state in parameter):
@@ -311,32 +345,20 @@ class DetectionMetric:
                     raise ValueError(f"custom states detection expects detection_param to be a list of str states containing only '0' and '1' characters. Value given: {parameter}")
                 elif len(parameter) == 0:
                     raise ValueError("custom states detection expects detection_param to be a non-empty list of str states to detect. Value given: empty list")
-                elif len(set(parameter)) != len(parameter):
-                    raise ValueError(f"custom states detection expects detection_param to be a list of unique str states to detect. Value given: {parameter} contains duplicates")
-                
+                elif parameter != list(set(parameter)):
+                    warnings.warn("detection_param for 'custom states' detection has non unique elements. The additional elements will be ignored.")
+                    parameter = set(parameter)
+
                 detection_states = parameter
                 detection_name = f"custom states: {parameter}"
             
-            elif criterion == 'any excited':
-
-                detection_states = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
-                detection_name = "any excitation"
-
-                if parameter is not None:
-                    warnings.warn(f"'any excited' detection criterion does not take any parameter. Value given: {parameter}. The parameter will be ignored.")
             
-            elif criterion == 'min excited':
-
-                if parameter is None:
-                    raise ValueError("min excited detection expects detection_param to be an int between 1 and n_qubits-1. Value given: None")
-                elif not isinstance(parameter, int) or not (0 < parameter < self.n_qubits):
-                    raise ValueError(f"min excited detection expects detection_param to be an int between 1 and {self.n_qubits-1}. Value given: {parameter}")
+            def build_detection(projectors) -> Callable[[List[qt.Qobj],List[qt.Qobj]],Tuple[float,Tuple[float,float]]]:
                 
-                detection_states = [format(i, f'0{self.n_qubits}b') \
-                    for i in range(2**self.n_qubits) \
-                    if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) >= parameter]
-            
-            def build_detection(Projectors)
+                detection_projectors = [projector[i] for i in range(2**self.n_qubits) if format(i, f'0{self.n_qubits}b') in detection_states]
+
+                def callable_detection(List[qt.Qobj],List[qt.Qobj]) -> float, (float,float):
+                    
             
 
 
