@@ -193,9 +193,9 @@ class DetectionMetric:
         tuple of floats
             (detection measure with photon, detection measure without photon) if applicable.
         """
-        return self.callable(list_rho_a, list_rho_b)
+        return self.callable_detection(list_rho_a, list_rho_b)
 
-    def build_detection(self, criterion, parameter, metric, multi_measurement_logic \
+    def init_detection(self, criterion, parameter, metric, multi_measurement_logic \
                         ) -> Tuple[Callable[[List[qt.Qobj], List[qt.Qobj]], Tuple[float, Tuple[float, float]]], Tuple[List[str], str]]:
         """
         Build detection metric callable and return corresponding states and criterion name.
@@ -249,24 +249,18 @@ class DetectionMetric:
         state_detection = ['any excited', 'min excited', 'control qubits', 'excited qubits' 'custom states']
         matrix_distance = ['min fidelity', 'max trace distance', 'max computational distance', 'custom matrix distance']
 
-        if criterion in state_detection:
+        number = (int, float)
 
-            number = Union[int, float]
-            
-            if multi_measurement_logic is None:
-                aggregate_init = jnp.array(1)
-                measurement_aggregation = lambda x,y: x*(1-y)
-                post_aggregation = lambda x: 1-x
-                custom_meas_aggr = False
-            elif not isinstance(multi_measurement_logic[0], number):
-                raise ValueError(f"multiple_measurement_logic expects the first element of the tuple to be a number (the initialization value for the aggregation). Value given: {multi_measurement_logic[0]}")
+        if multi_measurement_logic is not None:
+            if not isinstance(multi_measurement_logic[0], number):
+                raise ValueError(f"multiple_measurement_logic expects the first element of the tuple to be a float (the initialization value for the aggregation). Value given: {multi_measurement_logic[0]}")
             elif not callable(multi_measurement_logic[1]):
                 raise ValueError(f"multiple_measurement_logic expects the second element of the tuple to be a callable (x,y)->z (the aggregation function for multiple measurements). Value given: {multi_measurement_logic[1]}")
             elif not callable(multi_measurement_logic[2]):
                 raise ValueError(f"multiple_measurement_logic expects the third element of the tuple to be a callable (x)->z (the post-aggregation function for multiple measurements). Value given: {multi_measurement_logic[2]}")
             else:
                 error_msg = f"multiple_measurement_logic contains invalid elements:\n\
-                            2nd element: The aggregation function must be able to take as input two floats x and y, y being in the interval [0,1] and outputs a float.\n\
+                            2nd element: The aggregation function must be able to take as input two floats and outputs a float.\n\
                             3rd element: The post-aggregation function must be able to take as input one float and output a float."
                 try:
                     for i in range(100):
@@ -283,9 +277,19 @@ class DetectionMetric:
                 measurement_aggregation = multi_measurement_logic[1]
                 post_aggregation = multi_measurement_logic[2]
                 custom_meas_aggr = True
+
+        if criterion in state_detection:
+            
+            if multi_measurement_logic is None:
+                aggregate_init = jnp.array(1)
+                measurement_aggregation = lambda x,y: x*(1-y)
+                post_aggregation = lambda x: 1-x
+                custom_meas_aggr = False
+            
            
             if metric is None:
                 metric = std_states_metric
+                custom_metric = False
             elif not callable(metric):
                 raise ValueError(f"metric expects a callable (x,y)->z. Value given: {metric}")
             else:
@@ -299,6 +303,7 @@ class DetectionMetric:
                     raise ValueError(error_msg + f"\nError from test: {e}")
                 
                 metric = jit(metric)
+                custom_metric = True
 
             if criterion == 'any excited':
 
@@ -353,13 +358,117 @@ class DetectionMetric:
                 detection_name = f"custom states: {parameter}"
             
             
-            def build_detection(projectors) -> Callable[[List[qt.Qobj],List[qt.Qobj]],Tuple[float,Tuple[float,float]]]:
-                
-                detection_projectors = [projector[i] for i in range(2**self.n_qubits) if format(i, f'0{self.n_qubits}b') in detection_states]
+            def build_detection(self, projectors):
+                """Return a builder that, given projectors, creates and assigns the
+                jitted detection callable on this instance.
 
-                def callable_detection(List[qt.Qobj],List[qt.Qobj]) -> float, (float,float):
+                This function is returned by the outer `build_detection` factory so
+                the experiment can call it when projectors are available.
+                """
+
+                detection_projectors = [projectors[i] for i in range(2**self.n_qubits)
+                                        if format(i, f'0{self.n_qubits}b') in detection_states]
+
+                def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj]) -> Tuple[float, Tuple[float, float]]:
+                    detection1_tot = aggregate_init
+                    detection2_tot = aggregate_init
+
+                    for rho_1, rho_2 in zip(list_rho_1, list_rho_2):
+                        p1 = sum([jnp.real((projector * rho_1 * projector).tr()) for projector in detection_projectors])
+                        p2 = sum([jnp.real((projector * rho_2 * projector).tr()) for projector in detection_projectors])
+
+                        detection1_tot = measurement_aggregation(detection1_tot, p1)
+                        detection2_tot = measurement_aggregation(detection2_tot, p2)
+
+                    detection1_tot = post_aggregation(detection1_tot)
+                    detection2_tot = post_aggregation(detection2_tot)
+
+                    metric_value = metric(detection1_tot, detection2_tot)
+
+                    return metric_value, (detection1_tot, detection2_tot)
+
+                self.callable_detection = jax.jit(callable_detection)
+
+            if custom_meas_aggr and not custom_metric:
+                detection_name += f' with custom measurement aggregation'
+            elif custom_metric and not custom_meas_aggr:
+                detection_name += f' with custom metric'
+            elif custom_metric and custom_meas_aggr:
+                detection_name += f' with custom metric and measurement aggregation'
+
+            # return the projector-builder and the detection info so callers can
+            # create/assign the real detection callable after projectors exist
+            return build_detection, (detection_states, detection_name)
+                
+        elif criterion in matrix_distance:
+
+            if multi_measurement_logic is None:
+                aggregate_init = 0
+                measurement_aggregation = lambda x,y: x + y**2
+                post_aggregation = lambda x: x
+                custom_meas_aggr = False
+           
+            if criterion == 'min fidelity':
+
+                if metric is not None:
+                    warnings.warn(f"'min fidelity' detection criterion does uses fidelity and doesn't allow for a custom metric.\n\
+                                   The custom metric will be ignored. Value given: {metric}")
+                if parameter is not None:
+                    warnings.warn(f"'min fidelity' detection criterion doesn't take a detection_param.\n\
+                                   The detection_param will be ignored. Value given: {parameter}")
+                
+                trace_subsys = range(2,self.n_qubits)
+
+                matrix_metric = lambda rho_with, rho_without:\
+                      1-fidelity(extract(rho_with.ptrace(trace_subsys).data, "JaxArray"),\
+                                  extract(rho_without.ptrace(trace_subsys).data, "JaxArray"))
+
+            if criterion == 'max trace distance':
+
+                if metric is not None:
+                    warnings.warn(f"'max trace distance' detection criterion does uses trace distance and doesn't allow for a custom metric.\n\
+                                   The custom metric will be ignored. Value given: {metric}")
+
+                if metric is None:
+                    metric = std_states_metric
+                    custom_metric = False
+                elif not callable(metric):
+                    raise ValueError(f"metric expects a callable (x,y)->z. Value given: {metric}")
+                else:
+                    error_msg = f"metric function must be able to take as input two floats and output a float."
+                    try:
+                        for i in range(100):
+                            test_metric = metric(random.random(), random.random())
+                            if not isinstance(test_metric, number):
+                                raise ValueError(error_msg + f"\nError from test:\nmetric output: {test_metric}")
+                    except Exception as e:
+                        raise ValueError(error_msg + f"\nError from test: {e}")
                     
-            
+                    metric = jit(metric)
+                    custom_metric = True
+
+
+
+        else:
+            raise ValueError(f"criterion was given the value '{criterion}'\n\
+            criterion must be a string of the following:\n\
+            - 'any excited': detects if there is any excitation.\n\
+                detection_param: None\n\n\
+            - 'min excited': detects if there are more than a set number of excitations\n\
+                detection_param: int, number of excitations\n\n\
+            - 'excited qubits': detects if one or more of the qubits in a list are excited\n\
+                detection_param: List[int], list of qubit indexes\n\n\
+            - 'custom states': detects states that belong to a list of states\n\
+                detection_param: List[str], list of state keys\n\n\
+            - 'min fidelity': computes the fidelity between the interacting and non interacting states \n\
+                detection_param: None\n\n\
+            - 'max trace distance': computes the trace distance between the interacting and non interacting states \n\
+                detection_param: None\n\n\
+            - 'max computational distance': maximizes the orthogonality between interaction and \n\
+                non interaction measurements (on the computational basis) for all the states."\
+            )
+
+
 
 
             
