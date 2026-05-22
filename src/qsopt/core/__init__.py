@@ -12,7 +12,7 @@ from .experiment.quantum_utils import (
     apply_single_qubit_rotation,
     create_measurement_projector,
     generate_initial_state,
-    generate_n_qubit_operators,
+    generate_system_operators,
     measure_qubit_probability,
     project_and_measure,
 )
