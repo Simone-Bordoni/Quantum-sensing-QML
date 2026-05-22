@@ -1413,14 +1413,22 @@ def plot_time_evolution(
 
     # Plot detection measures (supports legacy probability keys).
     if "detection_measure" in probabilities:
-        ax.plot(times, probabilities["detection_measure"], label="Detection measure", linewidth=2, linestyle="-")
+        detection_label = "Detection metric"
+        detection_values = probabilities["detection_measure"]
     elif "detection_probability" in probabilities:
-        ax.plot(times, probabilities["detection_probability"], label="Detection measure", linewidth=2, linestyle="-")
+        detection_label = "Detection probability"
+        detection_values = probabilities["detection_probability"]
+    else:
+        detection_label = None
+        detection_values = None
+
+    if detection_values is not None:
+        ax.plot(times, detection_values, label=detection_label, linewidth=2, linestyle="-")
 
     if "nondetection_measure" in probabilities:
-        ax.plot(times, probabilities["nondetection_measure"], label="No-detection measure", linewidth=2, linestyle="--")
+        ax.plot(times, probabilities["nondetection_measure"], label="No-detection metric", linewidth=2, linestyle="--")
     elif "nondetection_probability" in probabilities:
-        ax.plot(times, probabilities["nondetection_probability"], label="No-detection measure", linewidth=2, linestyle="--")
+        ax.plot(times, probabilities["nondetection_probability"], label="No-detection probability", linewidth=2, linestyle="--")
 
     # Add cavity population on same y-axis if requested
     if show_cavity_population and cavity_population is not None:

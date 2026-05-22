@@ -94,8 +94,6 @@ def generate_system_operators(
         - Joint measurement projectors:
             * P_all0: Projector onto |00...0⟩ state
             * P_all: List of projectors for all 2^n computational basis states
-            * P_detect: Projector onto detection states (based on detection_states parameter)
-            * P_no_detect: Projector onto non-detection states
         - Individual qubit projectors: P0_q (ground states), P1_q (excited states)
         - Measurement/reset operators: measure_reset, measure_reset_dag
         - Rotation operators:

@@ -150,7 +150,7 @@ class Experiment:
         self._generate_operators()
         self._generate_hamiltonian()
         self._initialize_initial_state()
-        self._generate_measure_function()
+        self.detection_metric.initialize(self.operators["P_all"])
 
 
     @property
@@ -236,60 +236,11 @@ class Experiment:
         cavity_levels = self.experimental_params.cavity_levels
         qubit_levels = self.experimental_params.qubit_levels
         n_qubits = self.experimental_params.n_qubits
-        detection_states = self.detection_metric.detection_states
 
         # Generate n-qubit operators using utility function
         self.operators = generate_system_operators(
             field_levels, cavity_levels, qubit_levels, n_qubits
         )
-
-    def _generate_measure_function(self) -> None:
-        """
-        Generate the measure and reset function
-
-        The function operates on the rho of the full system 
-        and outputs a new rho and the detection measure
-        """
-        
-        measure_reset = self.operators['measure_reset']
-        measure_reset_dag = self.operators['measure_reset_dag']
-
-        if self.detection_metric.detection_name == 'max computational distance':
-            def f_measure_reset(rho: qt.Qobj):
-                '''Measure probability of each qubit and reset the qubit as a mixture of all possible states'''
-                
-                rho_reset = [op * rho * op_dag for op,op_dag in zip(measure_reset,measure_reset_dag)]
-                prob_list = [jnp.real(x.tr()) for x in rho_reset]
-                rho_current = sum(rho_reset)
-
-                return rho_current, [jnp.array(prob_list)]
-
-        elif self.detection_metric.detection_name == 'no detection':
-            def f_measure_reset(rho: qt.Qobj):
-                '''Return rho and reset the qubit as a mixture of all possible states'''
-                
-                rho_reset = [op * rho * op_dag for op,op_dag in zip(measure_reset,measure_reset_dag)]
-                rho_current = sum(rho_reset)
-
-                return rho_current, [rho]              
-
-        else:
-            def f_measure_reset(rho: qt.Qobj):
-                '''Measure probability of non detection and reset the qubit'''
-
-                rho_reset = measure_reset * rho * measure_reset_dag
-                prob_no_detect = jnp.real(rho_reset.tr())
-                # Use lax.cond to avoid TracerBoolConversionError in JIT
-                # lax.cond works with arbitrary objects (like Qobj), unlike jnp.where
-                rho_current = lax.cond(
-                    prob_no_detect == 0,
-                    lambda: rho_reset,
-                    lambda: rho_reset / prob_no_detect
-                )
-
-                return rho_current, prob_no_detect
-
-        self.measure_reset = jit(f_measure_reset)
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
         """
@@ -1065,32 +1016,17 @@ class Experiment:
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
 
-        unsupported_criteria = {
-            "min fidelity",
-            "max trace distance",
-            "max computational distance",
-        }
-        unsupported_batching = {
-            "fidelity batching": "min fidelity",
-            "trace distance batching": "max trace distance",
-            "max computational distance batching": "max computational distance",
-        }
-
-        criterion = getattr(
-            self.detection_metric,
-            "detection_criterion",
-            self.detection_metric.detection_name,
-        )
-        criterion_from_batching = unsupported_batching.get(
-            self.detection_metric.batching_name
-        )
-
-        if criterion in unsupported_criteria or criterion_from_batching is not None:
-            unsupported_label = criterion_from_batching or criterion
-            raise NotImplementedError(
-                f"time_evolution is not implemented for detection criterion "
-                f"'{unsupported_label}'"
+        metric_name = self.detection_metric.name
+        metric_name_lower = metric_name.lower()
+        requires_pair = any(
+            key in metric_name_lower
+            for key in (
+                "fidelity",
+                "trace distance",
+                "computational distance",
+                "custom matrix distance",
             )
+        )
 
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
@@ -1102,17 +1038,13 @@ class Experiment:
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
 
-        # Get initial state and solver
-        rho = self._cached_initial_state
-        if rho is None:
+        # Get initial state and solvers
+        rho0 = self._cached_initial_state
+        if rho0 is None:
             raise RuntimeError("Initial state cache is not initialized.")
 
-
-        solver = (
-            self.get_solver_with_interaction()
-            if with_interaction
-            else self.get_solver_no_interaction()
-        )
+        solver_with = self.get_solver_with_interaction()
+        solver_without = self.get_solver_no_interaction()
 
         # Prepare circuit unitaries as QuTiP objects (including daggers)
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
@@ -1137,6 +1069,7 @@ class Experiment:
         # Storage for results
         all_times = []
         detection_list = []
+        detection_probability_list = []
         cavity_population_list = []
         field_population_list = []
 
@@ -1146,47 +1079,81 @@ class Experiment:
         segment_ends = list(intermediate_meas_times) + [t_end]
 
         # Evolution
+        rho_with = rho0
+        rho_without = rho0
+
         for seg_start, seg_end in zip(segment_starts, segment_ends):
             # Number of points for this segment
             seg_fraction = (seg_end - seg_start) / (t_end - t_start)
             seg_n_points = max(2, int(n_points * seg_fraction))
 
             # Apply initial circuit for measurement
-            rho = initial_unitary * rho * initial_unitary_dag
+            rho_with = initial_unitary * rho_with * initial_unitary_dag
+            if requires_pair or not with_interaction:
+                rho_without = initial_unitary * rho_without * initial_unitary_dag
 
             # Evolve segment
             seg_times = np.linspace(seg_start, seg_end, seg_n_points)
-            result = solver.run(rho, tlist=seg_times, args=args)
+            primary_solver = solver_with if (with_interaction or requires_pair) else solver_without
+            result_with = primary_solver.run(rho_with, tlist=seg_times, args=args)
+            result_without = None
+            if requires_pair:
+                result_without = solver_without.run(rho_without, tlist=seg_times, args=args)
 
             # Extract data for this segment
-            for i, rho_t in enumerate(result.states):
+            for i, rho_t in enumerate(result_with.states):
 
                 # Apply final circuit for measurement
-                rho_meas = final_unitary * rho_t * final_unitary_dag  # type: ignore
+                rho_meas_with = final_unitary * rho_t * final_unitary_dag  # type: ignore
+                rho_meas_without = None
+                if result_without is not None:
+                    rho_without_t = result_without.states[i]
+                    rho_meas_without = final_unitary * rho_without_t * final_unitary_dag  # type: ignore
+                elif not with_interaction:
+                    rho_meas_without = rho_meas_with
 
-                # Measure detection
-                rho_reset = measure_reset * rho_meas * measure_reset_dag
-                prob_no_detect = jnp.real(rho_reset.tr())
+                # Measure detection with the configured metric
+                epoch_fraction = (seg_times[i] - t_start) / (t_end - t_start)
+                if requires_pair:
+                    metric_value, _ = self.detection_metric(
+                        [rho_meas_with],
+                        [rho_meas_without],
+                        epoch_fraction,
+                    )
+                    detection_value = metric_value
+                else:
+                    metric_value, (detect_value, _) = self.detection_metric(
+                        [rho_meas_with],
+                        [rho_meas_with],
+                        epoch_fraction,
+                    )
+                    detection_value = detect_value
+                    detection_probability_list.append(detect_value)
 
-                detection_list.append(1-prob_no_detect)
+                detection_list.append(detection_value)
 
                 all_times.append(seg_times[i])
 
                 # Calculate populations (take real part since expectation values should be real)
-                cavity_pop = float(np.real(qt.expect(n_cavity, rho_t)))
-                field_pop = float(np.real(qt.expect(n_field, rho_t)))
+                population_rho = rho_t if with_interaction else (rho_without_t if rho_meas_without is not None else rho_t)
+                cavity_pop = float(np.real(qt.expect(n_cavity, population_rho)))
+                field_pop = float(np.real(qt.expect(n_field, population_rho)))
                 cavity_population_list.append(cavity_pop)
                 field_population_list.append(field_pop)
 
             # Update system after actual measurement
-            rho = rho_reset #if prob_no_detect == 0 else rho_reset/prob_no_detect
+            rho_with = measure_reset * rho_meas_with * measure_reset_dag
+            if rho_meas_without is not None:
+                rho_without = measure_reset * rho_meas_without * measure_reset_dag
 
         times = np.array(all_times)
         # Compute pulse shape using the same u0 function as visualization
         pulse_shape = np.array([float(u0(t, sigma=args["sigma"])) for t in times])
 
         # Build probabilities dictionary
-        probabilities = { "detection_probability" : np.array(detection_list)}
+        probabilities = {"detection_measure": np.array(detection_list)}
+        if detection_probability_list:
+            probabilities["detection_probability"] = np.array(detection_probability_list)
 
         # Import at runtime to avoid circular dependency
         from qsopt.utils.results import TimeEvolutionResults
@@ -1203,7 +1170,7 @@ class Experiment:
                 "gamma": self.experimental_params.photon_cavity_coupling,
                 "with_interaction": with_interaction,
                 "n_qubits": n_qubits,
-                "detection_criterion" : self.detection_metric.detection_name,
+                "detection_metric" : self.detection_metric.name,
             },
         )
 
@@ -1220,7 +1187,9 @@ class Experiment:
         optimize_measurement_times: bool = False,
         renormalize_grad: Optional[Union[bool,float]] = False,
         noisy_training: Optional[float] = None,
-        hot_start: bool = False
+        final_results: bool = True,
+        hot_start: bool = False,
+        tot_steps: Optional[int] = None
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -1246,7 +1215,11 @@ class Experiment:
             noisy_training: float, adds noise to the gradients during optimization.
                     If a float is given, it is used as the standard deviation relative to the average gradient. (default: None)
             hot_start: If True, continues optimization from the last parameters and optimizer state in the callback.
-                    If either the optimizer or the params are given they override the hot start values. (default: False) 
+                    If either the optimizer or the params are given they override the hot start values. (default: False)
+            tot_steps: Total number of optimization steps to run, it's used to give the epoch percentage to the detection metric. 
+                    It's useful if the optimization is divided in multiple runs.
+                    If None, uses num_steps. (default: None)
+            final_results: If True, stores the final optimization results in the callback. (default: True)
 
         Returns:
             OptimizationCallback with full optimization history, including
@@ -1300,6 +1273,11 @@ class Experiment:
         else:
             start_step = 0
             callback.reset()
+
+        if tot_steps is None:
+            tot_steps = num_steps
+        elif tot_steps < num_steps:
+            raise ValueError(f"tot_steps should be greater than or equal to num_steps, got tot_steps={tot_steps} and num_steps={num_steps}")
 
         if isinstance(noisy_training, (int, float)) and noisy_training > 0.01:
             raise ValueError(f"noisy_training should be a boolean or a float representing the standard deviation of the noise relative to the gradient norm. It shouldn't exceed 1% Got value: {noisy_training}")
@@ -1366,7 +1344,7 @@ class Experiment:
 
         # Define objective function with explicit uncertainty input.
         # Signature order is kept future-proof for optional optimization over times.
-        def coupled_simulation(circuit_unitaries, measurement_times, measurement_noise):
+        def coupled_simulation(circuit_unitaries, measurement_times, measurement_noise, epoch_fraction: float):
             """Single-realization of the two simulations with the same parameters and noise."""
 
             noisy_measurement_times = measurement_times + measurement_noise
@@ -1385,16 +1363,16 @@ class Experiment:
                 precomputed_unitaries=circuit_unitaries,
             )
 
-            metric_value, (detection_with, detection_without) = self.detection_metric(rho_with_list, rho_without_list)
+            metric_value, (detection_with, detection_without) = self.detection_metric(rho_with_list, rho_without_list, epoch_fraction)
 
             return metric_value, detection_with , detection_without
 
 
-        static_args = []
+        static_args = [3]  # objective_function static arg: epoch_fraction
         time_uncertainty = float(self.experimental_params.initial_time_uncertainty)
 
         if not optimize_measurement_times:
-            static_args.append(1)  # objective_function arg: measurement_times
+            static_args.append(1)  # add objective_function static arg: measurement_times
             base_measurement_times = tuple(
                 float(x) for x in np.asarray(self.experimental_params.measurement_times, dtype=float)
             )
@@ -1414,7 +1392,7 @@ class Experiment:
             def get_noise_batch():
                     return zero_uncertainty_batch
 
-            def objective_function(circuit_params, measurement_times, measurement_noise_batch):
+            def objective_function(circuit_params, measurement_times, measurement_noise_batch, epoch_fraction: float):
                 """Objective with no uncertainty."""
 
                 measurement_times = np.asarray(measurement_times, dtype=float)
@@ -1424,7 +1402,7 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                metric, detect_with, detect_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch)
+                metric, detect_with, detect_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
 
                 return -metric, (detect_with, detect_without, metric)
 
@@ -1440,7 +1418,7 @@ class Experiment:
                 )
                 return measurement_uncertainty_batch
             
-            def objective_function(circuit_params, measurement_times, measurement_noise_batch):
+            def objective_function(circuit_params, measurement_times, measurement_noise_batch, epoch_fraction: float):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
 
                 measurement_times = jnp.asarray(measurement_times, dtype=float)
@@ -1452,9 +1430,9 @@ class Experiment:
 
                 batch_metric, batch_detect_with, batch_detect_without = jax.vmap(
                     coupled_simulation,
-                    in_axes=(None, None, 0),
-                )(circuit_unitaries, measurement_times, measurement_noise_batch)
-                
+                    in_axes=(None, None, 0, None),
+                )(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
+
                 mean_metric = jnp.mean(batch_metric)
                 mean_detect_with = jnp.mean(batch_detect_with)
                 mean_detect_without = jnp.mean(batch_detect_without)
@@ -1465,14 +1443,14 @@ class Experiment:
 
 
         # Get detection description for verbose output
-        detection_protocol_name = detection_metric.protocol_name
+        detection_metric_name = detection_metric.name
 
         if verbose:
             print(f"Configuration:")
             print(f"    Max iterations: {num_steps}")
             print(f"    Batch size: {batch_size}")
             print(f"    Convergence tolerance: {tolerance:.2e}")
-            print(f"    Detection metric: {detection_protocol_name}")
+            print(f"    Detection metric:\n{detection_metric_name}")
             print(f"    Trainable parameters: {n_total} ({n_initial} initial circuit + {n_final} final circuit)")
             print(f"    Initial parameter values:")
 
@@ -1523,7 +1501,7 @@ class Experiment:
             # Compute gradients using JAX autodiff
             grads, (detection_with, detection_without, step_metric) = jax.grad(
                 jitted_objective, has_aux=True
-            )(params, base_measurement_times, measurement_uncertainty_batch)
+            )(params, base_measurement_times, measurement_uncertainty_batch,epoch_fraction=step/tot_steps)
 
             # Track best parameters
             if step_metric > best_metric:

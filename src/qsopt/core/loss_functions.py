@@ -6,6 +6,7 @@ and computing detection metrics from measurement probabilities.
 """
 
 from typing import Callable, Dict, Union, List, Optional, Tuple, TypeAlias, TypeVar
+import types
 
 import jax
 import numpy as np
@@ -109,73 +110,30 @@ class DetectionMetric:
             detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]]] = None, \
             metric: Optional[Callable[[float,float], float]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator[Array], Aggregator[list]]] = None, \
-            protocol_name: Optional[str] = None, \
+            name: Optional[str] = None, \
     ):
         """Initialize the detection metric."""
 
         self.n_qubits = n_qubits
+        self.n_subsystems = n_qubits + 2
 
-        # Initialize the detection metric builder:
+        # create the detection metric initializer:
         # we need the projectors which are built in the experiment, so the callable 
         # is built in the experiment initialization and not here.
-        self.build_detection, (self.detection_states, self.protocol_name) = self.init_detection(detection_criterion, \
-                                                                                            detection_param, \
-                                                                                            metric, \
-                                                                                            multiple_measurement_logic \
-                                                                                            )
-
+        initialize, self.name = self.init_detection(detection_criterion, \
+                                                        detection_param, \
+                                                        metric, \
+                                                        multiple_measurement_logic \
+                                                        )
+        
+        self.initialize = types.MethodType(initialize, self)
+        
         # Overwrite protocol name if provided
-        if protocol_name is not None:
-            self.protocol_name = protocol_name
+        if name is not None:
+            self.name = name        
 
 
-        # define the multiple measurement logic. default: (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
-        if multiple_measurement_logic is None:
-            self.custom_multiple_measurement_logic = False
-            self.aggregate_init = jnp.array(1)
-            self.measurement_aggregation = lambda x,y: x*y
-            self.post_aggregation = lambda x: 1-x
-            self.multiple_measurement_name = 'std probability aggregation'
-        else:
-            self.custom_multiple_measurement_logic = True
-            self.aggregate_init = jnp.array(1) if multiple_measurement_logic[0] is None else multiple_measurement_logic[0]
-            self.measurement_aggregation = lambda x,y: x*y if multiple_measurement_logic[1] is None else multiple_measurement_logic[1]
-            self.post_aggregation = lambda x: 1-x if multiple_measurement_logic[2] is None else multiple_measurement_logic[2]
-            self.multiple_measurement_name = multiple_measurement_name
-
-        # define the metric function. default: contrast = lambda x,y: -(x-y)
-        if metric is None:
-            self.custom_metric = False
-            self.metric = std_metric
-            metric_name = 'contrast'
-        else:
-            self.custom_metric = True
-            self.metric = jit(metric)
-
-        self.metric_name = metric_name
-        
-        # define batching logic. default: average over batch
-        if batching_logic is None:
-            self.custom_batch = False
-            self.batching_logic = std_batching
-            self.batching_name = 'average batching'
-        else:
-            self.custom_batch = True
-            self.batching_logic = batching_logic
-            self.batching_name = batching_name
-
-        # define detection condition
-        self.detection_states, self.detection_name = self.build_detection(detection_criterion, detection_param)
-
-        if protocol_name is not None:
-            self.protocol_name = protocol_name
-        else:
-            self.protocol_name = self.detection_name + ' with ' + self.metric_name
-
-        
-
-
-    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj]) -> Tuple[float, Tuple[float, float]]:
+    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj], epoch_fraction: Optional[float] = None) -> Tuple[float, Tuple[float, float]]:
         """
         Compute loss from detection probability.
 
@@ -185,6 +143,8 @@ class DetectionMetric:
             List of density matrices from simulation a.
         list_rho_b : List[qt.Qobj]
             List of density matrices from simulation b.
+        epoch_fraction : Optional[float]
+            Fraction of the epoch for which to compute the detection metric.
 
         Returns
         -------
@@ -193,10 +153,10 @@ class DetectionMetric:
         tuple of floats
             (detection measure with photon, detection measure without photon) if applicable.
         """
-        return self.callable_detection(list_rho_a, list_rho_b)
+        return self.callable_detection(list_rho_a, list_rho_b, epoch_fraction)
 
     def init_detection(self, criterion, parameter, metric, multi_measurement_logic \
-                        ) -> Tuple[Callable[[List[qt.Qobj], List[qt.Qobj]], Tuple[float, Tuple[float, float]]], Tuple[List[str], str]]:
+                        ) -> Tuple[Callable[[List[qt.Qobj], List[qt.Qobj]], Tuple[float, Tuple[float, float]]], str]:
         """
         Build detection metric callable and return corresponding states and criterion name.
 
@@ -215,8 +175,8 @@ class DetectionMetric:
         -------
         callable
             Function that computes the detection metric from lists of density matrices.
-        tuple
-            (detection_states, criterion_name)
+        string
+            detection_name describing the criterion and parameters used, for logging and visualization purposes.
         
         Criterion types:
 
@@ -246,7 +206,7 @@ class DetectionMetric:
                 detection_param: Callable[[Array, Array], float], a function that takes as input the two density matrices and outputs a distance measure to be maximized.
         
         """
-        state_detection = ['any excited', 'min excited', 'control qubits', 'excited qubits' 'custom states']
+        state_detection = ['any excited', 'min excited', 'control qubits', 'excited qubits', 'custom states']
         matrix_distance = ['min fidelity', 'max trace distance', 'max computational distance', 'custom matrix distance']
 
         number = (int, float)
@@ -329,14 +289,14 @@ class DetectionMetric:
 
                 if parameter is None:
                     raise ValueError(f"'control qubits' detection expects detection_param to be an List of unique qubit indexes, ints between 0 and n_qubits-1.\nValue given: None")
-                elif not isinstance(parameter, List[int]) or not all([0 <= i < n_qubits for i in parameter]):
+                elif not isinstance(parameter, list) or not all(isinstance(i, int) for i in parameter) or not all([0 <= i < self.n_qubits for i in parameter]):
                     raise ValueError(f"'control qubits' detection expects detection_param to be an List of unique qubit indexes, ints between 0 and n_qubits-1.\nValue given: {parameter}")
                 elif parameter != list(set(parameter)):
                     warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
                     parameter = set(parameter)
 
                 detection_states = [format(i, f'0{self.n_qubits}b') \
-                    for i in range(2**self.n_qubits) if any([format(i, f'0{self.n_qubits}b')[j] == 1 for j in parameter])]
+                    for i in range(2**self.n_qubits) if any([format(i, f'0{self.n_qubits}b')[j] == '1' for j in parameter])]
                 detection_name = f"control qubits ({','.join(map(str, parameter))})"
 
             elif criterion == 'custom states':
@@ -358,7 +318,7 @@ class DetectionMetric:
                 detection_name = f"custom states: {parameter}"
             
             
-            def build_detection(self, projectors):
+            def build_detection(self, p_all):
                 """Return a builder that, given projectors, creates and assigns the
                 jitted detection callable on this instance.
 
@@ -366,10 +326,14 @@ class DetectionMetric:
                 the experiment can call it when projectors are available.
                 """
 
-                detection_projectors = [projectors[i] for i in range(2**self.n_qubits)
+                detection_projectors = [p_all[i] for i in range(2**self.n_qubits)
                                         if format(i, f'0{self.n_qubits}b') in detection_states]
+                
+                print(f"DEBUG loss_functions:\n\nDetection projectors built for states: {detection_states}\nProjectors: {detection_projectors}")
 
-                def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj]) -> Tuple[float, Tuple[float, float]]:
+                def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[float, float]]:
+                    
                     detection1_tot = aggregate_init
                     detection2_tot = aggregate_init
 
@@ -390,15 +354,15 @@ class DetectionMetric:
                 self.callable_detection = jax.jit(callable_detection)
 
             if custom_meas_aggr and not custom_metric:
-                detection_name += f' with custom measurement aggregation'
+                detection_name += f'\nwith custom measurement aggregation'
             elif custom_metric and not custom_meas_aggr:
-                detection_name += f' with custom metric'
+                detection_name += f'\nwith custom metric'
             elif custom_metric and custom_meas_aggr:
-                detection_name += f' with custom metric and measurement aggregation'
+                detection_name += f'\nwith custom metric and measurement aggregation'
 
             # return the projector-builder and the detection info so callers can
             # create/assign the real detection callable after projectors exist
-            return build_detection, (detection_states, detection_name)
+            return build_detection, detection_name
                 
         elif criterion in matrix_distance:
 
@@ -408,37 +372,93 @@ class DetectionMetric:
                 post_aggregation = lambda x: x
                 custom_meas_aggr = False
            
-            if criterion == 'min fidelity':
+            if criterion in ['min fidelity','max trace distance']:
 
                 if metric is not None:
-                    warnings.warn(f"'min fidelity' detection criterion does uses fidelity and doesn't allow for a custom metric.\n\
+                    warnings.warn(f"'{criterion}' detection criterion does uses fidelity and doesn't allow for a custom metric.\n\
                                    The custom metric will be ignored. Value given: {metric}")
                 if parameter is not None:
-                    warnings.warn(f"'min fidelity' detection criterion doesn't take a detection_param.\n\
+                    warnings.warn(f"'{criterion}' detection criterion doesn't take a detection_param.\n\
                                    The detection_param will be ignored. Value given: {parameter}")
                 
-                trace_subsys = range(2,self.n_qubits)
+                trace_subsys = range(self.n_subsystems - self.n_qubits, self.n_subsystems)
 
-                matrix_metric = lambda rho_with, rho_without:\
-                      1-fidelity(extract(rho_with.ptrace(trace_subsys).data, "JaxArray"),\
-                                  extract(rho_without.ptrace(trace_subsys).data, "JaxArray"))
+                if criterion == 'min fidelity':
 
-            if criterion == 'max trace distance':
+                    matrix_distance = lambda rho_with, rho_without:\
+                        1-fidelity(extract(rho_with.ptrace(trace_subsys).data, "JaxArray"),\
+                                    extract(rho_without.ptrace(trace_subsys).data, "JaxArray"))
+                    
+                    detection_name = 'minimize fidelity'
 
-                if metric is not None:
-                    warnings.warn(f"'max trace distance' detection criterion does uses trace distance and doesn't allow for a custom metric.\n\
-                                   The custom metric will be ignored. Value given: {metric}")
+                elif criterion == 'max trace distance':
 
-                if metric is None:
-                    metric = std_states_metric
-                    custom_metric = False
-                elif not callable(metric):
-                    raise ValueError(f"metric expects a callable (x,y)->z. Value given: {metric}")
+                    matrix_distance = lambda rho_with, rho_without:\
+                        trace_distance(extract(rho_with.ptrace(trace_subsys).data, "JaxArray"),\
+                                        extract(rho_without.ptrace(trace_subsys).data, "JaxArray"))
+                    
+                    detection_name = 'maximize trace distance'
+
+                def build_detection(self, p_all):
+                    """Return a builder that, given projectors, creates and assigns the
+                    jitted detection callable on this instance.
+
+                    This function is returned by the outer `build_detection` factory so
+                    the experiment can call it when projectors are available.
+                    """
+
+                    def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
+                         -> Tuple[float, Tuple[float, float]]:
+                        # Implementation for fidelity and trace distance
+
+                        metric_tot = aggregate_init
+
+                        for rho1,rho2 in zip(list_rho_1, list_rho_2):
+                            metric_tot = measurement_aggregation(metric_tot, matrix_distance(rho1, rho2))
+                        
+                        metric_tot = post_aggregation(metric_tot)
+                        
+                        return metric_tot, (0,0)
+
+                    self.callable_detection = jax.jit(callable_detection)
+
+            elif criterion == 'max computational distance':
+
+                if parameter is None:
+                    parameter = lambda x: 1-x
+                elif not callable(parameter):
+                    raise ValueError(f"max computational distance detection expects detection_param to be a callable\n\
+                                     that takes as input a float between 0 and 1 (the epoch fraction) and outputs \n\
+                                     a float parameter used in the metric function.\n\
+                                     Value given: {parameter}")
                 else:
-                    error_msg = f"metric function must be able to take as input two floats and output a float."
+                    error_msg = f"max computational distance detection expects detection_param to be a callable\n\
+                        that takes as input a float between 0 and 1 (the epoch fraction) and outputs \n\
+                        a float parameter used in the metric function.\n\
+                        Value given: {parameter}"
                     try:
                         for i in range(100):
-                            test_metric = metric(random.random(), random.random())
+                            test_param = parameter(random.random())
+                            if not isinstance(test_param, number):
+                                raise ValueError(error_msg + f"\nError from test:\nparameter output: {test_param}")
+                    except Exception as e:
+                        raise ValueError(error_msg + f"\nError from test: {e}")
+                    
+                    parameter = jit(parameter)
+
+                if metric is None:
+                    metric = lambda x,y,f: -4*x*y + parameter(f)*(x**2 + y**2)
+                    custom_metric = False
+                elif not callable(metric):
+                    raise ValueError(f"metric expects a callable (x,y,f)->z. Where f is the epoch fraction.\n\
+                                     Value given: {metric}")
+                else:
+                    error_msg = f"metric function must be able to take as input three floats and output a float.\n\
+                        The three inputs are 1 for each compared matrix, the other is the epoch fraction\n\
+                        and can be used to vary the metric over time, must be included even if it's not used."
+                    try:
+                        for i in range(100):
+                            test_metric = metric(random.random(), random.random(), random.random())
                             if not isinstance(test_metric, number):
                                 raise ValueError(error_msg + f"\nError from test:\nmetric output: {test_metric}")
                     except Exception as e:
@@ -446,6 +466,97 @@ class DetectionMetric:
                     
                     metric = jit(metric)
                     custom_metric = True
+                
+
+                def build_detection(self, p_all):
+                    """Return a builder that, given projectors, creates and assigns the
+                    jitted detection callable on this instance.
+
+                    This function is returned by the outer `build_detection` factory so
+                    the experiment can call it when projectors are available.
+                    """
+
+                    def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[float, float]]:
+                        # Implementation for computational distance
+                        
+                        metric_tot = aggregate_init
+
+                        for rho1,rho2 in zip(list_rho_1, list_rho_2):
+                            p_with = jnp.array([jnp.real((projector * rho1 * projector).tr()) for projector in p_all])
+                            p_without = jnp.array([jnp.real((projector * rho2 * projector).tr()) for projector in p_all])
+                            metric_tot = measurement_aggregation(metric_tot, jnp.sum(metric(p_with, p_without, epoch_fraction)))
+
+                        metric_tot = post_aggregation(metric_tot)
+
+                        return metric_tot, (0,0)
+
+                    self.callable_detection = jax.jit(callable_detection)
+
+                detection_name = 'maximize computational distance'
+                if custom_metric:
+                    detection_name += ' with custom metric'
+
+            elif criterion == 'custom matrix distance':
+
+                if parameter is not None:
+                    raise ValueError(f"'custom matrix distance' detection criterion doesn't take a detection_param.\n\
+                                   The detection_param will be ignored. Value given: {parameter}")
+            
+                if metric is None:
+                    raise ValueError(f"'custom matrix distance' detection criterion expects a custom metric function\n\
+                                     that takes as input two density matrices and the epoch fraction\n\
+                                     then outputs a distance measure to be maximized.\n\
+                                     Value given: None")
+                elif not callable(metric):
+                    raise ValueError(f"'custom matrix distance' detection criterion expects a callable custom metric\n\
+                                     that takes as input two density matrices and the epoch fraction\n\
+                                     then outputs a distance measure to be maximized.\n\
+                                     Value given: {metric}")
+                else:
+                    try:
+                        for i in range(100):
+                            test_rho_1 = qt.rand_dm(self.n_qubits+2)
+                            test_rho_2 = qt.rand_dm(self.n_qubits+2)
+                            test_metric = metric(test_rho_1, test_rho_2, random.random())
+                            if not isinstance(test_metric, number):
+                                raise ValueError(f"Custom metric output must be a float. Output obtained during testing: {test_metric}")
+                    except Exception as e:
+                        raise ValueError(f"Custom metric must be a callable that takes as input two density matrices and the epoch fraction\n\
+                                         then outputs a float.\n\
+                                         Error from testing: {e}")
+
+                def build_detection(self, p_all):
+                    """Return a builder that, given projectors, creates and assigns the
+                    jitted detection callable on this instance.
+
+                    This function is returned by the outer `build_detection` factory so
+                    the experiment can call it when projectors are available.
+                    """
+
+                    def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[float, float]]:
+                        # Implementation for custom matrix distance
+
+                        metric_tot = aggregate_init
+
+                        for rho1,rho2 in zip(list_rho_1, list_rho_2):
+                            metric_tot = measurement_aggregation(metric_tot, metric(rho1, rho2, epoch_fraction))
+
+                        metric_tot = post_aggregation(metric_tot)
+
+                        return metric_tot, (0,0)
+
+                    self.callable_detection = jax.jit(callable_detection)
+
+                detection_name = 'maximize custom matrix distance'
+
+            if custom_meas_aggr:
+                detection_name += f'\nwith custom measurement aggregation'
+
+            # return the projector-builder and the detection info so callers can
+            # create/assign the real detection callable after projectors exist
+            return build_detection, detection_name
 
 
 
@@ -464,282 +575,26 @@ class DetectionMetric:
                 detection_param: None\n\n\
             - 'max trace distance': computes the trace distance between the interacting and non interacting states \n\
                 detection_param: None\n\n\
-            - 'max computational distance': maximizes the orthogonality between interaction and \n\
-                non interaction measurements (on the computational basis) for all the states."\
-            )
-
-
-
-
-            
-
-
-
-        if criterion == 'any excited': #DEFAULT, corresponds to 'min excited' with detection_param=1
-
-            non_0_states = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
-            return non_0_states, criterion
-
-        elif criterion == 'min excited':
-
-            if detection_param is None:
-                detection_param = 1
-            elif (not isinstance(detection_param,int) and (0 < detection_param < self.n_qubits)):
-                raise ValueError(f"min excited detection expects detection_param to be an int between 1 and {self.n_qubits-1}.\n\
-                                   Value given: {detection_param}\n\
-                                   Type given: {type(detection_param)}")
-
-            states = [format(i, f'0{self.n_qubits}b') \
-                for i in range(2**self.n_qubits) \
-                if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) >= detection_param]
-
-            name = f'min {detection_param} excited'
-
-            return states, name
-
-        elif criterion == 'excited qubits':
-
-            if detection_param is None:
-                detection_param = [0]
-            elif not isinstance(detection_param,list):
-                raise ValueError("excited qubits detection expects detection_param to be a list")
-            elif not all((0 <= qubit < self.n_qubits) if isinstance(qubit, int) else False for qubit in detection_param):
-                raise ValueError(f"excited qubits detection expects elements of detection_param to be int qubit indexes between 0 and {self.n_qubits-1}.\n   \
-                                   The following elements were given: {detection_param}\n\
-                                   There are elements of types: {set([type(i) for i in detection_param])}")
-
-            states = [format(i, f'0{self.n_qubits}b') \
-                    for i in range(2**self.n_qubits) \
-                    if any([list(map(int,format(i, f'0{self.n_qubits}b')))[j]==1 for j in detection_param]) \
-                    ]
-
-            name = f'excited qubits: {detection_param}'
-
-            return states, name
-
-        elif criterion == 'custom states':
-            if detection_param is None:
-                detection_param = [format(0, f'0{self.n_qubits}b')]
-            elif not all([isinstance(state, str) for state in detection_param]):
-                raise ValueError("custom states detection expects detection_param to be a list of string states")
-
-            all_possible_states = set([format(i, f'0{self.n_qubits}b') for i in range(2**self.n_qubits)])
-            invalid_states = set(detection_param) - all_possible_states
-            if len(invalid_states) != 0:
-                raise ValueError(f"{len(invalid_states)} invalid states given: {invalid_states}")
-
-            states = detection_param
-
-            name = criterion
-
-            return states, name
-        
-        elif criterion == 'min fidelity':
-            # this criterion must measure couples of rho from the interacting and non interacting simulations,
-            # measurement_aggregation and aggregate_init are updated to handle probability lists
-            if not self.custom_multiple_measurement_logic:
-                self.aggregate_init = []
-                self.measurement_aggregation = list_aggregation
-                self.post_aggregation = lambda x: x
-                self.multiple_measurement_name = 'list aggregation'
-
-            # batching logic is updated to
-            if not self.custom_batch:             
-                self.batching_logic = fidelity_batching
-                self.batching_name = 'fidelity batching'
-
-            # metric name is updated
-            if not self.custom_metric:      
-                self.metric_name = 'fidelity'
-                self.metric = lambda x,y: x-y
-
-            return 'all states', 'no detection'
-
-
-        elif criterion == 'max trace distance':
-            # this criterion must measure couples of rho from the interacting and non interacting simulations,
-            # measurement_aggregation and aggregate_init are updated to handle probability lists
-            if not self.custom_multiple_measurement_logic:
-                self.aggregate_init = []
-                self.measurement_aggregation = list_aggregation
-                self.post_aggregation = lambda x: x
-                self.multiple_measurement_name = 'list aggregation'
-
-            # batching logic is updated to   
-            if not self.custom_batch:          
-                self.batching_logic = trace_distance_batching
-                self.batching_name = 'trace distance batching'
-
-            # metric name is updated
-            if not self.custom_metric:      
-                self.metric_name = 'trace distance'
-
-            return 'all states', 'no detection'
-        
-        elif criterion == 'max computational distance':
-            # this criterion must measure separetly all states, 
-            # compute the distance (defined by the metric) between the interacting and non interacting probabilities in each state and then average over states,
-            # measurement_aggregation and aggregate_init are updated to handle probability lists
-            if not self.custom_multiple_measurement_logic:
-                self.aggregate_init = []
-                self.measurement_aggregation = list_aggregation
-                self.post_aggregation = lambda x: x
-                self.multiple_measurement_name = 'list aggregation'
-
-            if self.detection_param is None:
-                self.detection_param = (4,2)
-            else:
-                if not isinstance(self.detection_param, tuple) or len(self.detection_param) != 2:
-                    raise ValueError("max computational distance detection expects detection_param to be a tuple of two numbers: (inverse_pow_coefficient, pow_exp)"
-                                     "if inverse_pow_coefficient is set to 0, the higher term correction will not be used. Default value is (4,2)"
-                                     f"Value given: {self.detection_param}")
-                
-            a = self.detection_param[0]
-            if a == 0:
-                pow_coeff = 0
-            else:
-                pow_coeff = -1/a
-            pow_exp = b = self.detection_param[1]
-            linear_coeff = 1 - pow_coeff
-
-            if (a != 0) and (b<=1):
-                raise ValueError("max computational distance detection expects the pow_exp parameter (the exponent of the higher term correction) to be greater than 1 to ensure that the correction is subdominant. Default value is 2."
-                                 f"Value given: {pow_exp}")
-            elif (a != 0) and (a+1) <= b:
-                raise ValueError("max computational distance detection expects the parameters to satisfy the relation inverse_pow_coefficient+1 > pow_exp to ensure that the maximum of the corrected orthogonality is equal to 1. Default values are (4,2)"
-                                 f"Values given: inverse_pow_coefficient={a}, pow_exp={pow_exp}")
-
-                
-            if pow_coeff != 0:
-                # batching logic is updated to             
-                @staticmethod
-                @jit
-                def max_dist_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
-                    -> Tuple[float, float]:
-                    detect_with = jnp.array(detect_with_batch)
-                    detect_without = jnp.array(detect_without_batch)
-                    # Shape: (batch_size, n_measurements, n_states)
-                    # Sum over states (axis=-1), then average over batch and measurements
-                    single_measurement_orthogonality = jnp.sum(detect_with*detect_without, axis=-1) # Shape: (batch_size, n_measurements)
-                    power_correction = pow_coeff * jnp.pow(single_measurement_orthogonality, pow_exp)
-                    corrected_orthogonality = linear_coeff * single_measurement_orthogonality + power_correction
-                    tot_orthogonality = jnp.prod(corrected_orthogonality, axis=-1) # Shape: (batch_size)
-                    mean_orthogonality = jnp.mean(tot_orthogonality)
-
-                    return 0, mean_orthogonality
-            else:
-                # batching logic is updated to             
-                @staticmethod
-                @jit
-                def max_dist_batching(detect_with_batch: List[jnp.array],detect_without_batch: List[jnp.array])\
-                    -> Tuple[float, float]:
-                    detect_with = jnp.array(detect_with_batch)
-                    detect_without = jnp.array(detect_without_batch)
-                    # Shape: (batch_size, n_measurements, n_states)
-                    # Sum over states (axis=-1), then average over batch and measurements
-                    single_measurement_orthogonality = jnp.sum(detect_with*detect_without, axis=-1) # Shape: (batch_size, n_measurements)
-                    tot_orthogonality = jnp.prod(single_measurement_orthogonality, axis=-1) # Shape: (batch_size)
-                    mean_orthogonality = jnp.mean(tot_orthogonality)
-
-                    return 0, mean_orthogonality
-            
-            if not self.custom_batch:
-                self.batching_logic = max_dist_batching
-                self.batching_name = 'max computational distance batching'
-
-            # metric name is updated
-            if not self.custom_metric:      
-                self.metric_name = 'computational distance'
-
-            return 'all states', criterion
-
-        else:
-            raise ValueError(f"criterion was given the value '{criterion}'\n\
-            criterion must be a string of the following:\n\
-            - 'any excited': detects if there is any excitation.\n\
-                detection_param: None\n\n\
-            - 'min excited': detects if there are more than a set number of excitations\n\
-                detection_param: int, number of excitations\n\n\
-            - 'excited qubits': detects if one or more of the qubits in a list are excited\n\
-                detection_param: List[int], list of qubit indexes\n\n\
-            - 'custom states': detects states that belong to a list of states\n\
-                detection_param: List[str], list of state keys\n\n\
-            - 'min fidelity': computes the fidelity between the interacting and non interacting states \n\
-                detection_param: None\n\n\
-            - 'max trace distance': computes the trace distance between the interacting and non interacting states \n\
-                detection_param: None\n\n\
-            - 'max computational distance': maximizes the orthogonality between interaction and \n\
-                non interaction measurements (on the computational basis) for all the states."\
+            - 'max computational distance': maximizes a distance between interaction and \n\
+                non interaction measurements (on the computational basis) for all the states.\n\
+                Can use a custom metric to redefine the distance\n\
+                detection_param: None \n\n\
+            - 'custom matrix distance': maximizes a custom metric between matrices.\n\
+                detection_param: None"
             )
 
     def __repr__(self) -> str:
         """String representation of the detector."""
-        return f"\nDetectionMetric: {self.protocol_name}\n\
-detection criterion:\n\
-  '{self.detection_name}'\n\
-metric:\n\
-  '{self.metric_name}'\n\
-batching logic:\n\
-  '{self.batching_name}'\n\
-multiple measurement logic:\n\
-  '{self.multiple_measurement_name}'\n"
+        return f"\nDetectionMetric:\n{self.name}\n"
     
 
 # Support function for different metrics
 
-@staticmethod
 @jit
 def std_states_metric(p1: float, p2: float)-> float:
     distance = p1 - p2
     return distance
 
-@staticmethod
-@jit
-def std_batching(detect_with_batch: List[float],detect_without_batch: List[float]):
-    # Average over batch
-    detect_with = jnp.mean(jnp.array(detect_with_batch))
-    detect_without = jnp.mean(jnp.array(detect_without_batch))
-    return detect_with, detect_without
-
-@staticmethod
-@jit
-def fidelity_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
-    -> Tuple[float, float]:
-
-    n_subsystems = len(detect_with_batch[0][0].dims[0])
-    n = range(n_subsystems)
-    detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
-    detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
-
-    fidelity_list = [fidelity(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
-
-    total_fidelity = jnp.mean(jnp.array(fidelity_list))
-
-    #The first output is 0 and the second one is the fidelity so that the fidelity is minimized
-    return 1, total_fidelity
-
-@staticmethod
-@jit
-def trace_distance_batching(detect_with_batch: List[qt.Qobj],detect_without_batch: List[qt.Qobj])\
-    -> Tuple[float, float]:
-
-    n_subsystems = len(detect_with_batch[0][0].dims[0])
-    n = range(n_subsystems)
-    detect_with = [item.ptrace(n[2:]) for sublist in detect_with_batch for item in sublist]
-    detect_without = [item.ptrace(n[2:]) for sublist in detect_without_batch for item in sublist]
-    
-    trace_distance_list = [trace_distance(extract(rho_with.data, "JaxArray"), extract(rho_without.data, "JaxArray")) for rho_with, rho_without in zip(detect_with, detect_without)]
-    
-    total_trace_distance = jnp.mean(jnp.array(trace_distance_list))
-    return total_trace_distance, 0
-
-@staticmethod
-@jit
-def list_aggregation(tot: list, new: list)\
-    -> list:
-    return tot + new
-
-@staticmethod
 @jit
 def trace_distance(rho, sigma):
     delta = rho - sigma
@@ -757,7 +612,6 @@ def _trace_normalize_density(mat, eps=1e-12):
     trace_val = jnp.real(jnp.trace(mat_h))
     return mat_h / (trace_val + eps)
 
-@staticmethod
 @jit
 def sqrtm_psd(mat):
     # Branchless PSD matrix square root via Newton-Schulz iterations.
@@ -781,7 +635,6 @@ def sqrtm_psd(mat):
     y, _ = jax.lax.fori_loop(0, 20, body, (y, z))
     return y * jnp.sqrt(scale)
 
-@staticmethod
 @jit
 def fidelity(rho, sigma):
     # Normalize inputs so numerical trace drift does not bias fidelity outside [0, 1].
