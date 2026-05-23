@@ -349,7 +349,7 @@ class DetectionMetric:
 
                     metric_value = metric(detection1_tot, detection2_tot)
 
-                    return metric_value, (detection1_tot, detection2_tot)
+                    return metric_value, (detection1_tot, detection2_tot, metric_value)
 
                 self.callable_detection = jax.jit(callable_detection)
 
@@ -368,7 +368,7 @@ class DetectionMetric:
 
             if multi_measurement_logic is None:
                 aggregate_init = 0
-                measurement_aggregation = lambda x,y: x + y**2
+                measurement_aggregation = lambda x,y: x + y**3
                 post_aggregation = lambda x: x
                 custom_meas_aggr = False
            
@@ -418,36 +418,14 @@ class DetectionMetric:
                         
                         metric_tot = post_aggregation(metric_tot)
                         
-                        return metric_tot, (0,0)
+                        return metric_tot, (0,0, metric_value)
 
                     self.callable_detection = jax.jit(callable_detection)
 
             elif criterion == 'max computational distance':
 
-                if parameter is None:
-                    parameter = lambda x: 1-x
-                elif not callable(parameter):
-                    raise ValueError(f"max computational distance detection expects detection_param to be a callable\n\
-                                     that takes as input a float between 0 and 1 (the epoch fraction) and outputs \n\
-                                     a float parameter used in the metric function.\n\
-                                     Value given: {parameter}")
-                else:
-                    error_msg = f"max computational distance detection expects detection_param to be a callable\n\
-                        that takes as input a float between 0 and 1 (the epoch fraction) and outputs \n\
-                        a float parameter used in the metric function.\n\
-                        Value given: {parameter}"
-                    try:
-                        for i in range(100):
-                            test_param = parameter(random.random())
-                            if not isinstance(test_param, number):
-                                raise ValueError(error_msg + f"\nError from test:\nparameter output: {test_param}")
-                    except Exception as e:
-                        raise ValueError(error_msg + f"\nError from test: {e}")
-                    
-                    parameter = jit(parameter)
-
                 if metric is None:
-                    metric = lambda x,y,f: -4*x*y + parameter(f)*(x**2 + y**2)
+                    metric = lambda x,y,f: -4*x*y + (1-f)*(x**2 + y**2)
                     custom_metric = False
                 elif not callable(metric):
                     raise ValueError(f"metric expects a callable (x,y,f)->z. Where f is the epoch fraction.\n\
@@ -464,8 +442,27 @@ class DetectionMetric:
                     except Exception as e:
                         raise ValueError(error_msg + f"\nError from test: {e}")
                     
-                    metric = jit(metric)
-                    custom_metric = True
+                    custom_metric = True  
+
+                metric = jit(metric)              
+
+                if parameter is None:
+                    parameter = lambda x,y: metric(x,y,1)
+                elif not callable(metric):
+                    raise ValueError(f"max computational distance detection expects detection_param to be a callable (x,y)->z (validation metric). Value given: {parameter}")
+                else:
+                    error_msg = f"max computational distance detection expects detection_param to be a callable (x,y)->z (validation metric).\n\
+                        The function must be able to take as input two floats and output a float.\n\
+                        The inputs are 1 for each compared matrix."
+                    try:
+                        for i in range(100):
+                            test_validation = parameter(random.random(), random.random())
+                            if not isinstance(test_validation, number):
+                                raise ValueError(error_msg + f"\nError from test:\nvalidation output: {test_validation}")
+                    except Exception as e:
+                        raise ValueError(error_msg + f"\nError from test: {e}")
+                    
+                validation = jit(parameter)
                 
 
                 def build_detection(self, p_all):
@@ -481,15 +478,18 @@ class DetectionMetric:
                         # Implementation for computational distance
                         
                         metric_tot = aggregate_init
+                        validation_tot = aggregate_init
 
                         for rho1,rho2 in zip(list_rho_1, list_rho_2):
                             p_with = jnp.array([jnp.real((projector * rho1 * projector).tr()) for projector in p_all])
                             p_without = jnp.array([jnp.real((projector * rho2 * projector).tr()) for projector in p_all])
                             metric_tot = measurement_aggregation(metric_tot, jnp.sum(metric(p_with, p_without, epoch_fraction)))
-
+                            validation_tot = measurement_aggregation(validation_tot, validation(p_with, p_without))
+                            
                         metric_tot = post_aggregation(metric_tot)
+                        validation_tot = post_aggregation(validation_tot)
 
-                        return metric_tot, (0,0)
+                        return metric_tot, (0,0, validation_tot)
 
                     self.callable_detection = jax.jit(callable_detection)
 
@@ -498,10 +498,6 @@ class DetectionMetric:
                     detection_name += ' with custom metric'
 
             elif criterion == 'custom matrix distance':
-
-                if parameter is not None:
-                    raise ValueError(f"'custom matrix distance' detection criterion doesn't take a detection_param.\n\
-                                   The detection_param will be ignored. Value given: {parameter}")
             
                 if metric is None:
                     raise ValueError(f"'custom matrix distance' detection criterion expects a custom metric function\n\
@@ -524,7 +520,28 @@ class DetectionMetric:
                     except Exception as e:
                         raise ValueError(f"Custom metric must be a callable that takes as input two density matrices and the epoch fraction\n\
                                          then outputs a float.\n\
+                                         Error from testing: {e}")                
+
+                if parameter is None:
+                    parameter = lambda x,y: metric(x,y,1)
+                elif not callable(metric):
+                    raise ValueError(f"custom matrix distance detection expects detection_param to be a callable validation metric\n\
+                                     that takes as input two density matrices then outputs a distance measure to be maximized.\n\
+                                     Value given: {metric}")
+                else:
+                    try:
+                        for i in range(100):
+                            test_rho_1 = qt.rand_dm(self.n_qubits+2)
+                            test_rho_2 = qt.rand_dm(self.n_qubits+2)
+                            test_validation = parameter(test_rho_1, test_rho_2)
+                            if not isinstance(test_validation, number):
+                                raise ValueError(f"detection_param output must be a float. Output obtained during testing: {test_validation}")
+                    except Exception as e:
+                        raise ValueError(f"custom matrix distance expects detection_param to be a callable\n\
+                                         that takes as input two density matrices then outputs a float.\n\
                                          Error from testing: {e}")
+                    
+                validation = jit(parameter)
 
                 def build_detection(self, p_all):
                     """Return a builder that, given projectors, creates and assigns the
@@ -539,13 +556,16 @@ class DetectionMetric:
                         # Implementation for custom matrix distance
 
                         metric_tot = aggregate_init
+                        validation_tot = aggregate_init
 
                         for rho1,rho2 in zip(list_rho_1, list_rho_2):
                             metric_tot = measurement_aggregation(metric_tot, metric(rho1, rho2, epoch_fraction))
+                            validation_tot = measurement_aggregation(validation_tot, validation(rho1, rho2))
 
                         metric_tot = post_aggregation(metric_tot)
+                        validation_tot = post_aggregation(validation_tot)
 
-                        return metric_tot, (0,0)
+                        return metric_tot, (0,0, validation_tot)
 
                     self.callable_detection = jax.jit(callable_detection)
 

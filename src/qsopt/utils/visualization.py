@@ -1331,7 +1331,7 @@ def plot_time_evolution(
         show_measurements: Whether to show measurement time markers. Default: True
         show_cavity_population: Whether to show cavity population <a†a> on the same y-axis. Default: False
         show_field_population: Whether to show field population <a_in†a_in> on the same y-axis. Default: False
-        normalize_detection: Whether to normalize detection series to peak at 1 for plotting. Default: False
+        normalize_detection: Whether to min-max normalize detection series to [0, 1] for plotting. Default: False
         figsize: Figure size (width, height) in inches
         save_path: Optional path to save figure
         dpi: Resolution for saved figure
@@ -1413,6 +1413,15 @@ def plot_time_evolution(
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
 
+    def _normalize_to_unit_interval(values: np.ndarray) -> np.ndarray:
+        values = np.asarray(values)
+        v_min = float(np.min(values))
+        v_max = float(np.max(values))
+        denom = v_max - v_min
+        if denom <= 0:
+            return np.zeros_like(values)
+        return (values - v_min) / denom
+
     # Plot detection measures (supports legacy probability keys).
     if "detection_measure" in probabilities:
         detection_label = "Detection metric"
@@ -1426,29 +1435,23 @@ def plot_time_evolution(
 
     if detection_values is not None:
         if normalize_detection:
-            peak = float(np.max(np.abs(detection_values)))
-            if peak > 0:
-                detection_values = detection_values / peak
-                detection_label = f"{detection_label} (normalized)"
+            detection_values = _normalize_to_unit_interval(detection_values)
+            detection_label = f"{detection_label} (normalized to [0, 1])"
         ax.plot(times, detection_values, label=detection_label, linewidth=2, linestyle="-")
 
     if "nondetection_measure" in probabilities:
         nondetection_values = probabilities["nondetection_measure"]
         nondetection_label = "No-detection metric"
         if normalize_detection:
-            peak = float(np.max(np.abs(nondetection_values)))
-            if peak > 0:
-                nondetection_values = nondetection_values / peak
-                nondetection_label = f"{nondetection_label} (normalized)"
+            nondetection_values = _normalize_to_unit_interval(nondetection_values)
+            nondetection_label = f"{nondetection_label} (normalized to [0, 1])"
         ax.plot(times, nondetection_values, label=nondetection_label, linewidth=2, linestyle="--")
     elif "nondetection_probability" in probabilities:
         nondetection_values = probabilities["nondetection_probability"]
         nondetection_label = "No-detection probability"
         if normalize_detection:
-            peak = float(np.max(np.abs(nondetection_values)))
-            if peak > 0:
-                nondetection_values = nondetection_values / peak
-                nondetection_label = f"{nondetection_label} (normalized)"
+            nondetection_values = _normalize_to_unit_interval(nondetection_values)
+            nondetection_label = f"{nondetection_label} (normalized to [0, 1])"
         ax.plot(times, nondetection_values, label=nondetection_label, linewidth=2, linestyle="--")
 
     # Add cavity population on same y-axis if requested

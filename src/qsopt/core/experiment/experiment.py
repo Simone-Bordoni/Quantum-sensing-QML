@@ -1366,12 +1366,12 @@ class Experiment:
                 precomputed_unitaries=circuit_unitaries,
             )
 
-            metric_value, (detection_with, detection_without) = self.detection_metric(rho_with_list, rho_without_list, epoch_fraction)
+            metric_value, (detection_with, detection_without, validation_value) = self.detection_metric(rho_with_list, rho_without_list, epoch_fraction)
 
-            return metric_value, detection_with , detection_without
+            return metric_value, detection_with , detection_without, validation_value
 
 
-        static_args = [3]  # objective_function static arg: epoch_fraction
+        static_args = []  # initialize objective_function static args list
         time_uncertainty = float(self.experimental_params.initial_time_uncertainty)
 
         if not optimize_measurement_times:
@@ -1405,9 +1405,9 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                metric, detect_with, detect_without = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
+                metric, detect_with, detect_without, validation = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
 
-                return -metric, (detect_with, detect_without, metric)
+                return -metric, (detect_with, detect_without, metric, validation)
 
         else:
             
@@ -1431,7 +1431,7 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                batch_metric, batch_detect_with, batch_detect_without = jax.vmap(
+                batch_metric, batch_detect_with, batch_detect_without, batch_validation = jax.vmap(
                     coupled_simulation,
                     in_axes=(None, None, 0, None),
                 )(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
@@ -1439,8 +1439,9 @@ class Experiment:
                 mean_metric = jnp.mean(batch_metric)
                 mean_detect_with = jnp.mean(batch_detect_with)
                 mean_detect_without = jnp.mean(batch_detect_without)
+                mean_validation = jnp.mean(batch_validation)
 
-                return -mean_metric, (mean_detect_with, mean_detect_without, mean_metric)
+                return -mean_metric, (mean_detect_with, mean_detect_without, mean_metric, mean_validation)
 
         jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 
@@ -1469,11 +1470,10 @@ class Experiment:
                     circuit_type = "reset"
                     print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
 
-            uncertainty = time_uncertainty
-            if uncertainty > 0:
+            if time_uncertainty > 0:
                 spec = self.experimental_params.initial_time_uncertainty_spec
                 extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
-                print(f"    Measurement uncertainty: ±{uncertainty:.3f}{extra}")
+                print(f"    Measurement uncertainty: ±{time_uncertainty:.3f}{extra}")
 
             # Build header based on number of parameters (up to 4 each)
             header_parts = [f"{'Step':<6}"]
@@ -1483,13 +1483,14 @@ class Experiment:
                 header_parts.append(f"setup{i}_{setup_gates[i].__repr__(params=False):<8}")
             for i in range(n_final_show):
                 header_parts.append(f"reset{i}_{reset_gates[i].__repr__(params=False):<8}")
-            header_parts.extend([f"{'Metric':<12}", f"{'Grad Norm':<12}", "Time"])
+            header_parts.extend([f"{'Metric':<12}", f"{'Validation':<12}", f"{'Grad Norm':<12}", "Time"])
 
             header = "".join(header_parts)
             print("=" * (5+len(header)))
             print(header)
             print("-" * (5+len(header)))
 
+        best_validation = -np.inf
         best_metric = -np.inf
         best_params = jnp.array(params)
 
@@ -1502,13 +1503,17 @@ class Experiment:
             measurement_uncertainty_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
-            grads, (detection_with, detection_without, step_metric) = jax.grad(
-                jitted_objective, has_aux=True
+            grads, (detection_with, detection_without, step_metric, step_validation) = jax.grad(
+                jitted_objective, has_aux=True, argnums=0 #(0,1)
             )(params, base_measurement_times, measurement_uncertainty_batch,epoch_fraction=step/tot_steps)
 
+            step_metric_value = float(step_metric)
+            step_validation_value = float(step_validation)
+
             # Track best parameters
-            if step_metric > best_metric:
-                best_metric = step_metric
+            if step_validation_value > best_validation:
+                best_validation = step_validation_value
+                best_metric = step_metric_value
                 best_params = jnp.array(params)
 
             #Renormalize gradient inside a set interval, to avoid too large steps in the limited (2pi)^n_params parameter space.
@@ -1524,7 +1529,8 @@ class Experiment:
                 trainable_params_final=params[n_initial:],
                 detection_with=float(detection_with),
                 detection_without=float(detection_without),
-                metric=float(step_metric),
+                metric=step_metric_value,
+                validation=step_validation_value,
                 optimizer_state=opt_state,
                 grads=grads,
             )
@@ -1542,7 +1548,12 @@ class Experiment:
                     output_parts.append(f"{param_vals[i]:<15.6f}")
                 for i in range(n_final_show):
                     output_parts.append(f"{param_vals[n_initial + i]:<15.6f}")
-                output_parts.extend([f"{float(step_metric):<12.6f}", f"{grad_norm:<12.2e}",f"{t.strftime("%Hh%Mm%Ss", t.gmtime(new_time))}"])
+                output_parts.extend([
+                    f"{step_metric_value:<12.6f}",
+                    f"{step_validation_value:<12.6f}",
+                    f"{grad_norm:<12.2e}",
+                    f"{t.strftime("%Hh%Mm%Ss", t.gmtime(new_time))}",
+                ])
                 print("".join(output_parts))
 
             # Convergence check
