@@ -1143,11 +1143,11 @@ class Experiment:
                 field_population_list.append(field_pop)
 
             # Update system after actual measurement
-            reset_with = [op * rho_meas_with * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
-            rho_with = sum(reset_with)
+            #reset_with = [op * rho_meas_with * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
+            rho_with = rho_meas_with  # sum(reset_with)
             if rho_meas_without is not None:
                 reset_without = [op * rho_meas_without * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
-                rho_without = sum(reset_without)
+                rho_without = rho_meas_without # sum(reset_without)
 
         times = np.array(all_times)
         # Compute pulse shape using the same u0 function as visualization
