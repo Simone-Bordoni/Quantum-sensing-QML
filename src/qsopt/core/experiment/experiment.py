@@ -238,8 +238,9 @@ class Experiment:
         n_qubits = self.experimental_params.n_qubits
 
         # Generate n-qubit operators using utility function
+        # Note: `generate_system_operators` expects (n_qubits, field_levels, cavity_levels, qubit_levels)
         self.operators = generate_system_operators(
-            field_levels, cavity_levels, qubit_levels, n_qubits
+            n_qubits, field_levels, cavity_levels, qubit_levels
         )
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
@@ -850,16 +851,16 @@ class Experiment:
             temp = self.debug_times[0]        #############################
             print('\nDebug times for each step:')     ############################
             print('='*50)               ############################
-            sum=0
+            total_time=0
             for time in self.debug_times[1:]:                    ###############################
                                             ######################
-                sum += list(time.values())[0]-list(temp.values())[0]
+                total_time += list(time.values())[0]-list(temp.values())[0]
                 print('{:33}'.format(list(temp.keys())[0])+':'+'{:10.6f}'.format((list(time.values())[0]-list(temp.values())[0])))
                                             ######################
 
                 temp = time                           ###########################
 
-            print(f'\nTempo totale di simulazione = {sum}')
+            print(f'\nTempo totale di simulazione = {total_time}')
             print('='*50+'\n\n')
 
         # Cleanup temporary debug attributes to free memory
@@ -1142,9 +1143,11 @@ class Experiment:
                 field_population_list.append(field_pop)
 
             # Update system after actual measurement
-            rho_with = measure_reset * rho_meas_with * measure_reset_dag
+            reset_with = [op * rho_meas_with * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
+            rho_with = sum(reset_with)
             if rho_meas_without is not None:
-                rho_without = measure_reset * rho_meas_without * measure_reset_dag
+                reset_without = [op * rho_meas_without * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
+                rho_without = sum(reset_without)
 
         times = np.array(all_times)
         # Compute pulse shape using the same u0 function as visualization

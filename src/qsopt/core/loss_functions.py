@@ -133,7 +133,7 @@ class DetectionMetric:
             self.name = name        
 
 
-    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj], epoch_fraction: Optional[float] = None) -> Tuple[float, Tuple[float, float]]:
+    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj], epoch_fraction: float = 0) -> Tuple[float, Tuple[float, float]]:
         """
         Compute loss from detection probability.
 
