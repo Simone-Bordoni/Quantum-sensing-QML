@@ -732,6 +732,8 @@ class Experiment:
         batch_metric = []
         batch_detect_with = []
         batch_detect_without = []
+        batch_validation = []
+
         if states_probabilities:
             batch_for_prob = []
 
@@ -769,11 +771,12 @@ class Experiment:
             if states_probabilities:
                 batch_for_prob.append((rho_with_list, rho_without_list))
 
-            metric_value, (detection_with, detection_without) = self.detection_metric(rho_with_list,rho_without_list)
+            metric_value, (detection_with, detection_without, validation) = self.detection_metric(rho_with_list,rho_without_list)
 
             batch_metric.append(metric_value)            
             batch_detect_with.append(detection_with)
             batch_detect_without.append(detection_without)
+            batch_validation.append(validation)
 
             if debug:
                 self.step += 1
@@ -788,6 +791,7 @@ class Experiment:
         mean_metric = sum(batch_metric)/len(batch_metric)
         mean_detect_with = sum(batch_detect_with)/len(batch_detect_with)
         mean_detect_without = sum(batch_detect_without)/len(batch_detect_without)
+        mean_validation = sum(batch_validation)/len(batch_validation)
 
         if states_probabilities:
 
@@ -831,6 +835,7 @@ class Experiment:
                 detection_with=float(mean_detect_with),
                 detection_without=float(mean_detect_without),
                 metric=float(mean_metric),
+                validation=float(mean_validation),
                 state_probabilities_with=state_prob_with,
                 state_probabilities_without=state_prob_without,
             )
@@ -843,6 +848,7 @@ class Experiment:
                 detection_with=float(mean_detect_with),
                 detection_without=float(mean_detect_without),
                 metric=float(mean_metric),
+                validation=float(mean_validation),
             )
 
         if debug:
@@ -1591,7 +1597,8 @@ class Experiment:
         if verbose:
             print("=" * (5+len(header)))
             print(f"Final gradient norm: {grad_norm:.2e}")
-            print(f"Best metric: {best_metric:.6f}")
+            print(f"Best validation: {best_validation:.6f}")
+            print(f"Best metric (at best validation): {best_metric:.6f}")
             print(f"Best parameters:")
             for i, val in enumerate(best_values):
                 if i < n_initial:

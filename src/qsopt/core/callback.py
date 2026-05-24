@@ -104,6 +104,7 @@ class OptimizationCallback:
         detection_with: float = 0.0,
         detection_without: float = 0.0,
         metric: float = 0.0,
+        validation: float = 0.0,
         optimizer_state: Any = None,
         grads: Any = None,
         state_probabilities_with: Optional[Dict[str, float]] = None,

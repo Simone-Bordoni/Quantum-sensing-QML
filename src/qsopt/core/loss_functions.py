@@ -133,7 +133,7 @@ class DetectionMetric:
             self.name = name        
 
 
-    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj], epoch_fraction: float = 0) -> Tuple[float, Tuple[float, float]]:
+    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj], epoch_fraction: float = 1) -> Tuple[float, Tuple[float, float]]:
         """
         Compute loss from detection probability.
 
@@ -368,7 +368,7 @@ class DetectionMetric:
 
             if multi_measurement_logic is None:
                 aggregate_init = 0
-                measurement_aggregation = lambda x,y: x + y**3
+                measurement_aggregation = lambda x,y: x + y * jnp.sqrt(y * y + 1e-12) # = lambda x,y: x + y**3
                 post_aggregation = lambda x: x
                 custom_meas_aggr = False
            
@@ -484,7 +484,7 @@ class DetectionMetric:
                             p_with = jnp.array([jnp.real((projector * rho1 * projector).tr()) for projector in p_all])
                             p_without = jnp.array([jnp.real((projector * rho2 * projector).tr()) for projector in p_all])
                             metric_tot = measurement_aggregation(metric_tot, jnp.sum(metric(p_with, p_without, epoch_fraction)))
-                            validation_tot = measurement_aggregation(validation_tot, validation(p_with, p_without))
+                            validation_tot = measurement_aggregation(validation_tot, jnp.sum(validation(p_with, p_without)))
                             
                         metric_tot = post_aggregation(metric_tot)
                         validation_tot = post_aggregation(validation_tot)
