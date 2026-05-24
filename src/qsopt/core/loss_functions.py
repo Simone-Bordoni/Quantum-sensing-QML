@@ -209,7 +209,7 @@ class DetectionMetric:
         state_detection = ['any excited', 'min excited', 'control qubits', 'excited qubits', 'custom states']
         matrix_distance = ['min fidelity', 'max trace distance', 'max computational distance', 'custom matrix distance']
 
-        number = (int, float)
+        number = (int, float, jax.Array)
 
         if multi_measurement_logic is not None:
             if not isinstance(multi_measurement_logic[0], number):
