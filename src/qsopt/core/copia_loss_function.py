@@ -368,8 +368,8 @@ class DetectionMetric:
 
             if multi_measurement_logic is None:
                 aggregate_init = 0
-                measurement_aggregation = lambda x,y:  x + jnp.exp(y)
-                post_aggregation = lambda x: jnp.log(x)
+                measurement_aggregation = lambda x,y: x + y * jnp.sqrt(y * y + 1e-12) # = lambda x,y: x + y**3
+                post_aggregation = lambda x: x
                 custom_meas_aggr = False
            
             if criterion in ['min fidelity','max trace distance']:
@@ -425,8 +425,7 @@ class DetectionMetric:
             elif criterion == 'max computational distance':
 
                 if metric is None:
-                    tan_h = lambda f: 1-(jnp.tanh(7*(f-0.5))+1)/2
-                    metric = lambda x,y,f: -4*x*y + tan_h(f)*(x**2 + y**2)
+                    metric = lambda x,y,f: -4*x*y + (1-f)*(x**2 + y**2)
                     custom_metric = False
                 elif not callable(metric):
                     raise ValueError(f"metric expects a callable (x,y,f)->z. Where f is the epoch fraction.\n\
