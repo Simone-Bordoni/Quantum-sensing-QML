@@ -302,7 +302,150 @@ class Experiment:
         return H_interaction
 
 
-    def _generate_hamiltonian(self) -> None:
+    def _generate_fock_hamiltonian(self) -> None:
+        """
+        Generate Hamiltonian for n-qubit system.
+
+        Creates:
+        1. Time-dependent cavity-field coupling: H_cavity = (i/2)√γ (a_in† a - a_in a†) g(t)
+        2. Dispersive qubit-cavity interactions: H_dispersive = -Σᵢ (χᵢ/2) a† a σz_i
+        3. Lindblad operators for noise processes on each qubit
+
+        The Hamiltonian uses individual chi values for each qubit, allowing for
+        differential dispersive coupling strengths between qubits and the cavity.
+        """
+        if self.operators is None:
+            raise RuntimeError("Operators must be generated before Hamiltonian")
+
+        # Extract coupling constants
+        gm = self.experimental_params.photon_cavity_coupling
+        chi_list = self.experimental_params.chi  # List of [chi1, chi2, ... , chin]
+        sigma = self.experimental_params.inverse_pulse_width
+        n_qubits = self.experimental_params.n_qubits
+
+        # Extract individual chi values for each qubit
+        # Type narrowing: chi is always a list for two-qubit experiments
+        if isinstance(chi_list, list):
+            chi = chi_list
+        else:
+            # Should not reach here due to __init__ validation, but type checker needs this
+            chi = [chi_list] * n_qubits
+
+        # Get operators
+        a_in = self.operators["a_in"]
+        a_in_dag = self.operators["a_in_dag"]
+        a = self.operators["a"]
+        a_dag = self.operators["a_dag"]
+
+        # Qubit operators
+        sigma_z = self.operators["sigma_z"]
+        sigma_x = self.operators["sigma_x"]
+        sigma_y = self.operators["sigma_y"]
+        sigma_minus = self.operators["sigma_minus"]
+
+        # Time-dependent coupling function arguments
+        args = {"sigma": sigma}
+
+        # Time-dependent cavity-field coupling Hamiltonian
+        # H_c = (i/2)√γ (a_in† a - a_in a†)
+        coupling_coeff = 1j / 2 * jnp.sqrt(gm)
+        H_coupling = qt.Qobj(coupling_coeff * (a_in_dag * a - a_in * a_dag))  # type: ignore
+
+        # Dispersive qubit-resonator interaction Hamiltonians
+        # H_q = -Σᵢ χᵢ a†a σz_i
+        H_dispersive_list = [qt.Qobj(-chi[i] * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
+        H_dispersive = sum(H_dispersive_list)
+
+        # Qubit-qubit interaction Hamiltonians
+        # H_interaction = Σⱼ (χⱼ/2) σᵢ ⊗ σⱼ
+        # where σᵢ and σⱼ can be σx, σy, or σz depending on interaction type
+        H_qubit_interaction = self._build_qubit_interaction_hamiltonian()
+
+        # Complete time-dependent Hamiltonian
+        # H(t) = H_dispersive + H_qubit_interaction + H_coupling * g(t)
+        H_total = qt.QobjEvo([H_dispersive + H_qubit_interaction, [H_coupling, gu]], args=args)
+
+        # Noise configuration
+        noise_config = self.experimental_params.noise_config
+
+        # Extract noise rates for each qubit
+        depolarizing = noise_config.depolarizing
+        dephasing = noise_config.dephasing
+        relaxation = noise_config.relaxation
+
+        # Convert float parameters to lists of length n_qubits, or validate list lengths
+        if isinstance(depolarizing, float):
+            depolarizing = [depolarizing] * n_qubits
+        elif isinstance(depolarizing, list):
+            if len(depolarizing) != n_qubits:
+                raise ValueError(
+                    f"depolarizing list length ({len(depolarizing)}) must match n_qubits ({n_qubits})"
+                )
+        else:
+            raise TypeError(f"depolarizing must be float or list, got {type(depolarizing)}")
+
+        if isinstance(dephasing, float):
+            dephasing = [dephasing] * n_qubits
+        elif isinstance(dephasing, list):
+            if len(dephasing) != n_qubits:
+                raise ValueError(
+                    f"dephasing list length ({len(dephasing)}) must match n_qubits ({n_qubits})"
+                )
+        else:
+            raise TypeError(f"dephasing must be float or list, got {type(dephasing)}")
+
+        if isinstance(relaxation, float):
+            relaxation = [relaxation] * n_qubits
+        elif isinstance(relaxation, list):
+            if len(relaxation) != n_qubits:
+                raise ValueError(
+                    f"relaxation list length ({len(relaxation)}) must match n_qubits ({n_qubits})"
+                )
+        else:
+            raise TypeError(f"relaxation must be float or list, got {type(relaxation)}")
+
+        # Build Lindblad noise operators for each qubit using helper function
+        lindblad_noise_q = [build_qubit_noise_operators(
+            sigma_x=sigma_x[i],
+            sigma_y=sigma_y[i],
+            sigma_z=sigma_z[i],
+            sigma_minus=sigma_minus[i],
+            depolarizing_rate=depolarizing[i],
+            dephasing_rate=dephasing[i],
+            relaxation_rate=relaxation[i],
+        ) for i in range(n_qubits)]
+
+        # Combine noise operators for all qubits
+        # Flatten list: collect all operators from each qubit
+        lindblad_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [
+            op for i in range(n_qubits) for op in lindblad_noise_q[i]
+        ]
+
+        # Add custom Lindblad operators if provided
+        if noise_config.custom_operators is not None:
+            lindblad_noise.extend(noise_config.custom_operators)
+
+        # Lindblad interaction operator (same for with/without photon)
+        L_int = qt.QobjEvo([a_in, gu], args=args) + np.sqrt(gm) * a
+
+        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = [L_int] + lindblad_noise
+        no_interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = lindblad_noise
+
+        # Store Hamiltonians and Lindblad operators
+        self.hamiltonians = {
+            "total": H_total,
+            "dispersive": H_dispersive,
+            "dispersive_list": H_dispersive_list,
+            "coupling": H_coupling,
+        }
+
+        self.lindblad_operators = {
+            "interaction": interaction_ops,
+            "no_interaction": no_interaction_ops,
+        }
+
+    
+    def _generate_coherent_hamiltonian(self) -> None:
         """
         Generate Hamiltonian for n-qubit system.
 
@@ -1129,7 +1272,7 @@ class Experiment:
                     )
                     detection_value = metric_value
                 else:
-                    metric_value, (detect_value, _) = self.detection_metric(
+                    metric_value, (detect_value, _, _) = self.detection_metric(
                         [rho_meas_with],
                         [rho_meas_with],
                         epoch_fraction,
