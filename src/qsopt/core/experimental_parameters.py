@@ -31,80 +31,137 @@ class InteractionType(Enum):
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
 
-
 @dataclass
-class QubitInteraction:
+class Interaction:
     """
-    Configuration for qubit-qubit interaction.
+    Configuration for interaction between subsystems.
 
     Attributes:
-        qubit_indices: Tuple of qubit indices involved in the interaction (e.g., (0, 1))
-        chi: Interaction strength (coupling constant)
-        interaction_type: Type of interaction (ZZ, XX, or YY)
+        subsystem1: Tuple of type (string) and index (int) of the first subsystem involved in the interaction (e.g., ('qubit', 3))
+        subsystem2: Tuple[str,int] of type (string) and index (int) of the second subsystem involved in the interaction (e.g., ('cavity', 1))
+        interaction_type: InteractionType (ZZ, jaynes_cummings, etc.)
+        parameters: Dict[str, Any] of interaction parameters or float
     """
 
-    qubit_indices: Tuple[int, int] = (0, 1)
-    chi: float = 0.0
-    interaction_type: InteractionType = InteractionType.ZZ
+    def __init__(
+        self,
+        subsystem1: Tuple[str, int],
+        subsystem2: Tuple[str, int],
+        interaction_type: InteractionType,
+        parameters: Optional[Union[Dict[str, Any], float, complex]] = 1.0,
+        time_modulation: Optional[Callable[[float], float]] = None,
+    ):
+
+        self.subsystem1 = subsystem1
+        self.subsystem2 = subsystem2
+        self.interaction_type = interaction_type
+        self.parameters = parameters
+        self.time_modulation = time_modulation
 
     def __post_init__(self):
         """Validate interaction parameters."""
-        if len(self.qubit_indices) != 2:
-            raise ValueError("qubit_indices must be a tuple of exactly 2 indices")
-        if self.qubit_indices[0] == self.qubit_indices[1]:
-            raise ValueError("qubit_indices must refer to different qubits")
-        if self.qubit_indices[0] < 0 or self.qubit_indices[1] < 0:
-            raise ValueError("qubit_indices must be non-negative")
-        # Ensure canonical ordering (smaller index first)
-        if self.qubit_indices[0] > self.qubit_indices[1]:
-            self.qubit_indices = (self.qubit_indices[1], self.qubit_indices[0])
+        
+        # Validate subsystem specifications
+        if self.subsystem1 == self.subsystem2:
+            raise ValueError("subsystem1 and subsystem2 must refer to different subsystems")
+        if self.subsystem1[1] < 0 or self.subsystem2[1] < 0:
+            raise ValueError("Subsystem indices must be non-negative")
+        if not (self.subsystem1[0] in ['qubit', 'cavity', 'field'] and self.subsystem2[0] in ['qubit', 'cavity', 'field']):
+            raise ValueError("Subsystem types must be 'qubit', 'cavity', or 'field'")
+        
+        # Ensure canonical ordering (sort by type and then index)
+        if (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
+            self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
 
-        # Validate interaction strength
-        if self.chi < 0:
-            raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.chi}")
-        elif self.chi == 0:
-            warnings.warn(
-                f"Qubit-qubit interaction strength (chi) is zero for qubits {self.qubit_indices}. "
-                "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
-                UserWarning,
+        # Validate time modulation function
+        if self.time_modulation is not None and not callable(self.time_modulation):
+            raise TypeError("time_modulation must be a callable function of time")
+        elif self.time_modulation is not None:
+            # Test the time modulation function with a sample time value
+            try:
+                for _ in range(100):
+                    random_time = np.random.uniform(-10, 10)
+                    test_value = self.time_modulation(random_time)
+                    if not isinstance(test_value, (int, float)):
+                        raise ValueError(f"time_modulation function must return a numeric value. Got type: {type(test_value)}")
+            except Exception as e:
+                raise ValueError("time_modulation function is not callable with a float argument") from e
+             
+        # Validate parameters
+        if interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
+            if isinstance(self.parameters, (int, float, complex)):
+                self.parameters = {"chi": self.parameters}
+            elif not isinstance(self.parameters, dict):
+                raise TypeError("Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key")
+            if self.parameters["chi"] < 0:
+                raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}")
+            elif self.parameters["chi"] == 0:
+                warnings.warn(
+                    f"Qubit-qubit interaction strength (chi) is zero for qubits {self.subsystem1[1]}, {self.subsystem2[1]}. "
+                    "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
+                    UserWarning,
             )
+        
+        
 
 
 @dataclass
-class PhysicalConstants:
+class PhysicalModel:
     """
-    Physical constants and coupling parameters for the quantum system.
+    Physical constants and interactions for the quantum system.
 
     Attributes:
+        n_cavities: Number of resonator cavities (typically 1 for single-mode systems)
+        n_fields: Number of input field modes
         n_qubits: Number of qubits in the system
-        chi: Dispersive coupling strength between resonator and qubit(s) (Hz).
-             Can be a float (same coupling for all qubits) or a list of floats
-             (individual coupling per qubit).
-        photon_cavity_coupling: Photon-cavity coupling strength (Hz)
-        inverse_pulse_width: Inverse of the pulse width (1/time units, typically 1/ns)
-        qubit_interactions: List of qubit-qubit interactions. For two-qubit systems,
-                           defaults to a single ZZ interaction between qubits 0 and 1.
-                           For single-qubit systems, this is ignored.
+        cavities_levels: Number of levels for cavity modes (cavity truncation level)
+        field_levels: Number of levels for input field modes (field truncation level)
+        qubit_levels: Number of levels for qubits (typically 2 for two-level systems)
+        interactions: List of interactions between subsystems (e.g., qubit-qubit, cavity-field, qubit-cavity etc.)
     """
 
+    n_cavities: int = 1  # Number of resonator cavities
+    n_fields: int = 1  # Number of input field modes
     n_qubits: int = 1  # Number of qubits
-    chi: Union[float, List[float]] = 0.5  # Dispersive coupling in units of cavity decay rate
-    photon_cavity_coupling: float = 1.0  # Photon-cavity coupling
-    inverse_pulse_width: float = 0.1  # Inverse pulse width parameter
-    qubit_interactions: Optional[List[QubitInteraction]] = None  # Qubit-qubit interactions
+    cavity_levels: int = 2  # Cavity truncation level
+    field_levels: int = 2  # Field mode truncation level
+    qubit_levels: int = 2  # Qubit truncation level
+    interactions: Optional[List[Interaction]] = None  # Qubit-qubit interactions
 
     def __post_init__(self):
-        """Convert chi to list format if necessary and set default interactions."""
-        if isinstance(self.chi, (int, float)):
-            self.chi = [float(self.chi)] * self.n_qubits
-        elif isinstance(self.chi, list):
-            if len(self.chi) != self.n_qubits:
+        """Convert levels to list format if necessary and set default interactions."""
+        if self.interactions is None or (isinstance(self.interactions, list) and len(self.interactions) == 0):
+            raise ValueError("Interactions list must be provided. If no interaction is the desired behavior, use a dummy interaction with zero strength.")
+        
+        if isinstance(self.cavity_levels, (int)):
+            self.cavity_levels = [self.cavity_levels] * self.n_cavities
+        elif isinstance(self.cavity_levels, list):
+            if len(self.cavity_levels) != self.n_cavities:
                 raise ValueError(
-                    f"chi list length ({len(self.chi)}) must match n_qubits ({self.n_qubits})"
+                    f"Cavity levels list length ({len(self.cavity_levels)}) must match n_cavities ({self.n_cavities})"
                 )
-            self.chi = [float(c) for c in self.chi]
         else:
-            raise TypeError("chi must be a float or a list of floats")
+            raise TypeError("Cavity levels must be an integer or a list of integers")
+
+        if isinstance(self.field_levels, (int)):
+            self.field_levels = [self.field_levels] * self.n_fields
+        elif isinstance(self.field_levels, list):
+            if len(self.field_levels) != self.n_fields:
+                raise ValueError(
+                    f"Field levels list length ({len(self.field_levels)}) must match n_fields ({self.n_fields})"
+                )
+        else:
+            raise TypeError("Field levels must be an integer or a list of integers")
+
+        if isinstance(self.qubit_levels, (int)):
+            self.qubit_levels = [self.qubit_levels] * self.n_qubits
+        elif isinstance(self.qubit_levels, list):
+            if len(self.qubit_levels) != self.n_qubits:
+                raise ValueError(
+                    f"Qubit levels list length ({len(self.qubit_levels)}) must match n_qubits ({self.n_qubits})"
+                )
+        else:
+            raise TypeError("Qubit levels must be an integer or a list of integers")
 
         # Set empty list if None
         if self.qubit_interactions is None:
@@ -191,14 +248,52 @@ class SystemDimensions:
         field_levels: Number of levels for field modes
     """
 
-    cavity_levels: int = 2  # Cavity truncation level
+    cavity_levels: Union[int, List[int]] = 2  # Cavity truncation level
     qubit_levels: Union[int, List[int]] = 2  # Qubit levels
-    field_levels: int = 2  # Field mode levels
+    field_levels: Union[int, List[int]] = 2  # Field mode levels
 
     def __post_init__(self):
         """Store original input and convert qubit_levels to list format if necessary."""
         # We need n_qubits from PhysicalConstants, but we can't access it here
         # So we'll handle this in the ExperimentalParameters.__init__
+
+    def _normalize_qubit_levels(self, n_qubits: int):
+        """
+        Normalize qubit_levels to list format.
+
+        Args:
+            n_qubits: Number of qubits from PhysicalConstants
+        """
+        if isinstance(self.qubit_levels, int):
+            self.qubit_levels = [self.qubit_levels] * n_qubits
+        elif isinstance(self.qubit_levels, list):
+            if len(self.qubit_levels) != n_qubits:
+                raise ValueError(
+                    f"qubit_levels list length ({len(self.qubit_levels)}) must match n_qubits ({n_qubits})"
+                )
+            self.qubit_levels = [int(q) for q in self.qubit_levels]
+        else:
+            raise TypeError("qubit_levels must be an int or a list of ints")
+
+
+    def _normalize_field_levels(self, n_qubits: int):
+        """
+        Normalize field_levels to list format.
+
+        Args:
+            n_qubits: Number of qubits from PhysicalConstants
+        """
+        if isinstance(self.field_levels, int):
+            self.field_levels = [self.field_levels] * n_qubits
+        elif isinstance(self.field_levels, list):
+            if len(self.field_levels) != n_qubits:
+                raise ValueError(
+                    f"field_levels list length ({len(self.field_levels)}) must match n_qubits ({n_qubits})"
+                )
+            self.field_levels = [int(f) for f in self.field_levels]
+        else:
+            raise TypeError("field_levels must be an int or a list of ints")
+
 
     def _normalize_qubit_levels(self, n_qubits: int):
         """
