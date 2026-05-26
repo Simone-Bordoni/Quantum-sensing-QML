@@ -18,7 +18,7 @@ class InitialStateType(Enum):
     """Enumeration of supported initial state configurations (for input field)."""
 
     VACUUM = "vacuum"
-    SINGLE_PHOTON = "single_photon"
+    FOCK = "fock"
     COHERENT = "coherent"
     THERMAL = "thermal"
     CUSTOM = "custom"
@@ -88,8 +88,10 @@ class Interaction:
                 raise ValueError("time_modulation function is not callable with a float argument") from e
              
         # Validate parameters
-        if interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
-            if isinstance(self.parameters, (int, float, complex)):
+        if self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
+            if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
+                raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits")
+            elif isinstance(self.parameters, (int, float, complex)):
                 self.parameters = {"chi": self.parameters}
             elif not isinstance(self.parameters, dict):
                 raise TypeError("Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key")
@@ -118,6 +120,8 @@ class PhysicalModel:
         field_levels: Number of levels for input field modes (field truncation level)
         qubit_levels: Number of levels for qubits (typically 2 for two-level systems)
         interactions: List of interactions between subsystems (e.g., qubit-qubit, cavity-field, qubit-cavity etc.)
+            Only interactions common to all configurations should be included here.
+            Interactions for specific configurations should be specified in the SystemConfiguration class.
     """
 
     n_cavities: int = 1  # Number of resonator cavities
@@ -133,185 +137,104 @@ class PhysicalModel:
         if self.interactions is None or (isinstance(self.interactions, list) and len(self.interactions) == 0):
             raise ValueError("Interactions list must be provided. If no interaction is the desired behavior, use a dummy interaction with zero strength.")
         
-        if isinstance(self.cavity_levels, (int)):
-            self.cavity_levels = [self.cavity_levels] * self.n_cavities
-        elif isinstance(self.cavity_levels, list):
-            if len(self.cavity_levels) != self.n_cavities:
-                raise ValueError(
-                    f"Cavity levels list length ({len(self.cavity_levels)}) must match n_cavities ({self.n_cavities})"
-                )
-        else:
-            raise TypeError("Cavity levels must be an integer or a list of integers")
+        # Normalizing levels to list format for consistency
+        self.cavity_levels = self._normalize_levels(self.cavity_levels, self.n_cavities, "cavity")
+        self.field_levels = self._normalize_levels(self.field_levels, self.n_fields, "field")
+        self.qubit_levels = self._normalize_levels(self.qubit_levels, self.n_qubits, "qubit")
 
-        if isinstance(self.field_levels, (int)):
-            self.field_levels = [self.field_levels] * self.n_fields
-        elif isinstance(self.field_levels, list):
-            if len(self.field_levels) != self.n_fields:
-                raise ValueError(
-                    f"Field levels list length ({len(self.field_levels)}) must match n_fields ({self.n_fields})"
-                )
-        else:
-            raise TypeError("Field levels must be an integer or a list of integers")
-
-        if isinstance(self.qubit_levels, (int)):
-            self.qubit_levels = [self.qubit_levels] * self.n_qubits
-        elif isinstance(self.qubit_levels, list):
-            if len(self.qubit_levels) != self.n_qubits:
-                raise ValueError(
-                    f"Qubit levels list length ({len(self.qubit_levels)}) must match n_qubits ({self.n_qubits})"
-                )
-        else:
-            raise TypeError("Qubit levels must be an integer or a list of integers")
-
-        # Set empty list if None
-        if self.qubit_interactions is None:
-            self.qubit_interactions = []
+        # Set empty list of interactions if None
+        if self.interactions is None:
+            self.interactions = []
 
         # Validate interactions
-        for interaction in self.qubit_interactions:
-            if not isinstance(interaction, QubitInteraction):
-                raise TypeError("All qubit_interactions must be QubitInteraction instances")
-            # Check that qubit indices are valid
-            for idx in interaction.qubit_indices:
-                if idx >= self.n_qubits:
+        for interaction in self.interactions:
+            if not isinstance(interaction, Interaction):
+                raise TypeError("All interactions must be Interaction instances")
+            # Check that interactions are between valid subsystems
+            for subsystem in [interaction.subsystem1, interaction.subsystem2]:
+                if subsystem[0] == 'cavity' and subsystem[1] >= self.n_cavities:
                     raise ValueError(
-                        f"Interaction involves qubit {idx}, but only {self.n_qubits} qubits in system"
+                        f"Interaction involves cavity {subsystem[1]}, but only {self.n_cavities} cavities in system"
                     )
+                if subsystem[0] == 'field' and subsystem[1] >= self.n_fields:
+                    raise ValueError(
+                        f"Interaction involves field mode {subsystem[1]}, but only {self.n_fields} field modes in system"
+                    )
+                if subsystem[0] == 'qubit' and subsystem[1] >= self.n_qubits:
+                    raise ValueError(
+                        f"Interaction involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
+                    )
+                
+    def _normalize_levels(self, levels: Union[int, List[int]], count: int, label: str) -> List[int]:
+        """Normalize levels to list format."""
+        if label == 'cavity':
+            plural = 'cavities'
+        else:
+            plural = label + 's'
 
-    def copy(self, **updates) -> "PhysicalConstants":
+        if count == 0:
+            warnings.warn(f"n_{plural} is set to 0. Setting {label}_levels to an empty list.", UserWarning)
+            return []
+        if isinstance(levels, int):
+            return [levels] * count
+        if isinstance(levels, list):
+            if len(levels) != count:
+                raise ValueError(
+                    f"{label.capitalize()} levels list length ({len(levels)}) must match n_{plural} ({count})"
+                )
+            return levels
+        raise TypeError(f"{label.capitalize()} levels must be an integer or a list of integers")
+
+
+    def copy(self, **updates) -> "PhysicalModel":
         """
-        Create a copy of PhysicalConstants with optional parameter updates.
+        Create a copy of PhysicalModel with optional parameter updates.
 
-        This method creates a new PhysicalConstants instance with all attributes
+        This method creates a new PhysicalModel instance with all attributes
         copied from the current instance. You can override specific attributes
         by passing them as keyword arguments.
 
         Args:
             **updates: Keyword arguments for attributes to update in the copy.
-                      Valid keys: n_qubits, chi, photon_cavity_coupling,
-                      inverse_pulse_width, qubit_interactions
+                      Valid keys: n_cavities, n_fields, n_qubits, cavity_levels, qubit_levels, field_levels, interactions
 
         Returns:
-            New PhysicalConstants instance with updated values
+            New PhysicalModel instance with updated values
 
         Example:
-            >>> original = PhysicalConstants(chi=5.0, photon_cavity_coupling=10.0)
-            >>> modified = original.copy(chi=8.0)  # Keep all other params, change chi
-            >>> modified.chi
-            8.0
-            >>> modified.photon_cavity_coupling
-            10.0
+            >>> original = PhysicalModel(n_cavities=2, n_fields=2, n_qubits=2)
+            >>> modified = original.copy(n_cavities=3)  # Keep all other params, change n_cavities
+            >>> modified.n_cavities
+            3
+            >>> modified.n_fields            
+            2
         """
         # Start with current values
         params = {
+            "n_cavities": self.n_cavities,
+            "n_fields": self.n_fields,
             "n_qubits": self.n_qubits,
-            "chi": self.chi.copy() if isinstance(self.chi, list) else self.chi,
-            "photon_cavity_coupling": self.photon_cavity_coupling,
-            "inverse_pulse_width": self.inverse_pulse_width,
-            "qubit_interactions": (
+            "cavity_levels": self.cavity_levels,
+            "qubit_levels": self.qubit_levels,
+            "field_levels": self.field_levels,
+            "interactions": (
                 [
-                    QubitInteraction(
-                        qubit_indices=interaction.qubit_indices,
-                        chi=interaction.chi,
-                        interaction_type=interaction.interaction_type,
+                    Interaction(
+                        subsystem1=interaction.subsystem1,
+                        subsystem2=interaction.subsystem2,
+                        interaction_type=interaction.interaction_type,                        
+                        parameters = interaction.parameters
+                        time_modulation = interaction.time_modulation
                     )
-                    for interaction in self.qubit_interactions
+                    for interaction in self.interactions
                 ]
-                if self.qubit_interactions
-                else []
             ),
         }
 
         # Apply updates
         params.update(updates)
 
-        return PhysicalConstants(**params)
-
-
-@dataclass
-class SystemDimensions:
-    """
-    Hilbert space dimensions for the composite quantum system.
-
-    The total system consists of subsystems:
-    - Field mode (field_levels)
-    - Resonator cavity mode (cavity_levels)
-    - Qubit(s) (qubit_levels per qubit)
-
-    Total Hilbert space dimension = field_levels × cavity_levels × q1_levels × ... × qn_levels
-
-    Attributes:
-        cavity_levels: Number of levels for cavity modes
-        qubit_levels: Number of levels for qubit(s) (typically 2).
-                     Can be an int (same for all qubits) or a list of ints
-                     (individual levels per qubit).
-        field_levels: Number of levels for field modes
-    """
-
-    cavity_levels: Union[int, List[int]] = 2  # Cavity truncation level
-    qubit_levels: Union[int, List[int]] = 2  # Qubit levels
-    field_levels: Union[int, List[int]] = 2  # Field mode levels
-
-    def __post_init__(self):
-        """Store original input and convert qubit_levels to list format if necessary."""
-        # We need n_qubits from PhysicalConstants, but we can't access it here
-        # So we'll handle this in the ExperimentalParameters.__init__
-
-    def _normalize_qubit_levels(self, n_qubits: int):
-        """
-        Normalize qubit_levels to list format.
-
-        Args:
-            n_qubits: Number of qubits from PhysicalConstants
-        """
-        if isinstance(self.qubit_levels, int):
-            self.qubit_levels = [self.qubit_levels] * n_qubits
-        elif isinstance(self.qubit_levels, list):
-            if len(self.qubit_levels) != n_qubits:
-                raise ValueError(
-                    f"qubit_levels list length ({len(self.qubit_levels)}) must match n_qubits ({n_qubits})"
-                )
-            self.qubit_levels = [int(q) for q in self.qubit_levels]
-        else:
-            raise TypeError("qubit_levels must be an int or a list of ints")
-
-
-    def _normalize_field_levels(self, n_qubits: int):
-        """
-        Normalize field_levels to list format.
-
-        Args:
-            n_qubits: Number of qubits from PhysicalConstants
-        """
-        if isinstance(self.field_levels, int):
-            self.field_levels = [self.field_levels] * n_qubits
-        elif isinstance(self.field_levels, list):
-            if len(self.field_levels) != n_qubits:
-                raise ValueError(
-                    f"field_levels list length ({len(self.field_levels)}) must match n_qubits ({n_qubits})"
-                )
-            self.field_levels = [int(f) for f in self.field_levels]
-        else:
-            raise TypeError("field_levels must be an int or a list of ints")
-
-
-    def _normalize_qubit_levels(self, n_qubits: int):
-        """
-        Normalize qubit_levels to list format.
-
-        Args:
-            n_qubits: Number of qubits from PhysicalConstants
-        """
-        if isinstance(self.qubit_levels, int):
-            self.qubit_levels = [self.qubit_levels] * n_qubits
-        elif isinstance(self.qubit_levels, list):
-            if len(self.qubit_levels) != n_qubits:
-                raise ValueError(
-                    f"qubit_levels list length ({len(self.qubit_levels)}) must match n_qubits ({n_qubits})"
-                )
-            self.qubit_levels = [int(q) for q in self.qubit_levels]
-        else:
-            raise TypeError("qubit_levels must be an int or a list of ints")
+        return PhysicalModel(**params)
 
 
 @dataclass
@@ -347,7 +270,7 @@ class MeasurementProtocol:
 
 
 @dataclass
-class InitialStateConfig:
+class InitialState:
     """
     Initial state configuration.
 
@@ -365,7 +288,7 @@ class InitialStateConfig:
 
 
 @dataclass
-class NoiseConfiguration:
+class NoiseModel:
     """
     Noise model configuration.
 
@@ -404,6 +327,28 @@ class NoiseConfiguration:
                 setattr(self, attr, [float(v) for v in value_list])
             else:
                 raise TypeError(f"{attr} must be a float or a list of floats")
+
+@dataclass
+class SystemConfiguration:
+    """
+    System configuration made of initial state, noise model and configuration-specific interactions."""
+
+    name: str
+    initial_state: InitialState = InitialState()
+    noise_model: NoiseModel = NoiseModel()
+    interactions: Optional[List[Interaction]] = None
+
+    def __post_init__(self):
+        """Validate interactions."""
+        if not self.name:
+            raise ValueError("System configuration must have a non-empty name")
+        
+        if self.interactions is not None:
+            for interaction in self.interactions:
+                if not isinstance(interaction, Interaction):
+                    raise TypeError("All interactions must be Interaction instances")
+        
+
 
 
 class ExperimentalParameters:
