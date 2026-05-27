@@ -9,7 +9,7 @@ physical constants, system dimensions, measurement protocols, and initial states
 import warnings
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Set, Optional, Tuple, Union
 
 import numpy as np
 
@@ -58,6 +58,8 @@ class Interaction:
         self.parameters = parameters
         self.time_modulation = time_modulation
 
+        self.__post_init__()
+
     def __post_init__(self):
         """Validate interaction parameters."""
         
@@ -87,24 +89,38 @@ class Interaction:
             except Exception as e:
                 raise ValueError("time_modulation function is not callable with a float argument") from e
              
-        # Validate parameters
+        # Validate different interaction types
         if self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
-            if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
-                raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits")
-            elif isinstance(self.parameters, (int, float, complex)):
-                self.parameters = {"chi": self.parameters}
-            elif not isinstance(self.parameters, dict):
-                raise TypeError("Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key")
-            if self.parameters["chi"] < 0:
-                raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}")
-            elif self.parameters["chi"] == 0:
-                warnings.warn(
-                    f"Qubit-qubit interaction strength (chi) is zero for qubits {self.subsystem1[1]}, {self.subsystem2[1]}. "
-                    "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
-                    UserWarning,
-            )
+            self._validate_qubit_qubit_interaction()
+
+        else:
+            raise NotImplementedError(f"Interaction type {self.interaction_type} is not supported yet. The following interactions are implemented:\n\
+                                      {[f'{interaction.value}' + f'\n' for interaction in InteractionType]}")
+
+    def _validate_qubit_qubit_interaction(self):
+        """Validate parameters for qubit-qubit interactions."""
         
+        if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
+            raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits")
+        elif isinstance(self.parameters, (int, float)):
+            self.parameters = {"chi": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError("Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key")
+        elif "chi" not in self.parameters or "strength" not in self.parameters:
+            raise ValueError("Parameters for ZZ, XX, YY interactions must include 'chi' key for interaction strength")
         
+        if "strenght" in self.parameters:
+            warnings.warn("Using 'strenght' value for 'chi'.", UserWarning)
+            self.parameters["chi"] = self.parameters.pop("strenght")
+
+        if self.parameters["chi"] < 0:
+            raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}")
+        elif self.parameters["chi"] == 0:
+            warnings.warn(
+                f"Qubit-qubit interaction strength (chi) is zero for qubits {self.subsystem1[1]}, {self.subsystem2[1]}. "
+                "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
+                UserWarning,
+                )
 
 
 @dataclass
@@ -134,8 +150,6 @@ class PhysicalModel:
 
     def __post_init__(self):
         """Convert levels to list format if necessary and set default interactions."""
-        if self.interactions is None or (isinstance(self.interactions, list) and len(self.interactions) == 0):
-            raise ValueError("Interactions list must be provided. If no interaction is the desired behavior, use a dummy interaction with zero strength.")
         
         # Normalizing levels to list format for consistency
         self.cavity_levels = self._normalize_levels(self.cavity_levels, self.n_cavities, "cavity")
@@ -214,20 +228,32 @@ class PhysicalModel:
             "n_cavities": self.n_cavities,
             "n_fields": self.n_fields,
             "n_qubits": self.n_qubits,
-            "cavity_levels": self.cavity_levels,
-            "qubit_levels": self.qubit_levels,
-            "field_levels": self.field_levels,
+            "cavity_levels": (
+                self.cavity_levels.copy()
+                if isinstance(self.cavity_levels, list)
+                else self.cavity_levels
+            ),
+            "qubit_levels": (
+                self.qubit_levels.copy()
+                if isinstance(self.qubit_levels, list)
+                else self.qubit_levels
+            ),
+            "field_levels": (
+                self.field_levels.copy()
+                if isinstance(self.field_levels, list)
+                else self.field_levels
+            ),
             "interactions": (
                 [
                     Interaction(
                         subsystem1=interaction.subsystem1,
                         subsystem2=interaction.subsystem2,
                         interaction_type=interaction.interaction_type,                        
-                        parameters = interaction.parameters
+                        parameters = interaction.parameters,
                         time_modulation = interaction.time_modulation
                     )
                     for interaction in self.interactions
-                ]
+                ] 
             ),
         }
 
@@ -281,7 +307,7 @@ class InitialState:
         custom_amplitudes: Custom state amplitudes for CUSTOM type
     """
 
-    state_type: InitialStateType = InitialStateType.SINGLE_PHOTON
+    state_type: InitialStateType = InitialStateType.FOCK
     coherent_alpha: Optional[complex] = None
     thermal_n_bar: Optional[float] = None
     custom_amplitudes: Optional[Dict[Tuple[int, int, int], complex]] = None
@@ -368,7 +394,7 @@ class ExperimentalParameters:
         physical_model: Optional[PhysicalModel] = None,
         noise_model: Optional[NoiseModel] = None,
         measurement: Optional[MeasurementProtocol] = None,
-        configuration_list: Optional[List[SystemConfiguration]] = None,
+        configuration_set: Optional[Union[Set[SystemConfiguration], List[SystemConfiguration]]] = None,
         random_seed: Optional[int] = None,
     ):
         """
@@ -378,26 +404,20 @@ class ExperimentalParameters:
             physical_model: Physical model configuration
             noise_model: Noise model configuration
             measurement: Measurement protocol configuration
-            configuration_list: List of system configurations to be simulated (e.g., different initial states, noise levels, interactions)
+            configuration_set: Set or list of system configurations to be simulated (e.g., different initial states, noise levels, interactions)
             random_seed: Random seed for reproducibility of uncertainty calculations
         """
         self.physical_model = physical_model or PhysicalModel()
         self.noise_model = noise_model or NoiseModel()
         self.measurement = measurement or MeasurementProtocol()
 
-        if configuration_list and isinstance(configuration_list, list) and len(configuration_list) > 1:
-            for config in configuration_list:
-                if not isinstance(config, SystemConfiguration):
-                    raise TypeError("All items in configuration_list must be SystemConfiguration instances")
-        
-        else:
-            raise NotImplementedError("Please provide a list of SystemConfiguration instances with at least 2 elements (Preset configuration list is not implemented yet).")
-  
-        self.configuration_list = configuration_list
+        if configuration_set is None:
+            raise NotImplementedError("Please provide a set or list of SystemConfiguration instances (Preset configuration set is not implemented yet).")
+        self.configuration_set = configuration_set
 
         # Normalize multi-qubit parameters based on n_qubits
-        n_qubits = self.physical_constants.n_qubits
-        self.noise_config._normalize_noise_rates(n_qubits)
+        n_qubits = self.physical_model.n_qubits
+        self.noise_model._normalize_noise_rates(n_qubits)
 
         # Random seed for uncertainty calculations
         self.random_seed = random_seed
@@ -546,49 +566,21 @@ class ExperimentalParameters:
             if level < 2:
                 raise ValueError(f"Every qubit must have at least 2 levels. Qubit_{i} got {level}")
 
-        # Validate coupling constants (chi is now a list)
-        if not isinstance(self.physical_constants.chi, list):
-            raise TypeError("chi must be normalized to a list")
-        for i, chi_val in enumerate(self.physical_constants.chi):
-            if chi_val < 0:
-                raise ValueError(
-                    f"Dispersive coupling (chi) for qubit {i} must be >= 0, got {chi_val}"
-                )
-            elif chi_val == 0:
-                warnings.warn(
-                    f"Dispersive coupling (chi) for qubit {i} is zero. "
-                    "This means no qubit-cavity interaction for this qubit, "
-                    "which may not produce meaningful sensing results.",
-                    UserWarning,
-                )
-
-        if self.physical_constants.photon_cavity_coupling < 0:
-            raise ValueError("Photon-cavity coupling (photon_cavity_coupling) must be >= 0")
-        elif self.physical_constants.photon_cavity_coupling == 0:
-            warnings.warn(
-                "Photon-cavity coupling (gamma/photon_cavity_coupling) is zero. This means no "
-                "coupling between the input field and the cavity, which will result in no sensing dynamics.",
-                UserWarning,
-            )
-
-        if self.physical_constants.inverse_pulse_width <= 0:
-            raise ValueError("Pulse width parameter (inverse_pulse_width) must be > 0")
-
         # Validate noise rates (now lists)
-        if not isinstance(self.noise_config.depolarizing, list):
+        if not isinstance(self.noise_model.depolarizing, list):
             raise TypeError("depolarizing must be normalized to a list")
-        if not isinstance(self.noise_config.dephasing, list):
+        if not isinstance(self.noise_model.dephasing, list):
             raise TypeError("dephasing must be normalized to a list")
-        if not isinstance(self.noise_config.relaxation, list):
+        if not isinstance(self.noise_model.relaxation, list):
             raise TypeError("relaxation must be normalized to a list")
 
-        for i, rate in enumerate(self.noise_config.depolarizing):
+        for i, rate in enumerate(self.noise_model.depolarizing):
             if rate < 0:
                 raise ValueError(f"Depolarization rate for qubit {i} must be >= 0, got {rate}")
-        for i, rate in enumerate(self.noise_config.dephasing):
+        for i, rate in enumerate(self.noise_model.dephasing):
             if rate < 0:
                 raise ValueError(f"Dephasing rate for qubit {i} must be >= 0, got {rate}")
-        for i, rate in enumerate(self.noise_config.relaxation):
+        for i, rate in enumerate(self.noise_model.relaxation):
             if rate < 0:
                 raise ValueError(f"Relaxation rate for qubit {i} must be >= 0, got {rate}")
 
@@ -613,84 +605,88 @@ class ExperimentalParameters:
         if sorted(times_list) != times_list:
             raise ValueError("Measurement times must be in ascending order")
 
+        # Validate configuration set
+        
+        #validate configuration_set
+        if not isinstance(self.configuration_set, (list, set)) or len(self.configuration_set) <= 1:
+            raise NotImplementedError(
+                "Please provide a list or set of SystemConfiguration instances with at least 2 elements "
+                "(Preset configuration list is not implemented yet)."
+            )
+
+        self.configuration_set = list(self.configuration_set)
+
+        for config in self.configuration_set:
+            if not isinstance(config, SystemConfiguration):
+                raise TypeError("All items in configuration_set must be SystemConfiguration instances")
+
+        names = [config.name for config in self.configuration_set]  
+        if len(names) != len(set(names)):
+            raise ValueError("All SystemConfiguration instances in configuration_set must have unique names")
+  
+
     # Direct access to commonly used parameters for easier integration
+
+    @property
+    def n_cavities(self) -> int:
+        """Direct access to number of cavities."""
+        return self.physical_model.n_cavities
+
+    @property
+    def n_fields(self) -> int:
+        """Direct access to number of fields."""
+        return self.physical_model.n_fields
 
     @property
     def n_qubits(self) -> int:
         """Direct access to number of qubits."""
-        return self.physical_constants.n_qubits
+        return self.physical_model.n_qubits
 
     @property
-    def cavity_levels(self) -> int:
+    def cavity_levels(self) -> Union[int, List[int]]:
         """Direct access to cavity levels."""
-        return self.system_dims.cavity_levels
+        return self.physical_model.cavity_levels
 
     @cavity_levels.setter
-    def cavity_levels(self, value: int) -> None:
+    def cavity_levels(self, value: Union[int, List[int]]) -> None:
         """Set cavity levels."""
-        self.system_dims.cavity_levels = value
+        self.physical_model.cavity_levels = value
+        # Re-normalize if necessary
+        if hasattr(self, "physical_model"):
+            self.physical_model._normalize_levels(self.physical_model.cavity_levels, self.n_cavities,"cavity")
+
+    @property
+    def field_levels(self) -> Union[int, List[int]]:
+        """Direct access to field levels."""
+        return self.physical_model.field_levels
+
+    @field_levels.setter
+    def field_levels(self, value: Union[int, List[int]]) -> None:
+        """Set field levels."""
+        self.physical_model.field_levels = value
+        # Re-normalize if necessary
+        if hasattr(self, "physical_model"):
+            self.physical_model._normalize_levels(self.physical_model.field_levels, self.n_fields,"field")
 
     @property
     def qubit_levels(self) -> Union[int, List[int]]:
         """Direct access to qubit levels (returns list after normalization)."""
-        return self.system_dims.qubit_levels
+        return self.physical_model.qubit_levels
 
     @qubit_levels.setter
     def qubit_levels(self, value: Union[int, List[int]]) -> None:
         """Set qubit levels."""
-        self.system_dims.qubit_levels = value
+        self.physical_model.qubit_levels = value
         # Re-normalize if necessary
-        if hasattr(self, "physical_constants"):
-            self.system_dims._normalize_qubit_levels(self.physical_constants.n_qubits)
-
+        if hasattr(self, "physical_model"):
+            self.physical_model._normalize_levels(self.physical_model.qubit_levels, self.n_qubits,"qubit")
+    
     @property
-    def field_levels(self) -> int:
-        """Direct access to field levels."""
-        return self.system_dims.field_levels
+    def interactions(self) -> List[Interaction]:
+        """Return the list of interactions from the physical model."""
+        return self.physical_model.interactions
+    
 
-    @field_levels.setter
-    def field_levels(self, value: int) -> None:
-        """Set field levels."""
-        self.system_dims.field_levels = value
-
-    @property
-    def chi(self) -> Union[float, List[float]]:
-        """Direct access to dispersive coupling (returns list after normalization)."""
-        return self.physical_constants.chi
-
-    @chi.setter
-    def chi(self, value: Union[float, List[float]]) -> None:
-        """Set dispersive coupling."""
-        # Store the value and re-normalize through __post_init__
-        n_qubits = self.physical_constants.n_qubits
-        if isinstance(value, (int, float)):
-            self.physical_constants.chi = [float(value)] * n_qubits
-        elif isinstance(value, list):
-            if len(value) != n_qubits:
-                raise ValueError(f"chi list length ({len(value)}) must match n_qubits ({n_qubits})")
-            self.physical_constants.chi = [float(c) for c in value]
-        else:
-            raise TypeError("chi must be a float or a list of floats")
-
-    @property
-    def photon_cavity_coupling(self) -> float:
-        """Direct access to photon-cavity coupling."""
-        return self.physical_constants.photon_cavity_coupling
-
-    @photon_cavity_coupling.setter
-    def photon_cavity_coupling(self, value: float) -> None:
-        """Set photon-cavity coupling."""
-        self.physical_constants.photon_cavity_coupling = value
-
-    @property
-    def inverse_pulse_width(self) -> float:
-        """Direct access to pulse width parameter."""
-        return self.physical_constants.inverse_pulse_width
-
-    @inverse_pulse_width.setter
-    def inverse_pulse_width(self, value: float) -> None:
-        """Set pulse width parameter."""
-        self.physical_constants.inverse_pulse_width = value
 
     @property
     def measurement_times(self) -> np.ndarray:
@@ -808,22 +804,69 @@ class ExperimentalParameters:
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
 
+    def get_configuration(self, name: str) -> Optional[SystemConfiguration]:
+        """
+        Retrieve a system configuration by name from the configuration set.
+
+        Args:
+            name: Name of the system configuration to retrieve
+
+        Returns:
+            SystemConfiguration instance or None if not found
+        """
+
+        for config in self.configuration_set:
+            if config.name == name:
+                return config
+    
+    def get_all_configuration_names(self) -> List[str]:
+        """
+        Get a list of all configuration names in the configuration set.
+
+        Returns:
+            List of configuration names
+        """
+        return [config.name for config in self.configuration_set]
+
+    def add_configuration(self, config: SystemConfiguration) -> None:
+        """
+        Add a new system configuration to the configuration set.
+
+        Args:
+            config: SystemConfiguration instance to add
+
+        Raises:
+            ValueError: If a configuration with the same name already exists
+        """
+        if config.name in [cfg.name for cfg in self.configuration_set]:
+            raise ValueError(f"Configuration with name '{config.name}' already exists")
+        self.configuration_set.append(config)
+
+    def remove_configuration(self, name: str) -> None:
+        """
+        Remove a system configuration from the configuration set by name.
+
+        Args:
+            name: Name of the system configuration to remove
+        """
+        if name in self.configuration_set:
+            del self.configuration_set[name]
+
     def copy(self, **updates) -> "ExperimentalParameters":
         """
         Create a copy of ExperimentalParameters with optional updates.
 
         This method creates a new ExperimentalParameters instance with all
         configuration copied. The nested objects (physical_constants, system_dims,
-        measurement, initial_state, noise_config) are deep copied to avoid
+        measurement, initial_state, noise_model) are deep copied to avoid
         unintended sharing of mutable state.
 
         Args:
             **updates: Keyword arguments for attributes to update. Can be:
-                - physical_constants: PhysicalConstants instance or dict of updates
-                - system_dims: SystemDimensions instance
+                - physical_model: PhysicalConstants instance or dict of updates
+                - noise_model: NoiseConfiguration instance
                 - measurement: MeasurementProtocol instance
-                - initial_state: InitialStateConfig instance
-                - noise_config: NoiseConfiguration instance
+                - configuration_set: Set or list of SystemConfiguration instances
                 - random_seed: int or None
 
         Returns:
@@ -832,47 +875,51 @@ class ExperimentalParameters:
         Example:
             >>> # Copy and update physical constants
             >>> new_params = exp_params.copy(
-            ...     physical_constants=exp_params.physical_constants.copy(chi=10.0)
+            ...     physical_model=exp_params.physical_model.copy(chi=10.0)
             ... )
             >>>
             >>> # Or pass updates as dict (for convenience)
             >>> new_params = exp_params.copy(
-            ...     physical_constants={'chi': 10.0, 'photon_cavity_coupling': 20.0}
+            ...     physical_model={'chi': 10.0, 'photon_cavity_coupling': 20.0}
             ... )
         """
         # Deep copy nested configurations
-        new_phys_const = self.physical_constants
-        new_system_dims = self.system_dims
+        new_phys_model = self.physical_model
+        new_noise_model = self.noise_model
         new_measurement = self.measurement
-        new_initial_state = self.initial_state
-        new_noise_config = self.noise_config
         new_random_seed = self.random_seed
+        new_config_set = self.configuration_set 
 
         # Handle updates
-        if "physical_constants" in updates:
-            pc_update = updates["physical_constants"]
-            if isinstance(pc_update, dict):
+        if "physical_model" in updates:
+            pm_update = updates["physical_model"]
+            if isinstance(pm_update, dict):
                 # If dict, use copy method with updates
-                new_phys_const = self.physical_constants.copy(**pc_update)
+                new_phys_model = self.physical_model.copy(**pm_update)
             else:
-                # If PhysicalConstants instance, use directly
-                new_phys_const = pc_update
+                # If PhysicalModel instance, use directly
+                new_phys_model = pm_update
         else:
-            # Deep copy existing physical constants
-            new_phys_const = self.physical_constants.copy()
-
-        if "system_dims" in updates:
-            new_system_dims = updates["system_dims"]
+            # Deep copy existing physical model
+            new_phys_model = self.physical_model.copy()
+            
+        if "noise_model" in updates:
+            new_noise_model = updates["noise_model"]
         else:
             # Create new instance with same values
-            new_system_dims = SystemDimensions(
-                cavity_levels=self.system_dims.cavity_levels,
-                qubit_levels=(
-                    self.system_dims.qubit_levels.copy()
-                    if isinstance(self.system_dims.qubit_levels, list)
-                    else self.system_dims.qubit_levels
+            depol = self.noise_model.depolarizing
+            deph = self.noise_model.dephasing
+            relax = self.noise_model.relaxation
+
+            new_noise_model = NoiseModel(
+                depolarizing=depol.copy() if isinstance(depol, list) else depol,
+                dephasing=deph.copy() if isinstance(deph, list) else deph,
+                relaxation=relax.copy() if isinstance(relax, list) else relax,
+                custom_operators=(
+                    self.noise_model.custom_operators.copy()
+                    if self.noise_model.custom_operators
+                    else None
                 ),
-                field_levels=self.system_dims.field_levels,
             )
 
         if "measurement" in updates:
@@ -892,49 +939,21 @@ class ExperimentalParameters:
                 single_measurement_uncertainty=self.measurement.single_measurement_uncertainty,
             )
 
-        if "initial_state" in updates:
-            new_initial_state = updates["initial_state"]
+        if "configuration_set" in updates:
+            new_config_set = updates["configuration_set"]
         else:
             # Create new instance with same values
-            new_initial_state = InitialStateConfig(
-                state_type=self.initial_state.state_type,
-                coherent_alpha=self.initial_state.coherent_alpha,
-                thermal_n_bar=self.initial_state.thermal_n_bar,
-                custom_amplitudes=(
-                    self.initial_state.custom_amplitudes.copy()
-                    if self.initial_state.custom_amplitudes
-                    else None
-                ),
-            )
+            new_config_set = [config for config in self.configuration_set]
 
-        if "noise_config" in updates:
-            new_noise_config = updates["noise_config"]
-        else:
-            # Create new instance with same values
-            depol = self.noise_config.depolarizing
-            deph = self.noise_config.dephasing
-            relax = self.noise_config.relaxation
-
-            new_noise_config = NoiseConfiguration(
-                depolarizing=depol.copy() if isinstance(depol, list) else depol,
-                dephasing=deph.copy() if isinstance(deph, list) else deph,
-                relaxation=relax.copy() if isinstance(relax, list) else relax,
-                custom_operators=(
-                    self.noise_config.custom_operators.copy()
-                    if self.noise_config.custom_operators
-                    else None
-                ),
-            )
 
         if "random_seed" in updates:
             new_random_seed = updates["random_seed"]
 
         return ExperimentalParameters(
-            physical_constants=new_phys_const,
-            system_dims=new_system_dims,
+            physical_model=new_phys_model,
+            noise_model=new_noise_model,
             measurement=new_measurement,
-            initial_state=new_initial_state,
-            noise_config=new_noise_config,
+            configuration_set=new_config_set,
             random_seed=new_random_seed,
         )
 
@@ -1017,12 +1036,12 @@ class ExperimentalParameters:
 
         # Noise Configuration Group
         lines.append("NOISE MODEL")
-        lines.append(f"  Depolarizing rate:    {self.noise_config.depolarizing}")
-        lines.append(f"  Dephasing rate:       {self.noise_config.dephasing}")
-        lines.append(f"  Relaxation rate:      {self.noise_config.relaxation}")
+        lines.append(f"  Depolarizing rate:    {self.noise_model.depolarizing}")
+        lines.append(f"  Dephasing rate:       {self.noise_model.dephasing}")
+        lines.append(f"  Relaxation rate:      {self.noise_model.relaxation}")
 
-        if self.noise_config.custom_operators is not None:
-            lines.append(f"  Custom operators:     {len(self.noise_config.custom_operators):>6}")
+        if self.noise_model.custom_operators is not None:
+            lines.append(f"  Custom operators:     {len(self.noise_model.custom_operators):>6}")
         else:
             lines.append("  Custom operators:     None")
 
