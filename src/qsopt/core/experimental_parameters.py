@@ -331,11 +331,11 @@ class NoiseModel:
 @dataclass
 class SystemConfiguration:
     """
-    System configuration made of initial state, noise model and configuration-specific interactions."""
+    System configuration composed of initial state, noise model and configuration-specific interactions."""
 
     name: str
     initial_state: InitialState = InitialState()
-    noise_model: NoiseModel = NoiseModel()
+    noise_model: Optional[NoiseModel] = None
     interactions: Optional[List[Interaction]] = None
 
     def __post_init__(self):
@@ -365,33 +365,38 @@ class ExperimentalParameters:
 
     def __init__(
         self,
-        physical_constants: Optional[PhysicalConstants] = None,
-        system_dims: Optional[SystemDimensions] = None,
+        physical_model: Optional[PhysicalModel] = None,
+        noise_model: Optional[NoiseModel] = None,
         measurement: Optional[MeasurementProtocol] = None,
-        initial_state: Optional[InitialStateConfig] = None,
-        noise_config: Optional[NoiseConfiguration] = None,
+        configuration_list: Optional[List[SystemConfiguration]] = None,
         random_seed: Optional[int] = None,
     ):
         """
         Initialize experimental parameters.
 
         Args:
-            physical_constants: Physical coupling constants and rates
-            system_dims: Hilbert space dimensions
+            physical_model: Physical model configuration
+            noise_model: Noise model configuration
             measurement: Measurement protocol configuration
-            initial_state: Initial state configuration
-            noise_config: Noise model configuration
+            configuration_list: List of system configurations to be simulated (e.g., different initial states, noise levels, interactions)
             random_seed: Random seed for reproducibility of uncertainty calculations
         """
-        self.physical_constants = physical_constants or PhysicalConstants()
-        self.system_dims = system_dims or SystemDimensions()
+        self.physical_model = physical_model or PhysicalModel()
+        self.noise_model = noise_model or NoiseModel()
         self.measurement = measurement or MeasurementProtocol()
-        self.noise_config = noise_config or NoiseConfiguration()
-        self.initial_state = initial_state or InitialStateConfig()
+
+        if configuration_list and isinstance(configuration_list, list) and len(configuration_list) > 1:
+            for config in configuration_list:
+                if not isinstance(config, SystemConfiguration):
+                    raise TypeError("All items in configuration_list must be SystemConfiguration instances")
+        
+        else:
+            raise NotImplementedError("Please provide a list of SystemConfiguration instances with at least 2 elements (Preset configuration list is not implemented yet).")
+  
+        self.configuration_list = configuration_list
 
         # Normalize multi-qubit parameters based on n_qubits
         n_qubits = self.physical_constants.n_qubits
-        self.system_dims._normalize_qubit_levels(n_qubits)
         self.noise_config._normalize_noise_rates(n_qubits)
 
         # Random seed for uncertainty calculations
@@ -404,7 +409,7 @@ class ExperimentalParameters:
         self._update_measurement_times()
 
         # Validation
-        self._validate_configuration()
+        self._validate_experimental_parameters()
 
     def _compute_measurement_times_from_interval(self) -> List[float]:
         """
@@ -528,20 +533,18 @@ class ExperimentalParameters:
         # No uncertainty: tile the same times batch_size times
         return np.tile(base_times, (batch_size, 1))
 
-    def _validate_configuration(self) -> None:
+    def _validate_experimental_parameters(self) -> None:
         """Validate parameter consistency and physical constraints."""
-        # Validate system dimensions
-        if self.system_dims.cavity_levels < 2:
-            raise ValueError("Cavity levels (cavity_levels) must be >= 2")
-        if self.system_dims.field_levels < 2:
-            raise ValueError("External field levels (field_levels) must be >= 2")
-
-        # Validate qubit levels (now a list)
-        if not isinstance(self.system_dims.qubit_levels, list):
-            raise TypeError("qubit_levels must be normalized to a list")
-        for i, levels in enumerate(self.system_dims.qubit_levels):
-            if levels < 2:
-                raise ValueError(f"Qubit {i} levels must be >= 2, got {levels}")
+        # Validate subsystem levels
+        for i, level in enumerate(self.physical_model.cavity_levels):
+            if level < 2:
+                raise ValueError(f"Every cavity must have at least 2 levels. Cavity_{i} got {level}")
+        for i, level in enumerate(self.physical_model.field_levels):
+            if level < 2:
+                raise ValueError(f"Every field must have at least 2 levels. Field_{i} got {level}")
+        for i, level in enumerate(self.physical_model.qubit_levels):
+            if level < 2:
+                raise ValueError(f"Every qubit must have at least 2 levels. Qubit_{i} got {level}")
 
         # Validate coupling constants (chi is now a list)
         if not isinstance(self.physical_constants.chi, list):
