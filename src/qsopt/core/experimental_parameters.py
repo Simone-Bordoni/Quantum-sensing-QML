@@ -3,11 +3,13 @@ Experimental Parameters Class
 ============================
 
 System configuration parameters for quantum sensing experiments including
-physical constants, system dimensions, measurement protocols, and initial states.
+physical model dimensions, interactions, noise models, measurement protocols,
+and initial states.
 """
 
+import copy
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Set, Optional, Tuple, Union
 
@@ -109,9 +111,13 @@ class Interaction:
         elif isinstance(self.parameters, (int, float)):
             self.parameters = {"chi": self.parameters}
         elif not isinstance(self.parameters, dict):
-            raise TypeError("Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key")
+            raise TypeError(
+                "Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' or 'strength' key"
+            )
         elif "chi" not in self.parameters and "strength" not in self.parameters:
-            raise ValueError("Parameters for ZZ, XX, YY interactions must include 'chi' key for interaction strength")
+            raise ValueError(
+                "Parameters for ZZ, XX, YY interactions must include 'chi' or 'strength' key for interaction strength"
+            )
         
         if "strength" in self.parameters:
             warnings.warn("Using 'strength' value for 'chi'.", UserWarning)
@@ -126,17 +132,27 @@ class Interaction:
                 UserWarning,
                 )
 
+    def copy(self) -> "Interaction":
+        """Return a copy with independent parameter storage."""
+        return Interaction(
+            subsystem1=self.subsystem1,
+            subsystem2=self.subsystem2,
+            interaction_type=self.interaction_type,
+            parameters=copy.deepcopy(self.parameters),
+            time_modulation=self.time_modulation,
+        )
+
 
 @dataclass
 class PhysicalModel:
     """
-    Physical constants and interactions for the quantum system.
+    Physical model dimensions and interactions for the quantum system.
 
     Attributes:
         n_cavities: Number of resonator cavities (typically 1 for single-mode systems)
         n_fields: Number of input field modes
         n_qubits: Number of qubits in the system
-        cavities_levels: Number of levels for cavity modes (cavity truncation level)
+        cavity_levels: Number of levels for cavity modes (cavity truncation level)
         field_levels: Number of levels for input field modes (field truncation level)
         qubit_levels: Number of levels for qubits (typically 2 for two-level systems)
         interactions: List of interactions between subsystems (e.g., qubit-qubit, cavity-field, qubit-cavity etc.)
@@ -150,7 +166,7 @@ class PhysicalModel:
     cavity_levels: int = 2  # Cavity truncation level
     field_levels: int = 2  # Field mode truncation level
     qubit_levels: int = 2  # Qubit truncation level
-    interactions: Optional[List[Interaction]] = None  # Qubit-qubit interactions
+    interactions: Optional[List[Interaction]] = None  # Subsystems' interactions
 
     def __post_init__(self):
         """Convert levels to list format if necessary and set default interactions."""
@@ -193,15 +209,16 @@ class PhysicalModel:
         if count == 0:
             warnings.warn(f"n_{plural} is set to 0. Setting {label}_levels to an empty list.", UserWarning)
             return []
-        if isinstance(levels, int):
+        elif isinstance(levels, int):
             return [levels] * count
-        if isinstance(levels, list):
+        elif isinstance(levels, list):
             if len(levels) != count:
                 raise ValueError(
                     f"{label.capitalize()} levels list length ({len(levels)}) must match n_{plural} ({count})"
                 )
             return levels
-        raise TypeError(f"{label.capitalize()} levels must be an integer or a list of integers")
+        else:
+            raise TypeError(f"{label.capitalize()} levels must be an integer or a list of integers")
 
 
     def copy(self, **updates) -> "PhysicalModel":
@@ -248,16 +265,7 @@ class PhysicalModel:
                 else self.field_levels
             ),
             "interactions": (
-                [
-                    Interaction(
-                        subsystem1=interaction.subsystem1,
-                        subsystem2=interaction.subsystem2,
-                        interaction_type=interaction.interaction_type,                        
-                        parameters = interaction.parameters,
-                        time_modulation = interaction.time_modulation
-                    )
-                    for interaction in self.interactions
-                ] 
+                [interaction.copy() for interaction in self.interactions]
             ),
         }
 
@@ -372,7 +380,9 @@ class SubsystemState:
             self.parameters["n_avg"] = float(n_avg)  # Ensure n_avg is stored as a float
 
         if self.state_type == InitialStateType.CUSTOM:
-            raise NotImplementedError("CUSTOM state type is not fully implemented yet. Please provide 'custom_amplitudes' parameter as a dictionary mapping (cavity_level, field_level, qubit_level) tuples to complex amplitudes for each subsystem state specification.")
+            raise NotImplementedError(
+                "CUSTOM state type is not implemented yet for SubsystemState. Use supported states or a density matrix."
+            )
             if self.parameters is None or "custom_amplitudes" not in self.parameters:
                 raise ValueError("CUSTOM state requires 'custom_amplitudes' parameter for state specification")
             custom_amplitudes = self.parameters["custom_amplitudes"]
@@ -385,6 +395,11 @@ class SubsystemState:
                     raise ValueError("CUSTOM state 'custom_amplitudes' values must be numeric (real or complex)")
                 custom_amplitudes[key] = complex(value)  # Ensure amplitudes are stored as complex numbers
 
+    def copy(self) -> "SubsystemState":
+        """Return a copy with independent parameter storage."""
+        parameters = copy.deepcopy(self.parameters) if self.parameters is not None else None
+        return SubsystemState(state_type=self.state_type, parameters=parameters)
+
     # custom_amplitudes: Optional[Dict[Tuple[int, int, int], complex]] = None
 
 @dataclass 
@@ -395,12 +410,12 @@ class InitialState:
     Attributes:
         cavity_states: Dict of cavity states, keyed by cavity index (0-based)
         field_states: Dict of input field states, keyed by field mode index (0-based)
-        matrix_state: Optional density matrix state for the entire system
+        density_matrix: Optional density matrix state for the cavity/field subsystem
     """
 
     cavity_states: Dict[int, SubsystemState] = None
     field_states: Dict[int, SubsystemState] = None
-    density_matrix: Optional[qt.Qobj] = None  # For MATRIX state type, specify the density matrix in parameters
+    density_matrix: Optional[qt.Qobj] = None  # Overrides cavity_states and field_states when provided
 
     def __post_init__(self):
     
@@ -428,9 +443,24 @@ class InitialState:
      
         if self.density_matrix is not None:
             if not isinstance(self.density_matrix, qt.Qobj):
-                raise ValueError("MATRIX state 'density_matrix' parameter must be a Qobj representing the density matrix")
+                raise ValueError("density_matrix must be a Qobj representing the density matrix")
             if not self.density_matrix.isherm or not self.density_matrix.ispositive or not np.isclose(self.density_matrix.tr(), 1.0):
-                raise ValueError("MATRIX state 'density_matrix' must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
+                raise ValueError("density_matrix must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
+
+    def copy(self) -> "InitialState":
+        """Return a copy with independent subsystem state storage."""
+        cavity_states = None
+        if self.cavity_states is not None:
+            cavity_states = {idx: state.copy() for idx, state in self.cavity_states.items()}
+        field_states = None
+        if self.field_states is not None:
+            field_states = {idx: state.copy() for idx, state in self.field_states.items()}
+        density_matrix = self.density_matrix.copy() if self.density_matrix is not None else None
+        return InitialState(
+            cavity_states=cavity_states,
+            field_states=field_states,
+            density_matrix=density_matrix,
+        )
 
 
 
@@ -459,7 +489,7 @@ class NoiseModel:
         Normalize noise rates to list format.
 
         Args:
-            n_qubits: Number of qubits from PhysicalConstants
+            n_qubits: Number of qubits from PhysicalModel
         """
         for attr in ["depolarizing", "dephasing", "relaxation"]:
             value = getattr(self, attr)
@@ -480,6 +510,15 @@ class NoiseModel:
                     raise ValueError(f"{attr} rate for qubit {i} must be >= 0, got {rate}")
 
             setattr(self, attr, values)
+
+    def copy(self) -> "NoiseModel":
+        """Return a copy with independent parameter storage."""
+        return NoiseModel(
+            depolarizing=copy.deepcopy(self.depolarizing),
+            dephasing=copy.deepcopy(self.dephasing),
+            relaxation=copy.deepcopy(self.relaxation),
+            custom_operators=copy.deepcopy(self.custom_operators),
+        )
         
 @dataclass
 class SystemConfiguration:
@@ -487,12 +526,12 @@ class SystemConfiguration:
     System configuration composed of initial state, noise model and configuration-specific interactions."""
 
     name: str
-    initial_state: InitialState = InitialState()
+    initial_state: InitialState = field(default_factory=InitialState)
     noise_model: Optional[NoiseModel] = None
     interactions: Optional[List[Interaction]] = None
 
     def __post_init__(self):
-        """Validate interactions."""
+        """Validate configuration data."""
         if not self.name:
             raise ValueError("System configuration must have a non-empty name")
         
@@ -508,6 +547,15 @@ class SystemConfiguration:
                     raise TypeError("All interactions must be Interaction instances")
         else:
             self.interactions = []
+
+    def copy(self) -> "SystemConfiguration":
+        """Return a copy with independent nested state."""
+        return SystemConfiguration(
+            name=self.name,
+            initial_state=self.initial_state.copy(),
+            noise_model=self.noise_model.copy() if self.noise_model is not None else None,
+            interactions=[interaction.copy() for interaction in (self.interactions or [])],
+        )
         
 
 
@@ -517,7 +565,7 @@ class ExperimentalParameters:
     Complete experimental configuration for quantum sensing protocols.
 
     This class contains all the system parameters that define the physical
-    quantum sensing setup including Hilbert space dimensions, coupling constants,
+    quantum sensing setup including Hilbert space dimensions, interactions,
     measurement protocols, noise models, and initial state preparation.
 
     The parameters are organized into logical groups and provide validation
@@ -625,7 +673,8 @@ class ExperimentalParameters:
                 except ValueError as exc:
                     raise ValueError(
                         "Unsupported initial_time_uncertainty specification "
-                        f"'{spec}'. Supported keywords: 'max_interval', 'total_duration'."
+                        f"'{spec}'. Supported keywords: 'max_interval', 'max_measurement_interval', "
+                        "'total_duration', 'full_window'."
                     ) from exc
         else:
             try:
@@ -1036,14 +1085,13 @@ class ExperimentalParameters:
         Create a copy of ExperimentalParameters with optional updates.
 
         This method creates a new ExperimentalParameters instance with all
-        configuration copied. The nested objects (physical_constants, system_dims,
-        measurement, initial_state, noise_model) are deep copied to avoid
-        unintended sharing of mutable state.
+        configuration copied. The nested objects (physical_model, measurement,
+        noise_model, configuration_set) are copied to avoid unintended sharing of mutable state.
 
         Args:
             **updates: Keyword arguments for attributes to update. Can be:
-                - physical_model: PhysicalConstants instance or dict of updates
-                - noise_model: NoiseConfiguration instance
+                - physical_model: PhysicalModel instance or dict of updates
+                - noise_model: NoiseModel instance
                 - measurement: MeasurementProtocol instance
                 - configuration_set: Set or list of SystemConfiguration instances
                 - random_seed: int or None
@@ -1052,14 +1100,14 @@ class ExperimentalParameters:
             New ExperimentalParameters instance with updated values
 
         Example:
-            >>> # Copy and update physical constants
+            >>> # Copy and update the physical model
             >>> new_params = exp_params.copy(
-            ...     physical_model=exp_params.physical_model.copy(chi=10.0)
+            ...     physical_model=exp_params.physical_model.copy(n_cavities=2)
             ... )
             >>>
             >>> # Or pass updates as dict (for convenience)
             >>> new_params = exp_params.copy(
-            ...     physical_model={'chi': 10.0, 'photon_cavity_coupling': 20.0}
+            ...     physical_model={'n_cavities': 2, 'n_fields': 2}
             ... )
         """
         # Deep copy nested configurations
@@ -1086,20 +1134,7 @@ class ExperimentalParameters:
             new_noise_model = updates["noise_model"]
         else:
             # Create new instance with same values
-            depol = self.noise_model.depolarizing
-            deph = self.noise_model.dephasing
-            relax = self.noise_model.relaxation
-
-            new_noise_model = NoiseModel(
-                depolarizing=depol.copy() if isinstance(depol, list) else depol,
-                dephasing=deph.copy() if isinstance(deph, list) else deph,
-                relaxation=relax.copy() if isinstance(relax, list) else relax,
-                custom_operators=(
-                    self.noise_model.custom_operators.copy()
-                    if self.noise_model.custom_operators
-                    else None
-                ),
-            )
+            new_noise_model = self.noise_model.copy()
 
         if "measurement" in updates:
             new_measurement = updates["measurement"]
@@ -1122,7 +1157,7 @@ class ExperimentalParameters:
             new_config_set = updates["configuration_set"]
         else:
             # Create new instance with same values
-            new_config_set = [config for config in self.configuration_set]
+            new_config_set = [config.copy() for config in self.configuration_set]
 
 
         if "random_seed" in updates:

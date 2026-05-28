@@ -113,16 +113,10 @@ class Experiment:
                 )
             self.detection_metric = detection_metric
 
-
-        # Normalize qubit_levels to always be a list
-        if isinstance(self.experimental_params.qubit_levels, int):
-            self.experimental_params.qubit_levels = [self.experimental_params.qubit_levels] * self.experimental_params.n_qubits
-
         # Precompute total dimensions for QuTiP Qobj creation
-        self.total_dims = [
-            self.experimental_params.field_levels,
-            self.experimental_params.cavity_levels
-        ] + self.experimental_params.qubit_levels
+        self.total_dims = self.experimental_params.cavity_levels \
+                            + self.experimental_params.field_levels \
+                            + self.experimental_params.qubit_levels
 
         # Extract trainable parameters from both circuits
         self.trainable_params_initial = self.initial_circuit.get_trainable_parameters()
@@ -130,7 +124,7 @@ class Experiment:
 
         # Caches
         self._cached_initial_state: Optional[qt.Qobj] = None
-        self._cached_projectors: Dict[str, qt.Qobj] = {}
+        self._cached_projectors: Dict[str, qt.Qobj] = {} # IS THIS USED??????????? TO BE CHECKED
         self._cached_solvers: Dict[str, qt.MESolver] = {}
         self._cached_circuit_unitaries: Optional[tuple] = None
 
@@ -154,9 +148,29 @@ class Experiment:
 
 
     @property
+    def n_cavities(self) -> int:
+        """Get the number of cavity modes in the experiment."""
+        return self.experimental_params.n_cavities
+    @property
+    def n_fields(self) -> int:
+        """Get the number of field modes in the experiment."""
+        return self.experimental_params.n_fields
+    @property
     def n_qubits(self) -> int:
         """Get the number of qubits in the experiment."""
         return self.experimental_params.n_qubits
+    @property
+    def cavity_levels(self) -> int:
+        """Get the number of cavity levels in the experiment."""
+        return self.experimental_params.cavity_levels
+    @property
+    def field_levels(self) -> int:
+        """Get the number of field levels in the experiment."""
+        return self.experimental_params.field_levels
+    @property
+    def qubit_levels(self) -> int:
+        """Get the number of qubit levels in the experiment."""
+        return self.experimental_params.qubit_levels
 
     def _save_sweep_state(self) -> Dict[str, Any]:
         """
