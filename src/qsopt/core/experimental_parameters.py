@@ -12,6 +12,11 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Set, Optional, Tuple, Union
 
 import numpy as np
+import qutip as qt
+import math
+
+# Import qutip_jax to enable JAX backend
+import qutip_jax  # pylint: disable=unused-import
 
 
 class InitialStateType(Enum):
@@ -31,7 +36,6 @@ class InteractionType(Enum):
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
 
-@dataclass
 class Interaction:
     """
     Configuration for interaction between subsystems.
@@ -106,12 +110,12 @@ class Interaction:
             self.parameters = {"chi": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError("Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key")
-        elif "chi" not in self.parameters or "strength" not in self.parameters:
+        elif "chi" not in self.parameters and "strength" not in self.parameters:
             raise ValueError("Parameters for ZZ, XX, YY interactions must include 'chi' key for interaction strength")
         
-        if "strenght" in self.parameters:
-            warnings.warn("Using 'strenght' value for 'chi'.", UserWarning)
-            self.parameters["chi"] = self.parameters.pop("strenght")
+        if "strength" in self.parameters:
+            warnings.warn("Using 'strength' value for 'chi'.", UserWarning)
+            self.parameters["chi"] = self.parameters.pop("strength")
 
         if self.parameters["chi"] < 0:
             raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}")
@@ -294,23 +298,140 @@ class MeasurementProtocol:
     initial_time_uncertainty: Union[float, str] = 0.0
     single_measurement_uncertainty: Callable[[float], float] = lambda t: 0.0
 
+    def __post_init__(self):
+        if self.measurement_times is not None:
+            if len(self.measurement_times) < 2:
+                raise ValueError("At least two measurement times must be specified in measurement_times list")
+            if sorted(self.measurement_times) != self.measurement_times:
+                raise ValueError("Measurement times in measurement_times list must be in ascending order")
+        else:
+            if self.time_interval <= 0:
+                raise ValueError("Time interval must be positive for interval mode")
+            if self.final_time <= self.initial_time:
+                raise ValueError("Final time must be greater than initial time for interval mode")
+        if self.initial_time_uncertainty is not None:
+            if isinstance(self.initial_time_uncertainty, (int, float)):
+                if self.initial_time_uncertainty < 0:
+                    raise ValueError("Initial time uncertainty must be >= 0")
+            elif isinstance(self.initial_time_uncertainty, str):
+                if not self.initial_time_uncertainty.strip():
+                    raise ValueError("initial_time_uncertainty string specification cannot be empty")
+                # Supported keywords will be validated and resolved in ExperimentalParameters
+            else:
+                raise TypeError("initial_time_uncertainty must be a float or a supported string keyword")
+        if self.single_measurement_uncertainty is not None:
+            if not callable(self.single_measurement_uncertainty):
+                raise TypeError("single_measurement_uncertainty must be a callable function of time")
+            # Test the single_measurement_uncertainty function with a sample time value
+            try:
+                for _ in range(100):
+                    random_time = np.random.uniform(-10, 10)
+                    test_value = self.single_measurement_uncertainty(random_time)
+                    if not isinstance(test_value, (int, float)):
+                        raise ValueError(f"single_measurement_uncertainty function must return a numeric value. Got type: {type(test_value)}")
+            except Exception as e:
+                raise ValueError("single_measurement_uncertainty function got an error during testing:") from e
+
 
 @dataclass
-class InitialState:
+class SubsystemState:
     """
-    Initial state configuration.
+    State for a single subsystem.
 
     Attributes:
         state_type: Type of initial state
-        coherent_alpha: Coherent state parameter for coherent states
-        thermal_n_bar: Average photon number for thermal states
-        custom_amplitudes: Custom state amplitudes for CUSTOM type
+        parameters: Dictionary of parameters for the initial state
     """
 
-    state_type: InitialStateType = InitialStateType.FOCK
-    coherent_alpha: Optional[complex] = None
-    thermal_n_bar: Optional[float] = None
-    custom_amplitudes: Optional[Dict[Tuple[int, int, int], complex]] = None
+    state_type: InitialStateType = InitialStateType.VACUUM
+    parameters: Dict[str, Any] = None  # Parameters depend on state_type, e.g., {'n': 1} for Fock state
+
+    def __post_init__(self):
+
+        if self.state_type == InitialStateType.FOCK:
+            if self.parameters is None or "n" not in self.parameters:
+                raise ValueError("FOCK state requires 'n' parameter for photon number")
+            n = self.parameters["n"]
+            if not isinstance(n, int) or n < 0:
+                raise ValueError("FOCK state 'n' parameter must be a non-negative integer")
+            
+        if self.state_type == InitialStateType.COHERENT:
+            if self.parameters is None or "alpha" not in self.parameters:
+                raise ValueError("COHERENT state requires 'alpha' parameter for coherent amplitude")
+            alpha = self.parameters["alpha"]
+            if not isinstance(alpha, (int, float, complex)):
+                raise ValueError("COHERENT state 'alpha' parameter must be a numeric value (real or complex)")
+            self.parameters["alpha"] = complex(alpha)  # Ensure alpha is stored as a complex number
+
+        if self.state_type == InitialStateType.THERMAL:
+            if self.parameters is None or "n_avg" not in self.parameters:
+                raise ValueError("THERMAL state requires 'n_avg' parameter for mean photon number")
+            n_avg = self.parameters["n_avg"]
+            if not isinstance(n_avg, (int, float)) or n_avg < 0:
+                raise ValueError("THERMAL state 'n_avg' parameter must be a non-negative number")
+            self.parameters["n_avg"] = float(n_avg)  # Ensure n_avg is stored as a float
+
+        if self.state_type == InitialStateType.CUSTOM:
+            raise NotImplementedError("CUSTOM state type is not fully implemented yet. Please provide 'custom_amplitudes' parameter as a dictionary mapping (cavity_level, field_level, qubit_level) tuples to complex amplitudes for each subsystem state specification.")
+            if self.parameters is None or "custom_amplitudes" not in self.parameters:
+                raise ValueError("CUSTOM state requires 'custom_amplitudes' parameter for state specification")
+            custom_amplitudes = self.parameters["custom_amplitudes"]
+            if not isinstance(custom_amplitudes, dict):
+                raise ValueError("CUSTOM state 'custom_amplitudes' parameter must be a dictionary")
+            for key, value in custom_amplitudes.items():
+                if not (isinstance(key, tuple) and len(key) == 3 and all(isinstance(i, int) for i in key)):
+                    raise ValueError("CUSTOM state 'custom_amplitudes' keys must be tuples of three integers (cavity_level, field_level, qubit_level)")
+                if not isinstance(value, (int, float, complex)):
+                    raise ValueError("CUSTOM state 'custom_amplitudes' values must be numeric (real or complex)")
+                custom_amplitudes[key] = complex(value)  # Ensure amplitudes are stored as complex numbers
+
+    # custom_amplitudes: Optional[Dict[Tuple[int, int, int], complex]] = None
+
+@dataclass 
+class InitialState:
+    """
+    Initial state configuration for the entire system.
+    
+    Attributes:
+        cavity_states: Dict of cavity states, keyed by cavity index (0-based)
+        field_states: Dict of input field states, keyed by field mode index (0-based)
+        matrix_state: Optional density matrix state for the entire system
+    """
+
+    cavity_states: Dict[int, SubsystemState] = None
+    field_states: Dict[int, SubsystemState] = None
+    density_matrix: Optional[qt.Qobj] = None  # For MATRIX state type, specify the density matrix in parameters
+
+    def __post_init__(self):
+    
+        if self.cavity_states is not None:
+            if len(list(self.cavity_states.keys())) != len(set(self.cavity_states.keys())):
+                raise ValueError("Cavity states got duplicate indices. Each cavity accepts only a single state.")
+            for index, state in self.cavity_states.items():
+                if not isinstance(state, SubsystemState):
+                    raise TypeError(f"Cavity state for cavity {index} must be a SubsystemState instance")
+        if self.field_states is not None:
+            if len(list(self.field_states.keys())) != len(set(self.field_states.keys())):
+                raise ValueError("Field states got duplicate indices. Each field mode accepts only a single state.")
+            for index, state in self.field_states.items():
+                if not isinstance(state, SubsystemState):
+                    raise TypeError(f"Field state for field mode {index} must be a SubsystemState instance")
+
+        if self.density_matrix is not None:
+            if (self.cavity_states and len(self.cavity_states) > 0) or (
+                self.field_states and len(self.field_states) > 0
+            ):
+                warnings.warn(
+                    "density_matrix is provided; cavity_states and field_states will be ignored.",
+                    UserWarning,
+                )
+     
+        if self.density_matrix is not None:
+            if not isinstance(self.density_matrix, qt.Qobj):
+                raise ValueError("MATRIX state 'density_matrix' parameter must be a Qobj representing the density matrix")
+            if not self.density_matrix.isherm or not self.density_matrix.ispositive or not np.isclose(self.density_matrix.tr(), 1.0):
+                raise ValueError("MATRIX state 'density_matrix' must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
+
 
 
 @dataclass
@@ -343,17 +464,23 @@ class NoiseModel:
         for attr in ["depolarizing", "dephasing", "relaxation"]:
             value = getattr(self, attr)
             if isinstance(value, (int, float)):
-                setattr(self, attr, [float(value)] * n_qubits)
+                values = [float(value)] * n_qubits
             elif isinstance(value, list):
                 if len(value) != n_qubits:
                     raise ValueError(
                         f"{attr} list length ({len(value)}) must match n_qubits ({n_qubits})"
                     )
                 value_list = list(value)  # narrow type for pylint
-                setattr(self, attr, [float(v) for v in value_list])
+                values = [float(v) for v in value_list]
             else:
                 raise TypeError(f"{attr} must be a float or a list of floats")
 
+            for i, rate in enumerate(values):
+                if rate < 0:
+                    raise ValueError(f"{attr} rate for qubit {i} must be >= 0, got {rate}")
+
+            setattr(self, attr, values)
+        
 @dataclass
 class SystemConfiguration:
     """
@@ -369,10 +496,18 @@ class SystemConfiguration:
         if not self.name:
             raise ValueError("System configuration must have a non-empty name")
         
+        if not isinstance(self.initial_state, InitialState):
+            raise TypeError("initial_state must be an InitialState instance")
+        
+        if self.noise_model is not None and not isinstance(self.noise_model, NoiseModel):
+            raise TypeError("noise_model must be a NoiseModel instance or None")
+        
         if self.interactions is not None:
             for interaction in self.interactions:
                 if not isinstance(interaction, Interaction):
                     raise TypeError("All interactions must be Interaction instances")
+        else:
+            self.interactions = []
         
 
 
@@ -442,11 +577,6 @@ class ExperimentalParameters:
         final = self.measurement.final_time
         interval = self.measurement.time_interval
 
-        if interval <= 0:
-            raise ValueError("Time interval must be positive")
-        if final <= initial:
-            raise ValueError("Final time must be greater than initial time")
-
         # Generate times using arange and ensure final time is included
         grid = np.arange(initial, final + interval / 2, interval, dtype=float)
         times = [float(t) for t in grid]
@@ -473,9 +603,6 @@ class ExperimentalParameters:
 
         if isinstance(spec, str):
             spec_stripped = spec.strip()
-            if not spec_stripped:
-                raise ValueError("initial_time_uncertainty string specification cannot be empty")
-
             key = spec_stripped.lower()
             if key in {"max_interval", "max_measurement_interval"}:
                 times = self.measurement_times
@@ -508,8 +635,6 @@ class ExperimentalParameters:
                     "initial_time_uncertainty must be a float or supported string keyword"
                 ) from exc
 
-        if value < 0:
-            raise ValueError("Initial time uncertainty must be >= 0")
         return value
 
     def get_measurement_times_with_uncertainty(self, batch_size: int = 1, base_times: np.ndarray = None) -> np.ndarray:
@@ -552,6 +677,7 @@ class ExperimentalParameters:
 
         # No uncertainty: tile the same times batch_size times
         return np.tile(base_times, (batch_size, 1))
+        
 
     def _validate_experimental_parameters(self) -> None:
         """Validate parameter consistency and physical constraints."""
@@ -566,48 +692,16 @@ class ExperimentalParameters:
             if level < 2:
                 raise ValueError(f"Every qubit must have at least 2 levels. Qubit_{i} got {level}")
 
-        # Validate noise rates (now lists)
-        if not isinstance(self.noise_model.depolarizing, list):
-            raise TypeError("depolarizing must be normalized to a list")
-        if not isinstance(self.noise_model.dephasing, list):
-            raise TypeError("dephasing must be normalized to a list")
-        if not isinstance(self.noise_model.relaxation, list):
-            raise TypeError("relaxation must be normalized to a list")
+        # Ensure measurement times are computed
+        if self._measurement_times_list is None:
+            self._update_measurement_times()
+        if self._measurement_times_list is None:
+            raise ValueError("Measurement times could not be computed")
 
-        for i, rate in enumerate(self.noise_model.depolarizing):
-            if rate < 0:
-                raise ValueError(f"Depolarization rate for qubit {i} must be >= 0, got {rate}")
-        for i, rate in enumerate(self.noise_model.dephasing):
-            if rate < 0:
-                raise ValueError(f"Dephasing rate for qubit {i} must be >= 0, got {rate}")
-        for i, rate in enumerate(self.noise_model.relaxation):
-            if rate < 0:
-                raise ValueError(f"Relaxation rate for qubit {i} must be >= 0, got {rate}")
-
-        # Validate measurement protocol
-        if self.measurement.time_interval <= 0:
-            raise ValueError("Time interval must be positive")
-        if self.measurement.final_time <= self.measurement.initial_time:
-            raise ValueError("Final time must be greater than initial time")
         # Resolve initial time uncertainty to ensure specification is valid
         _ = self._resolve_initial_time_uncertainty()
 
-        # Validate measurement times (len > 1 and sorted)
-        if self._measurement_times_list is None:
-            self._update_measurement_times()
-
-        times_list = self._measurement_times_list
-        if times_list is None:
-            raise ValueError("Measurement times could not be computed")
-
-        if len(times_list) < 2:
-            raise ValueError("At least two measurement times must be specified")
-        if sorted(times_list) != times_list:
-            raise ValueError("Measurement times must be in ascending order")
-
         # Validate configuration set
-        
-        #validate configuration_set
         if not isinstance(self.configuration_set, (list, set)) or len(self.configuration_set) <= 1:
             raise NotImplementedError(
                 "Please provide a list or set of SystemConfiguration instances with at least 2 elements "
@@ -619,11 +713,102 @@ class ExperimentalParameters:
         for config in self.configuration_set:
             if not isinstance(config, SystemConfiguration):
                 raise TypeError("All items in configuration_set must be SystemConfiguration instances")
+            if config.noise_model is not None:
+                config.noise_model._normalize_noise_rates(self.physical_model.n_qubits)
+            if config.interactions:
+                for interaction in config.interactions:
+                    for subsystem in [interaction.subsystem1, interaction.subsystem2]:
+                        if subsystem[0] == 'cavity' and subsystem[1] >= self.physical_model.n_cavities:
+                            raise ValueError(
+                                f"Custom interaction of {config.name} involves cavity {subsystem[1]}, but only {self.physical_model.n_cavities} cavities in system"
+                            )
+                        if subsystem[0] == 'field' and subsystem[1] >= self.physical_model.n_fields:
+                            raise ValueError(
+                                f"Custom interaction of {config.name} involves field mode {subsystem[1]}, but only {self.physical_model.n_fields} field modes in system"
+                            )
+                        if subsystem[0] == 'qubit' and subsystem[1] >= self.physical_model.n_qubits:
+                            raise ValueError(
+                                f"Custom interaction of {config.name} involves qubit {subsystem[1]}, but only {self.physical_model.n_qubits} qubits in system"
+                            )
+            if config.initial_state is not None:
+                if config.initial_state.cavity_states is not None:
+                    for (index, state) in config.initial_state.cavity_states.items():
+                        if not 0 <= index < self.physical_model.n_cavities:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies cavity state for cavity {index}, but only {self.physical_model.n_cavities} cavities in system. Indexing starts from 0."
+                            )
+                        if state.state_type == InitialStateType.FOCK and state.parameters["n"] >= self.physical_model.cavity_levels[index]:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for cavity {index}, but cavity truncation level is {self.physical_model.cavity_levels[index]}. Valid n values are 0 to {self.physical_model.cavity_levels[index]-1}."
+                            )
+                        if state.state_type == InitialStateType.COHERENT and abs(state.parameters["alpha"]) >= np.sqrt(self.physical_model.cavity_levels[index]):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for cavity {index}, which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}. Consider increasing cavity_levels or reducing alpha for more accurate simulations.",
+                                UserWarning,
+                            )
+                        if state.state_type == InitialStateType.THERMAL and state.parameters["n_avg"] >= np.sqrt(self.physical_model.cavity_levels[index]):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies THERMAL state with n_avg={state.parameters['n_avg']} for cavity {index}, which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}. Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
+                                UserWarning,
+                            )
 
-        names = [config.name for config in self.configuration_set]  
+                if config.initial_state.field_states is not None:
+                    for (index, state) in config.initial_state.field_states.items():
+                        if not 0 <= index < self.physical_model.n_fields:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies field state for field mode {index}, but only {self.physical_model.n_fields} field modes in system. Indexing starts from 0."
+                            )
+                        if state.state_type == InitialStateType.FOCK and state.parameters["n"] >= self.physical_model.field_levels[index]:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for field mode {index}, but field truncation level is {self.physical_model.field_levels[index]}. Valid n values are 0 to {self.physical_model.field_levels[index]-1}."
+                            )
+                        if state.state_type == InitialStateType.COHERENT and abs(state.parameters["alpha"]) >= np.sqrt(self.physical_model.field_levels[index]):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for field mode {index}, which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}. Consider increasing field_levels or reducing alpha for more accurate simulations.",
+                                UserWarning,
+                            )
+                        if state.state_type == InitialStateType.THERMAL and state.parameters["n_avg"] >= np.sqrt(self.physical_model.field_levels[index]):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies THERMAL state with n_avg={state.parameters['n_avg']} for field mode {index}, which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}. Consider increasing field_levels or reducing n_avg for more accurate simulations.",
+                                UserWarning,
+                            )
+
+                if config.initial_state.density_matrix is not None:
+                    dim = math.prod(self.physical_model.cavity_levels) * math.prod(self.physical_model.field_levels)
+                    if config.initial_state.density_matrix.shape != (dim, dim):
+                        raise ValueError(
+                            f"Initial state of {config.name} specifies a density matrix with shape {config.initial_state.density_matrix.shape}, but expected shape is ({dim}, {dim}) based on the physical model dimensions (only considers cavity and field modes)."
+                        )
+                else:
+                    if config.initial_state.cavity_states is not None:
+                        vacuum_cavity_idx = list(
+                            set(range(self.physical_model.n_cavities))
+                            - set(config.initial_state.cavity_states.keys())
+                        )
+                    else:
+                        vacuum_cavity_idx = list(range(self.physical_model.n_cavities))
+                        config.initial_state.cavity_states = {}
+                    if config.initial_state.field_states is not None:
+                        vacuum_field_idx = list(
+                            set(range(self.physical_model.n_fields))
+                            - set(config.initial_state.field_states.keys())
+                        )
+                    else:
+                        vacuum_field_idx = list(range(self.physical_model.n_fields))
+                        config.initial_state.field_states = {}
+
+                    for idx in vacuum_cavity_idx:
+                        config.initial_state.cavity_states[idx] = SubsystemState(
+                            state_type=InitialStateType.VACUUM
+                        )
+                    for idx in vacuum_field_idx:
+                        config.initial_state.field_states[idx] = SubsystemState(
+                            state_type=InitialStateType.VACUUM
+                        )
+
+        names = [config.name for config in self.configuration_set]
         if len(names) != len(set(names)):
             raise ValueError("All SystemConfiguration instances in configuration_set must have unique names")
-  
 
     # Direct access to commonly used parameters for easier integration
 
@@ -650,10 +835,7 @@ class ExperimentalParameters:
     @cavity_levels.setter
     def cavity_levels(self, value: Union[int, List[int]]) -> None:
         """Set cavity levels."""
-        self.physical_model.cavity_levels = value
-        # Re-normalize if necessary
-        if hasattr(self, "physical_model"):
-            self.physical_model._normalize_levels(self.physical_model.cavity_levels, self.n_cavities,"cavity")
+        self.physical_model.cavity_levels = self.physical_model._normalize_levels(value, self.n_cavities,"cavity")
 
     @property
     def field_levels(self) -> Union[int, List[int]]:
@@ -663,10 +845,7 @@ class ExperimentalParameters:
     @field_levels.setter
     def field_levels(self, value: Union[int, List[int]]) -> None:
         """Set field levels."""
-        self.physical_model.field_levels = value
-        # Re-normalize if necessary
-        if hasattr(self, "physical_model"):
-            self.physical_model._normalize_levels(self.physical_model.field_levels, self.n_fields,"field")
+        self.physical_model.field_levels = self.physical_model._normalize_levels(value, self.n_fields,"field")
 
     @property
     def qubit_levels(self) -> Union[int, List[int]]:
@@ -676,10 +855,7 @@ class ExperimentalParameters:
     @qubit_levels.setter
     def qubit_levels(self, value: Union[int, List[int]]) -> None:
         """Set qubit levels."""
-        self.physical_model.qubit_levels = value
-        # Re-normalize if necessary
-        if hasattr(self, "physical_model"):
-            self.physical_model._normalize_levels(self.physical_model.qubit_levels, self.n_qubits,"qubit")
+        self.physical_model.qubit_levels = self.physical_model._normalize_levels(value, self.n_qubits,"qubit")
     
     @property
     def interactions(self) -> List[Interaction]:
@@ -849,8 +1025,11 @@ class ExperimentalParameters:
         Args:
             name: Name of the system configuration to remove
         """
-        if name in self.configuration_set:
-            del self.configuration_set[name]
+        configuration_set = [cfg for cfg in self.configuration_set if cfg.name != name]
+        if configuration_set == self.configuration_set:
+            raise ValueError(f"No configuration with name '{name}' found to remove") 
+        else:
+            self.configuration_set = configuration_set
 
     def copy(self, **updates) -> "ExperimentalParameters":
         """
@@ -969,40 +1148,156 @@ class ExperimentalParameters:
         lines.append("SYSTEM DIMENSIONS")
 
         # Calculate total dimension
-        n_qubits = self.physical_constants.n_qubits
-        qubit_levels_list = self.system_dims.qubit_levels
-        if isinstance(qubit_levels_list, list):
-            qubit_dim = np.prod(qubit_levels_list)
-        else:
-            qubit_dim = qubit_levels_list
+        n_cavities = self.physical_model.n_cavities
+        n_fields = self.physical_model.n_fields
+        n_qubits = self.physical_model.n_qubits
+        qubit_levels_list = self.physical_model.qubit_levels
+        cavity_levels_list = self.physical_model.cavity_levels
+        field_levels_list = self.physical_model.field_levels
 
-        total_dim = self.system_dims.cavity_levels * qubit_dim * self.system_dims.field_levels
+        qubit_dim = int(np.prod(qubit_levels_list))
+        cavity_dim = int(np.prod(cavity_levels_list))
+        field_dim = int(np.prod(field_levels_list))
+
+        total_dim = cavity_dim * qubit_dim * field_dim
+        lines.append(f"  Number of cavities:   {n_cavities:>6}")
+        lines.append(f"  Number of fields:     {n_fields:>6}")
         lines.append(f"  Number of qubits:     {n_qubits:>6}")
-        lines.append(f"  Cavity levels:        {self.system_dims.cavity_levels:>6}")
-        lines.append(f"  Qubit levels:         {self.system_dims.qubit_levels}")
-        lines.append(f"  Field levels:         {self.system_dims.field_levels:>6}")
+        lines.append(f"  Cavity levels:        {cavity_levels_list}")
+        lines.append(f"  Qubit levels:         {qubit_levels_list}")
+        lines.append(f"  Field levels:         {field_levels_list}")
         lines.append(f"  Total dimension:      {total_dim:>6}")
 
-        # Physical Constants Group
-        lines.append("PHYSICAL CONSTANTS")
-        lines.append(f"  Chi:                  {self.physical_constants.chi}")
-        lines.append(
-            f"  Photon cavity coupling: {self.physical_constants.photon_cavity_coupling:>6.4f}"
-        )
-        lines.append(f"  Inverse pulse width:  {self.physical_constants.inverse_pulse_width:>8.4f}")
+        def format_subsystem(subsystem: Tuple[str, int]) -> str:
+            return f"{subsystem[0]}{subsystem[1]}"
 
-        # Qubit Interactions
-        if self.physical_constants.qubit_interactions:
-            lines.append(
-                f"  Qubit interactions:   {len(self.physical_constants.qubit_interactions)} interaction(s)"
+        def format_params(parameters: Any) -> str:
+            if isinstance(parameters, dict):
+                if not parameters:
+                    return "no parameters"
+                items = sorted(parameters.items(), key=lambda item: str(item[0]))
+                return ", ".join(f"{key}={value}" for key, value in items)
+            return f"value={parameters}"
+
+        def format_interaction_name(interaction: Interaction) -> str:
+            return (
+                f"{interaction.interaction_type.value} "
+                f"{format_subsystem(interaction.subsystem1)}-"
+                f"{format_subsystem(interaction.subsystem2)}"
             )
-            for i, interaction in enumerate(self.physical_constants.qubit_interactions):
-                lines.append(
-                    f"    [{i}] Qubits {interaction.qubit_indices}: "
-                    f"{interaction.interaction_type.value}, χ={interaction.chi:.4f}"
-                )
+
+        def format_interaction(interaction: Interaction) -> str:
+            return f"{format_interaction_name(interaction)}: {format_params(interaction.parameters)}"
+
+        def format_subsystem_state(state: Any) -> str:
+            if state is None:
+                return "None"
+            if not isinstance(state, SubsystemState):
+                return f"invalid_state={state}"
+            params = "no parameters" if state.parameters is None else format_params(state.parameters)
+            return f"{state.state_type.value}: {params}"
+
+        def interaction_key(interaction: Interaction) -> Tuple[str, Tuple[str, int], Tuple[str, int]]:
+            return (
+                interaction.interaction_type.value,
+                interaction.subsystem1,
+                interaction.subsystem2,
+            )
+
+        def parameter_signature(parameters: Any) -> Tuple[Any, ...]:
+            if isinstance(parameters, dict):
+                items = sorted(parameters.items(), key=lambda item: str(item[0]))
+                return tuple((str(key), repr(value)) for key, value in items)
+            return ("value", repr(parameters))
+
+        def append_grouped_interactions(grouped_interactions: List[Interaction], base_indent: str) -> None:
+            by_cavity: Dict[int, List[Tuple[int, Interaction]]] = {}
+            by_qubit: Dict[int, List[Tuple[int, Interaction]]] = {}
+            by_field: Dict[int, List[Tuple[int, Interaction]]] = {}
+            no_cavity: List[Tuple[int, Interaction]] = []
+            indexed_interactions = list(enumerate(grouped_interactions))
+            assigned: Set[int] = set()
+
+            for index, interaction in indexed_interactions:
+                types = {interaction.subsystem1[0], interaction.subsystem2[0]}
+                if "cavity" in types:
+                    cavity_indices = [
+                        idx
+                        for subsystem_type, idx in [interaction.subsystem1, interaction.subsystem2]
+                        if subsystem_type == "cavity"
+                    ]
+                    cavity_index = min(cavity_indices)
+                    by_cavity.setdefault(cavity_index, []).append((index, interaction))
+                    assigned.add(index)
+                else:
+                    no_cavity.append((index, interaction))
+
+            for index, interaction in no_cavity:
+                if index in assigned:
+                    continue
+                types = {interaction.subsystem1[0], interaction.subsystem2[0]}
+                if "qubit" in types:
+                    qubit_indices = [
+                        idx
+                        for subsystem_type, idx in [interaction.subsystem1, interaction.subsystem2]
+                        if subsystem_type == "qubit"
+                    ]
+                    qubit_index = min(qubit_indices)
+                    by_qubit.setdefault(qubit_index, []).append((index, interaction))
+                    assigned.add(index)
+                else:
+                    field_indices = [
+                        idx
+                        for subsystem_type, idx in [interaction.subsystem1, interaction.subsystem2]
+                        if subsystem_type == "field"
+                    ]
+                    if field_indices:
+                        field_index = min(field_indices)
+                        by_field.setdefault(field_index, []).append((index, interaction))
+                        assigned.add(index)
+
+            if by_cavity:
+                lines.append(f"{base_indent}By cavity:")
+                for cavity_index in sorted(by_cavity):
+                    lines.append(f"{base_indent}  Cavity {cavity_index}:")
+                    for _, interaction in by_cavity[cavity_index]:
+                        lines.append(f"{base_indent}    {format_interaction(interaction)}")
+
+            if by_qubit:
+                lines.append(f"{base_indent}By qubit:")
+                for qubit_index in sorted(by_qubit):
+                    lines.append(f"{base_indent}  Qubit {qubit_index}:")
+                    for _, interaction in by_qubit[qubit_index]:
+                        lines.append(f"{base_indent}    {format_interaction(interaction)}")
+
+            if by_field:
+                lines.append(f"{base_indent}By field:")
+                for field_index in sorted(by_field):
+                    lines.append(f"{base_indent}  Field {field_index}:")
+                    for _, interaction in by_field[field_index]:
+                        lines.append(f"{base_indent}    {format_interaction(interaction)}")
+
+        # Physical Model Interactions
+        lines.append("PHYSICAL MODEL")
+        interactions = list(self.physical_model.interactions)
+        if not interactions:
+            lines.append("  Interactions:         None")
         else:
-            lines.append("  Qubit interactions:   None")
+            lines.append(f"  Interactions:         {len(interactions)} interaction(s)")
+            static_interactions = [
+                interaction for interaction in interactions if interaction.time_modulation is None
+            ]
+            time_dependent_interactions = [
+                interaction for interaction in interactions if interaction.time_modulation is not None
+            ]
+
+            if static_interactions:
+                lines.append("  Static interactions:")
+                append_grouped_interactions(static_interactions, "    ")
+
+            if time_dependent_interactions:
+                lines.append("  Time-dependent interactions:")
+                append_grouped_interactions(time_dependent_interactions, "    ")
 
         # Measurement Protocol Group
         lines.append("MEASUREMENT PROTOCOL")
@@ -1030,10 +1325,9 @@ class ExperimentalParameters:
             lines.append(f"  Initial time uncertainty: {uncertainty_value:>8.4f}")
             if isinstance(self.measurement.initial_time_uncertainty, str):
                 lines.append(f"    (specified as '{self.measurement.initial_time_uncertainty}')")
-        # Initial State Configuration Group
-        lines.append("INITIAL STATE")
-        lines.append(f"  Type:                 {self.initial_state.state_type.value}")
-
+        lines.append(
+            f"  Single measurement uncertainty: {self.measurement.single_measurement_uncertainty}"
+        )
         # Noise Configuration Group
         lines.append("NOISE MODEL")
         lines.append(f"  Depolarizing rate:    {self.noise_model.depolarizing}")
@@ -1045,15 +1339,84 @@ class ExperimentalParameters:
         else:
             lines.append("  Custom operators:     None")
 
+        # Configuration Set Group
+        lines.append("CONFIGURATIONS")
+        lines.append(f"  Count:                {len(self.configuration_set)}")
+        interaction_param_variants: Dict[Tuple[str, Tuple[str, int], Tuple[str, int]], Set[Tuple[Any, ...]]] = {}
+        for config in self.configuration_set:
+            for interaction in config.interactions or []:
+                key = interaction_key(interaction)
+                interaction_param_variants.setdefault(key, set()).add(
+                    parameter_signature(interaction.parameters)
+                )
+
+        for i, config in enumerate(self.configuration_set):
+            has_noise = "yes" if config.noise_model is not None else "no"
+            interactions = config.interactions or []
+            
+            cavity_states_count = len(config.initial_state.cavity_states or {})
+            field_states_count = len(config.initial_state.field_states or {})
+            has_density_matrix = "yes" if config.initial_state.density_matrix is not None else "no"
+
+            lines.append(
+                f"    [{i}] {config.name}: noise_override={has_noise}, interactions={len(interactions)}, "
+                f"cavity_states={cavity_states_count}, field_states={field_states_count}, "
+                f"density_matrix={has_density_matrix}"
+            )
+            if config.initial_state is None:
+                lines.append("      Initial state: None")
+            else:
+                density_matrix_present = config.initial_state.density_matrix is not None
+                cavity_header = "      Cavity states:"
+                field_header = "      Field states:"
+                if density_matrix_present:
+                    cavity_header = "      Cavity states (ignored due to density matrix):"
+                    field_header = "      Field states (ignored due to density matrix):"
+                lines.append(cavity_header)
+                if config.initial_state.cavity_states:
+                    for index in sorted(config.initial_state.cavity_states):
+                        state = config.initial_state.cavity_states[index]
+                        lines.append(f"        Cavity {index}: {format_subsystem_state(state)}")
+                else:
+                    lines.append("        None")
+
+                lines.append(field_header)
+                if config.initial_state.field_states:
+                    for index in sorted(config.initial_state.field_states):
+                        state = config.initial_state.field_states[index]
+                        lines.append(f"        Field {index}: {format_subsystem_state(state)}")
+                else:
+                    lines.append("        None")
+
+                if config.initial_state.density_matrix is not None:
+                    lines.append(
+                        f"      Density matrix: shape={config.initial_state.density_matrix.shape} (overrides cavity/field states)"
+                    )
+                else:
+                    lines.append("      Density matrix: None")
+            if interactions:
+                lines.append("      Interactions:")
+                for interaction in interactions:
+                    name = format_interaction_name(interaction)
+                    key = interaction_key(interaction)
+                    param_variants = interaction_param_variants.get(key, set())
+                    if len(param_variants) > 1:
+                        lines.append(f"        {name}: {format_params(interaction.parameters)}")
+                    else:
+                        lines.append(f"        {name}")
+
         # Overall System Status
         lines.append("SYSTEM STATUS")
 
         try:
-            self._validate_configuration()
+            self._validate_experimental_parameters()
             lines.append("  Configuration:        VALID")
-        except ValueError as e:
+        except Exception as exc:
             lines.append("  Configuration:        INVALID")
-            lines.append(f"  Error:                {str(e)}")
+            lines.append(f"  Error:                {str(exc)}")
+
+        lines.append("RANDOM SEED")
+        lines.append(f"  Seed:                 {self.random_seed}")
 
         return "\n".join(lines)
 
