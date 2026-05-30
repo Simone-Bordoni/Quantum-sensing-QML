@@ -32,35 +32,47 @@ class InitialStateType(Enum):
 
 
 class InteractionType(Enum):
-    """Enumeration of supported qubit-qubit interaction types."""
+    """Enumeration of supported interaction types."""
 
+    DETUNING = "detuning" # detuning of cavity, field or qubit frequencies from reference frequency
+    DRIVE = 'drive' # external drive on cavity or field modes
+    INPUT_OUTPUT = "input_output" # input-output coupling between a cavity/field and the environment (e.g., for open system dynamics)
+
+    COUPLING = "coupling" # coupling between cavities and fields
+
+    # qubit-qubit interactions
     ZZ = "sz-sz"  # σz ⊗ σz interaction
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
+
+    DISPERSIVE = "dispersive" # dispersive coupling between qubits and cavities/fields
+    JAYNES_CUMMINGS = "jaynes-cummings" # Jaynes-Cummings interaction between qubits and cavities/fields (not implemented yet)
+
 
 class Interaction:
     """
     Configuration for interaction between subsystems.
 
     Attributes:
-        subsystem1: Tuple of type (string) and index (int) of the first subsystem involved in the interaction (e.g., ('qubit', 3))
-        subsystem2: Tuple[str,int] of type (string) and index (int) of the second subsystem involved in the interaction (e.g., ('cavity', 1))
         interaction_type: InteractionType (ZZ, jaynes_cummings, etc.)
+        subsystem1: Tuple of type (string) and index (int) of the first subsystem involved in the interaction (e.g., ('qubit', 3))
+        subsystem2: Optional[Tuple[str,int]] of type (string) and index (int) of the second subsystem involved in the interaction (e.g., ('cavity', 1))
         parameters: Dict[str, Any] of interaction parameters or float
+        time_modulation: Optional[Callable[[float], float]] function of time that modulates the interaction strength (e.g., for time-dependent interactions)
     """
 
     def __init__(
         self,
-        subsystem1: Tuple[str, int],
-        subsystem2: Tuple[str, int],
         interaction_type: InteractionType,
+        subsystem1: Tuple[str, int],
+        subsystem2: Optional[Tuple[str, int]] = None,
         parameters: Optional[Union[Dict[str, Any], float, complex]] = 1.0,
         time_modulation: Optional[Callable[[float], float]] = None,
     ):
 
+        self.interaction_type = interaction_type
         self.subsystem1 = subsystem1
         self.subsystem2 = subsystem2
-        self.interaction_type = interaction_type
         self.parameters = parameters
         self.time_modulation = time_modulation
 
@@ -72,13 +84,13 @@ class Interaction:
         # Validate subsystem specifications
         if self.subsystem1 == self.subsystem2:
             raise ValueError("subsystem1 and subsystem2 must refer to different subsystems")
-        if self.subsystem1[1] < 0 or self.subsystem2[1] < 0:
+        if self.subsystem1[1] < 0 or (self.subsystem2 is not None and self.subsystem2[1] < 0):
             raise ValueError("Subsystem indices must be non-negative")
-        if not (self.subsystem1[0] in ['qubit', 'cavity', 'field'] and self.subsystem2[0] in ['qubit', 'cavity', 'field']):
+        if not (self.subsystem1[0] in ['qubit', 'cavity', 'field'] and (self.subsystem2 is None or self.subsystem2[0] in ['qubit', 'cavity', 'field'])):
             raise ValueError("Subsystem types must be 'qubit', 'cavity', or 'field'")
         
         # Ensure canonical ordering (sort by type and then index)
-        if (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
+        if self.subsystem2 is not None and (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
             self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
 
         # Validate time modulation function
@@ -98,6 +110,9 @@ class Interaction:
         # Validate different interaction types
         if self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
             self._validate_qubit_qubit_interaction()
+        
+        elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
+            raise NotImplementedError("Jaynes-Cummings interaction is not implemented yet. Please use supported interactions or implement JC interaction validation and parameter handling.")
 
         else:
             raise NotImplementedError(f"Interaction type {self.interaction_type} is not supported yet. The following interactions are implemented:\n\
@@ -107,7 +122,7 @@ class Interaction:
         """Validate parameters for qubit-qubit interactions."""
         
         if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
-            raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits")
+            raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits, but got {self.subsystem1} and {self.subsystem2}")
         elif isinstance(self.parameters, (int, float)):
             self.parameters = {"chi": self.parameters}
         elif not isinstance(self.parameters, dict):
@@ -1028,6 +1043,22 @@ class ExperimentalParameters:
         self.random_seed = value
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
+
+    @property
+    def interactions(self) -> List[Interaction]:
+        """Direct access to interactions from the physical model."""
+        return self.physical_model.interactions
+    
+    def add_interaction(self, interaction: Interaction) -> None:
+        """
+        Add a new interaction to the physical model.
+
+        Args:
+            interaction: Interaction instance to add
+        """
+        if not isinstance(interaction, Interaction):
+            raise TypeError("interaction must be an Interaction instance")
+        self.physical_model.interactions.append(interaction)
 
     def get_configuration(self, name: str) -> Optional[SystemConfiguration]:
         """

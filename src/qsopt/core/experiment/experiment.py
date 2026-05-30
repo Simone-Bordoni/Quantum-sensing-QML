@@ -333,13 +333,19 @@ class Experiment:
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
 
-        
-
-        # Extract coupling constants
-        gm = self.experimental_params.photon_cavity_coupling
-        chi_list = self.experimental_params.chi  # List of [chi1, chi2, ... , chin]
-        sigma = self.experimental_params.inverse_pulse_width
+        n_cavities = self.experimental_params.n_cavities
+        n_fields = self.experimental_params.n_fields
         n_qubits = self.experimental_params.n_qubits
+
+        cavity_levels = self.experimental_params.cavity_levels
+        field_levels = self.experimental_params.field_levels
+        qubit_levels = self.experimental_params.qubit_levels
+
+        interaction_list = self.experimental_params.interactions()
+
+        for interaction in interaction_list:
+
+            if interaction.interaction_type == InteractionType.ZZ:
 
         # Extract individual chi values for each qubit
         # Type narrowing: chi is always a list for two-qubit experiments
