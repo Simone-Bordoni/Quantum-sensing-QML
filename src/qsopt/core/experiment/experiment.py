@@ -254,9 +254,9 @@ class Experiment:
         n_qubits = self.experimental_params.n_qubits
 
         # Generate system operators using utility function
-        # Note: `generate_system_operators` expects (n_cavities, n_fields, n_qubits, field_levels, cavity_levels, qubit_levels)
+        # Note: `generate_system_operators` expects (n_cavities, n_fields, n_qubits, cavity_levels, field_levels, qubit_levels)
         self.operators = generate_system_operators(
-            n_cavities, n_fields, n_qubits, field_levels, cavity_levels, qubit_levels
+            n_cavities, n_fields, n_qubits, cavity_levels, field_levels, qubit_levels
         )
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
@@ -318,9 +318,9 @@ class Experiment:
         return H_interaction
 
 
-    def _generate_fock_hamiltonian(self) -> None:
+    def _generate_hamiltonian(self) -> None:
         """
-        Generate Hamiltonian for n-qubit system.
+        Generate Hamiltonian for the system.
 
         Creates:
         1. Time-dependent cavity-field coupling: H_cavity = (i/2)√γ (a_in† a - a_in a†) g(t)
@@ -332,6 +332,8 @@ class Experiment:
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
+
+        
 
         # Extract coupling constants
         gm = self.experimental_params.photon_cavity_coupling

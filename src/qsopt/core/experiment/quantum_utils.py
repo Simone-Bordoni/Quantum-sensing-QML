@@ -70,7 +70,12 @@ def u0(t, **kwargs):
     return jnp.exp(-(dx**2))
 
 def generate_system_operators(
-    n_qubits: int, field_levels: int, cavity_levels: int, qubit_levels: Union[int, List[int]]
+    n_cavities: int,\
+    n_fields: int, \
+    n_qubits: int, \
+    cavity_levels: Union[int, List[int]], \
+    field_levels: Union[int, List[int]], \
+    qubit_levels: Union[int, List[int]]
 ) -> Dict[str, qt.Qobj]:
     """
     Generate operators for an n-qubit composite system.
@@ -101,7 +106,32 @@ def generate_system_operators(
             * roty: Simultaneous Y-rotation on all qubits
         - Identity operators: I_field, I_cavity, I_q (for composite space construction)
     """
-    # Handle qubit_levels as list or int
+    # Handle levels as list or int
+    # Cavities
+    if isinstance(cavity_levels, int):
+        c_levels = [cavity_levels] * n_cavities
+    elif isinstance(cavity_levels, list):
+        if len(cavity_levels) != n_cavities:
+            raise ValueError(
+                f"cavity_levels list must have n_cavities={n_cavities} elements, got {len(cavity_levels)}"
+            )
+        c_levels = cavity_levels
+    else:
+        raise TypeError(f"cavity_levels must be int or list, got {type(cavity_levels)}")
+
+    # Fields
+    if isinstance(field_levels, int):
+        f_levels = [field_levels] * n_fields
+    elif isinstance(field_levels, list):
+        if len(field_levels) != n_fields:
+            raise ValueError(
+                f"field_levels list must have n_fields={n_fields} elements, got {len(field_levels)}"
+            )
+        f_levels = field_levels
+    else:
+        raise TypeError(f"field_levels must be int or list, got {type(field_levels)}")
+        
+    # Qubits
     if isinstance(qubit_levels, int):
         q_levels = [qubit_levels] * n_qubits
     elif isinstance(qubit_levels, list):
@@ -115,16 +145,15 @@ def generate_system_operators(
 
     # Generate operators with JAX backend for autodiff compatibility
     with qt.CoreOptions(default_dtype="jax"):
+
         # Identity operators for each subsystem
-        I_field = qt.identity(field_levels)
-        I_cavity = qt.identity(cavity_levels)
+        I_c = [qt.identity(level) for level in c_levels]
+        I_f = [qt.identity(level) for level in f_levels]
+        I_q = [qt.identity(q_levels[i]) for i in range(n_qubits)]
 
         # Individual subsystem operators
-        a_field = qt.destroy(field_levels)  # Field annihilation
-        a_cavity = qt.destroy(cavity_levels)  # Cavity annihilation
-
-        # Lists of qubits operators
-        I_q = [qt.identity(q_levels[i]) for i in range(n_qubits)]
+        a_c = [qt.destroy(level) for level in c_levels]  # Cavity annihilation
+        a_f = [qt.destroy(level) for level in f_levels]  # Field annihilation
         sigma_z = [qt.sigmaz() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "z") for i in range(n_qubits)]
         sigma_x = [qt.sigmax() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "x") for i in range(n_qubits)]
         sigma_y = [qt.sigmay() if q_levels[i] == 2 else qt.jmat(q_levels[i] - 1, "y") for i in range(n_qubits)]
@@ -142,28 +171,38 @@ def generate_system_operators(
         # Projectors for all 2^n qubit states (joint projectors)
         Ptemp = [P0,P1]
         all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]            
-        P_all = [qt.tensor([I_field, I_cavity] + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
+        P_all = [qt.tensor(I_c + I_f + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
             
         # Reset operators, individual qubits and global reset
         reset_q = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
-        reset_all = qt.tensor([I_field, I_cavity]+ reset_q)
+        reset_all = qt.tensor(I_c + I_f + reset_q)
         measure_reset = [reset_all*p for p in P_all]
         measure_reset_dag = [x.dag() for x in measure_reset]
 
-        # Helper function to embed single-qubit operator in composite space
+        # Helper functions to embed subsystem operators in composite space
+        def embed_cavity_op(op, cavity_idx):
+            """Embed operator acting on cavity cavity_idx into full composite space."""
+            ops_list = I_c[:cavity_idx] + [op] + I_c[cavity_idx+1:] + I_f + I_q
+            return qt.tensor(ops_list)
+        
+        def embed_field_op(op, field_idx):
+            """Embed operator acting on field field_idx into full composite space."""
+            ops_list = I_c + I_f[:field_idx] + [op] + I_f[field_idx+1:] + I_q
+            return qt.tensor(ops_list)
+        
         def embed_qubit_op(op, qubit_idx):
             """Embed operator acting on qubit qubit_idx into full composite space."""
-            ops_list = [I_field, I_cavity] + I_q[:qubit_idx] + [op] + I_q[qubit_idx+1:]
+            ops_list = I_c + I_f + I_q[:qubit_idx] + [op] + I_q[qubit_idx+1:]
             return qt.tensor(ops_list)
 
         # Embed operators in composite space (input_field ⊗ cavity ⊗ qubits)
         operators = {
-            # Input field operators
-            "a_in": qt.tensor([a_field, I_cavity] + I_q),
-            "a_in_dag": qt.tensor([a_field.dag(), I_cavity] + I_q),
             # Resonator cavity operators
-            "a": qt.tensor([I_field, a_cavity]+I_q),
-            "a_dag": qt.tensor([I_field, a_cavity.dag()]+I_q),
+            "a_c":[embed_cavity_op(a_c[i], i) for i in range(n_cavities)],
+            "a_c_dag": [embed_cavity_op(a_c[i].dag(), i) for i in range(n_cavities)],
+            # Input field operators
+            "a_f": [embed_field_op(a_f[i], i) for i in range(n_fields)],
+            "a_f_dag": [embed_field_op(a_f[i].dag(), i) for i in range(n_fields)],
             # Lists of qubits operators
             "sigma_z": [embed_qubit_op(sigma_z[i], i) for i in range(n_qubits)],
             "sigma_x": [embed_qubit_op(sigma_x[i], i) for i in range(n_qubits)],
@@ -174,7 +213,7 @@ def generate_system_operators(
             "P0_q": [embed_qubit_op(P0[i], i) for i in range(n_qubits)],
             "P1_q": [embed_qubit_op(P1[i], i) for i in range(n_qubits)],
             # Global qubit projectors
-            "P_all0": qt.tensor([I_field, I_cavity] + P0),  # Joint projector onto |00...0⟩
+            "P_all0": qt.tensor(I_c + I_f + P0),  # Joint projector onto |00...0⟩
             "P_all": P_all,  # List of all joint projectors for 2^n states
             # Reset operators
             "reset_q": reset_q, 
@@ -183,10 +222,10 @@ def generate_system_operators(
             "measure_reset_dag": measure_reset_dag,
             # Rotation operators (Y-rotation by π/2, can be applied independently)
             "roty_q": [embed_qubit_op(rot_single, i) for i in range(n_qubits)],
-            "roty": qt.tensor([I_field, I_cavity] + [rot_single]*n_qubits),  # Simultaneous Ry on all qubits
+            "roty": qt.tensor(I_c + I_f + [rot_single]*n_qubits),  # Simultaneous Ry on all qubits
             # Identity operators for reference
-            "I_field": I_field,
-            "I_cavity": I_cavity,
+            "I_c": I_c,
+            "I_f": I_f,
             "I_q": I_q,
         }
 
