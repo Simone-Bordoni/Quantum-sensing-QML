@@ -236,9 +236,9 @@ class Experiment:
         """
         Generate operators for n-qubit system.
 
-        Creates operators in composite Hilbert space:
-        input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
-
+        Operators live in the composite Hilbert space ordered as:
+        (cavity_1..M) ⊗ (field_1..L) ⊗ (qubit_1..N)
+    
         Operators include:
         - Field and cavity creation/annihilation operators
         - Individual qubit Pauli operators (σx, σy, σz) for each qubit
@@ -246,15 +246,17 @@ class Experiment:
         - Individual qubit projectors based on detection criterion
         """
         # Get system dimensions
-        field_levels = self.experimental_params.field_levels
         cavity_levels = self.experimental_params.cavity_levels
+        field_levels = self.experimental_params.field_levels
         qubit_levels = self.experimental_params.qubit_levels
+        n_cavities = self.experimental_params.n_cavities
+        n_fields = self.experimental_params.n_fields
         n_qubits = self.experimental_params.n_qubits
 
-        # Generate n-qubit operators using utility function
-        # Note: `generate_system_operators` expects (n_qubits, field_levels, cavity_levels, qubit_levels)
+        # Generate system operators using utility function
+        # Note: `generate_system_operators` expects (n_cavities, n_fields, n_qubits, field_levels, cavity_levels, qubit_levels)
         self.operators = generate_system_operators(
-            n_qubits, field_levels, cavity_levels, qubit_levels
+            n_cavities, n_fields, n_qubits, field_levels, cavity_levels, qubit_levels
         )
 
     def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
