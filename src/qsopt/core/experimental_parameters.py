@@ -39,8 +39,8 @@ class InteractionType(Enum):
     DRIVE = 'drive' # external drive on cavity or field modes
 
     # cavity-field, cavity-cavity
-    COUPLING = "coupling" # coupling between cavities and fields
-    INPUT_OUTPUT = "input_output" # input-output coupling between a cavity/field and the environment (e.g., for open system dynamics)
+    COUPLING = "coupling" # coupling between cavities
+    INPUT_OUTPUT = "input_output" # input-output coupling between a cavity and an input field (e.g., for open system dynamics)
 
     # qubit-cavity, qubit-field
     DISPERSIVE = "dispersive" # dispersive coupling between qubits and cavities/fields
@@ -122,10 +122,11 @@ class Interaction:
             if self.interaction_type == InteractionType.DRIVE:
                 self._validate_drive_interaction()
 
-        elif self.interaction_type in {InteractionType.COUPLING, InteractionType.INPUT_OUTPUT}:
-            if self.subsystem1[0] != 'cavity':
-                raise ValueError(f"{self.interaction_type.value} interaction must involve a cavity subsystem as subsystem1, but got {self.subsystem1}")
-            self._validate_cavity_field_interactions()
+        elif self.interaction_type == InteractionType.COUPLING:
+           self._validate_coupling_interaction()
+        
+        elif self.interaction_type == InteractionType.INPUT_OUTPUT:
+            self._validate_input_output_interaction()
 
         
         elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
@@ -138,7 +139,9 @@ class Interaction:
     def _validate_qubit_qubit_interaction(self):
         """Validate parameters for qubit-qubit interactions."""
         
-        if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
+        if self.subsystem1 is None or self.subsystem2 is None:
+            raise ValueError(f"{self.interaction_type.value} interaction must specify both subsystems, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+        elif self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
             raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits, but got {self.subsystem1} and {self.subsystem2}")
         elif isinstance(self.parameters, (int, float)):
             self.parameters = {"chi": self.parameters}
@@ -218,37 +221,84 @@ class Interaction:
                 UserWarning,
             )
 
-    def _validate_cavity_field_interactions(self):
+    def _validate_coupling_interaction(self):
 
-        if self.interaction_type == InteractionType.COUPLING:
-            if self.subsystem2 is None or self.subsystem2[0] != 'cavity':
-                raise ValueError(f"Coupling interaction must involve two cavity subsystems, but subsystem2 is {self.subsystem2}")
-            if isinstance(self.parameters, (int, float, complex)):
-                self.parameters = {"gamma": self.parameters}
-            elif not isinstance(self.parameters, dict):
-                raise TypeError(
-                    "Parameters for coupling interaction must be a float, a complex or a dict with 'gamma' key"
-                )
-            elif "gamma" not in self.parameters:
-                raise ValueError(
-                    "Parameters for coupling interaction must include 'gamma' key for coupling strength"
-                )
-            elif not isinstance(self.parameters["gamma"], (int, float, complex)):
-                raise TypeError("Coupling strength (gamma) must be a numeric value, float or complex")
-            
-            self.parameters["gamma"] = complex(self.parameters["gamma"])
+        if self.subsystem1 is None or self.subsystem2 is None:
+            raise ValueError(f"Coupling interaction must involve two cavity subsystems, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+        elif self.subsystem1[0] != 'cavity' or self.subsystem2[0] != 'cavity':
+            raise ValueError(f"Coupling interaction must involve two cavity subsystems, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+        
+        if isinstance(self.parameters, (int, float, complex)):
+            self.parameters = {"gamma": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                "Parameters for coupling interaction must be a float, a complex or a dict with 'gamma' key"
+            )
+        elif "gamma" not in self.parameters:
+            raise ValueError(
+                "Parameters for coupling interaction must include 'gamma' key for coupling strength"
+            )
+        elif not isinstance(self.parameters["gamma"], (int, float, complex)):
+            raise TypeError("Coupling strength (gamma) must be a numeric value, float or complex")
+        
+        self.parameters["gamma"] = complex(self.parameters["gamma"])
 
-            if self.parameters["gamma"] == 0:
-                warnings.warn(
-                    f"Coupling strength (gamma) is zero for subsystems {self.subsystem1} and {self.subsystem2}. This means no coupling between these subsystems, which may be intentional but should be double-checked.",
-                    UserWarning,
-                )
+        if self.parameters["gamma"] == 0:
+            warnings.warn(
+                f"Coupling strength (gamma) is zero for subsystems {self.subsystem1} and {self.subsystem2}. This means no coupling between these subsystems, which may be intentional but should be double-checked.",
+                UserWarning,
+            )
 
-        elif self.interaction_type == InteractionType.INPUT_OUTPUT:
-            if self.subsystem2 is None or self.subsystem2[0] != 'field':
-                raise ValueError(f"Input-output interaction must involve a cavity subsystem and a field subsystem, but subsystem2 is {self.subsystem2}")
-            
+    def _validate_input_output_interaction(self):
 
+        if self.subsystem1 is None or self.subsystem2 is None:
+            raise ValueError(f"Input-output interaction must involve a cavity and a field subsystem, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+        elif set([self.subsystem1[0], self.subsystem2[0]]) != {'cavity', 'field'}:
+            raise ValueError(f"Input-output interaction must involve a cavity subsystem and a field subsystem, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+
+        if isinstance(self.parameters, (int, float)):
+            self.parameters = {"kappa": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                "Parameters for input-output interaction must be a float or a dict with 'kappa' key for loss rate"
+            )
+        elif "kappa" not in self.parameters:
+            raise ValueError(
+                "Parameters dictionary for input-output interaction must include 'kappa' key for loss rate"
+            )
+        elif not isinstance(self.parameters["kappa"], (int, float)):
+            raise TypeError("Input-output loss rate (kappa) must be a numeric value, float")
+        
+        if "gamma" not in self.parameters and self.time_modulation is None:
+            raise ValueError(
+                "Input-output interaction wasn't provided with a 'gamma' coupling nor with a time modulation function."
+            )
+        elif "gamma" in self.parameters and not isinstance(self.parameters["gamma"], (int, float)):
+            raise TypeError("Input-output coupling strength (gamma) must be a numeric value, float")
+        elif "gamma" not in self.parameters and self.time_modulation is not None:
+            self.parameters["gamma"] = 1.0  # Default coupling strength for time-modulated input-output interaction if gamma not provided
+
+        self.parameters["kappa"] = float(self.parameters["kappa"])
+        self.parameters["gamma"] = float(self.parameters["gamma"])
+
+        if self.parameters["kappa"] == 0:
+            warnings.warn(
+                f"Input-output loss rate (kappa) is zero. This means no loss through this input-output channel, which may be intentional but should be double-checked.",
+                UserWarning,
+            )
+        elif self.parameters["kappa"] < 0:
+            raise ValueError(f"Input-output loss rate (kappa) must be >= 0, got {self.parameters['kappa']}")
+        
+        if self.parameters["gamma"] == 0:
+            warnings.warn(
+                f"Input-output coupling strength (gamma) is zero. This means no coupling between these subsystems, which may be intentional but should be double-checked.",
+                UserWarning,
+            )
+        elif self.parameters["gamma"] < 0:  
+            raise ValueError(f"Input-output coupling strength (gamma) must be >= 0, got {self.parameters['gamma']}")
+
+
+        
 
     def copy(self) -> "Interaction":
         """Return a copy with independent parameter storage."""
@@ -304,15 +354,16 @@ class PhysicalModel:
                 raise TypeError("All interactions must be Interaction instances")
             # Check that interactions are between valid subsystems
             for subsystem in [interaction.subsystem1, interaction.subsystem2]:
-                if subsystem[0] == 'cavity' and subsystem[1] >= self.n_cavities:
+                
+                if subsystem is not None and subsystem[0] == 'cavity' and subsystem[1] >= self.n_cavities:
                     raise ValueError(
                         f"Interaction involves cavity {subsystem[1]}, but only {self.n_cavities} cavities in system"
                     )
-                if subsystem[0] == 'field' and subsystem[1] >= self.n_fields:
+                if subsystem is not None and subsystem[0] == 'field' and subsystem[1] >= self.n_fields:
                     raise ValueError(
                         f"Interaction involves field mode {subsystem[1]}, but only {self.n_fields} field modes in system"
                     )
-                if subsystem[0] == 'qubit' and subsystem[1] >= self.n_qubits:
+                if subsystem is not None and subsystem[0] == 'qubit' and subsystem[1] >= self.n_qubits:
                     raise ValueError(
                         f"Interaction involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
                     )
@@ -904,20 +955,33 @@ class ExperimentalParameters:
                             raise ValueError(
                                 f"Initial state of {config.name} specifies cavity state for cavity {index}, but only {self.physical_model.n_cavities} cavities in system. Indexing starts from 0."
                             )
-                        if state.state_type == InitialStateType.FOCK and state.parameters["n"] >= self.physical_model.cavity_levels[index]:
-                            raise ValueError(
-                                f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for cavity {index}, but cavity truncation level is {self.physical_model.cavity_levels[index]}. Valid n values are 0 to {self.physical_model.cavity_levels[index]-1}."
-                            )
-                        if state.state_type == InitialStateType.COHERENT and abs(state.parameters["alpha"]) >= np.sqrt(self.physical_model.cavity_levels[index]):
-                            warnings.warn(
-                                f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for cavity {index}, which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}. Consider increasing cavity_levels or reducing alpha for more accurate simulations.",
-                                UserWarning,
-                            )
-                        if state.state_type == InitialStateType.THERMAL and state.parameters["n_avg"] >= np.sqrt(self.physical_model.cavity_levels[index]):
-                            warnings.warn(
-                                f"Initial state of {config.name} specifies THERMAL state with n_avg={state.parameters['n_avg']} for cavity {index}, which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}. Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
-                                UserWarning,
-                            )
+                        if state.state_type == InitialStateType.FOCK:
+                            n = state.parameters["n"]
+                            if self.physical_model.cavity_levels[index] < n:
+                                raise ValueError(
+                                    f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for cavity {index},\n\
+                                    but cavity truncation level is {self.physical_model.cavity_levels[index]}.\n\
+                                    Valid n values are 0 to {self.physical_model.cavity_levels[index]-1}, or raise the cavity_levels truncation parameter."
+                                )
+                            
+                        if state.state_type == InitialStateType.COHERENT:
+                            n_avg = pow(abs(state.parameters["alpha"]), 2)
+                            if self.physical_model.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
+                                warnings.warn(
+                                    f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for cavity {index},\n\
+                                    which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}.\n\
+                                    Consider increasing cavity_levels or reducing alpha for more accurate simulations.",
+                                    UserWarning,
+                                )
+                        if state.state_type == InitialStateType.THERMAL:
+                            n_avg = state.parameters["n_avg"]
+                            if self.physical_model.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
+                                warnings.warn(
+                                    f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for cavity {index},\n\
+                                    which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}.\n\
+                                    Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
+                                    UserWarning,
+                                )
 
                 if config.initial_state.field_states is not None:
                     for (index, state) in config.initial_state.field_states.items():
@@ -925,20 +989,32 @@ class ExperimentalParameters:
                             raise ValueError(
                                 f"Initial state of {config.name} specifies field state for field mode {index}, but only {self.physical_model.n_fields} field modes in system. Indexing starts from 0."
                             )
-                        if state.state_type == InitialStateType.FOCK and state.parameters["n"] >= self.physical_model.field_levels[index]:
-                            raise ValueError(
-                                f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for field mode {index}, but field truncation level is {self.physical_model.field_levels[index]}. Valid n values are 0 to {self.physical_model.field_levels[index]-1}."
-                            )
-                        if state.state_type == InitialStateType.COHERENT and abs(state.parameters["alpha"]) >= np.sqrt(self.physical_model.field_levels[index]):
-                            warnings.warn(
-                                f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for field mode {index}, which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}. Consider increasing field_levels or reducing alpha for more accurate simulations.",
-                                UserWarning,
-                            )
-                        if state.state_type == InitialStateType.THERMAL and state.parameters["n_avg"] >= np.sqrt(self.physical_model.field_levels[index]):
-                            warnings.warn(
-                                f"Initial state of {config.name} specifies THERMAL state with n_avg={state.parameters['n_avg']} for field mode {index}, which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}. Consider increasing field_levels or reducing n_avg for more accurate simulations.",
-                                UserWarning,
-                            )
+                        if state.state_type == InitialStateType.FOCK:
+                            n = state.parameters["n"]
+                            if self.physical_model.field_levels[index] < n:
+                                raise ValueError(
+                                    f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for field mode {index},\n\
+                                    but field truncation level is {self.physical_model.field_levels[index]}.\n\
+                                    Valid n values are 0 to {self.physical_model.field_levels[index]-1}, or raise the field_levels truncation parameter."
+                                )
+                        if state.state_type == InitialStateType.COHERENT:
+                            n_avg = pow(abs(state.parameters["alpha"]), 2)
+                            if self.physical_model.field_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
+                                warnings.warn(
+                                    f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for field mode {index},\n\
+                                    which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}.\n\
+                                    Consider increasing field_levels or reducing alpha for more accurate simulations.",
+                                    UserWarning,
+                                )
+                        if state.state_type == InitialStateType.THERMAL:
+                            n_avg = state.parameters["n_avg"]
+                            if self.physical_model.field_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
+                                warnings.warn(
+                                    f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for field mode {index},\n\
+                                    which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}.\n\
+                                    Consider increasing field_levels or reducing n_avg for more accurate simulations.",
+                                    UserWarning,
+                                )
 
                 if config.initial_state.density_matrix is not None:
                     dim = math.prod(self.physical_model.cavity_levels) * math.prod(self.physical_model.field_levels)

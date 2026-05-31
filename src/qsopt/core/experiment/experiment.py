@@ -344,12 +344,15 @@ class Experiment:
         interaction_list = self.experimental_params.interactions()
 
         H_tot = []
+        H_time_dependent = []
+        L_tot = []
 
         for interaction in interaction_list:
 
             type = interaction.interaction_type
             system1 = interaction.subsystem1[0]
             index1 = interaction.subsystem1[1]
+            t_func = interaction.time_modulation
 
             if type == InteractionType.DETUNING:
 
@@ -383,10 +386,39 @@ class Experiment:
 
                 H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
 
+            system2 = interaction.subsystem2[0]
+            index2 = interaction.subsystem2[1]
 
-            
+            if type == InteractionType.COUPLING:
 
-            H_tot.append(H_term)
+                gm = interaction.parameters["gamma"]
+
+                a1 = self.operators["a_c"][index1]
+                a1_dag = self.operators["a_c_dag"][index1]
+                a2 = self.operators["a_c"][index2]
+                a2_dag = self.operators["a_c_dag"][index2]
+
+                H_term = qt.Qobj( gm * (a1_dag * a2 + a1 * a2_dag))
+
+            if type == InteractionType.INPUT_OUTPUT:
+
+                k = interaction.parameters["kappa"]
+                gm = interaction.parameters["gamma"]
+
+                if system2 == 'cavity':
+                    system1, index1, system2, index2 = system2, index2, system1, index1
+
+                ac = self.operators["a_c"][index1]
+                ac_dag = self.operators["a_c_dag"][index1]
+                af = self.operators["a_f"][index2]
+                af_dag = self.operators["a_f_dag"][index2]
+
+                H_term = qt.Qobj(1j/2 * np.sqrt(k) * gm * (af_dag * ac - af * ac_dag))
+
+            if t_func is not None:
+                H_time_dependent.append([H_term, t_func])
+            else:
+                H_tot.append(H_term)
 
 
         # Extract individual chi values for each qubit
