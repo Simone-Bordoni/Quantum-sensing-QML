@@ -68,7 +68,7 @@ class Interaction:
         interaction_type: InteractionType,
         subsystem1: Tuple[str, int],
         subsystem2: Optional[Tuple[str, int]] = None,
-        parameters: Optional[Union[Dict[str, Any], float, complex]] = 1.0,
+        parameters: Optional[Union[Dict[str, Any], int, float, complex]] = 1.0,
         time_modulation: Optional[Callable[[float], float]] = None,
     ):
 
@@ -117,10 +117,10 @@ class Interaction:
             if self.subsystem2 is not None:
                 raise ValueError(f"Interaction type {self.interaction_type} is defined for single subsystems, but subsystem2 was provided: {self.subsystem2}")
             if self.interaction_type == InteractionType.DETUNING:
-                
-                
-            if self.interaction_type == InteractionType.DRIVE:
+                self._validate_detuning_interaction()
 
+            if self.interaction_type == InteractionType.DRIVE:
+                self._validate_drive_interaction()
 
         elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
             raise NotImplementedError("Jaynes-Cummings interaction is not implemented yet. Please use supported interactions or implement JC interaction validation and parameter handling.")
@@ -135,10 +135,10 @@ class Interaction:
         if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
             raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits, but got {self.subsystem1} and {self.subsystem2}")
         elif isinstance(self.parameters, (int, float)):
-            self.parameters = {"chi": self.parameters}
+            self.parameters = {"chi": float(self.parameters)}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
-                "Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' or 'strength' key"
+                "Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key"
             )
         elif "chi" not in self.parameters and "strength" not in self.parameters:
             raise ValueError(
@@ -149,7 +149,9 @@ class Interaction:
             warnings.warn("Using 'strength' value for 'chi'.", UserWarning)
             self.parameters["chi"] = self.parameters.pop("strength")
 
-        if self.parameters["chi"] < 0:
+        if not isinstance(self.parameters["chi"], (int, float)):
+            raise TypeError("Qubit interaction strength ('chi') must be a numeric value, float or int")
+        elif self.parameters["chi"] < 0:
             raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}")
         elif self.parameters["chi"] == 0:
             warnings.warn(
@@ -157,6 +159,60 @@ class Interaction:
                 "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
                 UserWarning,
                 )
+        if isinstance(self.parameters["chi"], int):
+            self.parameters["chi"] = float(self.parameters["chi"])
+    
+    def _validate_detuning_interaction(self):
+        """Validate parameters for detuning interactions."""
+        if self.subsystem1[0] not in {'cavity', 'field', 'qubit'}:
+            raise ValueError(f"Detuning interaction must be on a cavity, field or qubit subsystem, but got {self.subsystem1}")
+        elif isinstance(self.parameters, (int, float)):
+            self.parameters = {"delta": float(self.parameters)}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                "Parameters for detuning interaction must be a float or a dict with 'delta' key"
+            )
+        elif "delta" not in self.parameters:
+            raise ValueError(
+                "Parameters for detuning interaction must include 'delta' key for detuning value"
+            )
+        elif not isinstance(self.parameters["delta"], (int,float)):
+            raise TypeError("Detuning value ('delta') must be a numeric value, float or int")
+        
+        if isinstance(self.parameters["delta"], int):
+            self.parameters["delta"] = float(self.parameters["delta"])
+        if self.parameters["delta"] == 0:
+            warnings.warn(
+                f"Detuning value (delta) is zero for subsystem {self.subsystem1}. This means the subsystem frequency is at the reference frequency, which may be intentional but should be double-checked.",
+                UserWarning,
+            )
+
+    def _validate_drive_interaction(self):
+        """Validate parameters for drive interactions."""
+        if self.subsystem1[0] not in {'cavity', 'field'}:
+            raise ValueError(f"Drive interaction must be on a cavity or field subsystem, but got {self.subsystem1}")
+        elif isinstance(self.parameters, (int, float, complex)):
+            self.parameters = {"amplitude": complex(self.parameters)}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                "Parameters for drive interaction must be a float, a complex or a dict with 'amplitude' key"
+            )
+        elif "amplitude" not in self.parameters:
+            raise ValueError(
+                "Parameters for drive interaction must include 'amplitude' key for drive strength"
+            )
+        elif not isinstance(self.parameters["amplitude"], (int, float, complex)):
+            raise TypeError("Drive amplitude must be a numeric value, float, int or complex")
+        
+        if isinstance(self.parameters["amplitude"], int):
+            self.parameters["amplitude"] = float(self.parameters["amplitude"])
+        if self.parameters["amplitude"] == 0:
+            warnings.warn(
+                f"Drive amplitude is zero for subsystem {self.subsystem1}. This means no drive is applied, which may be intentional but should be double-checked.",
+                UserWarning,
+            )
+
+
 
     def copy(self) -> "Interaction":
         """Return a copy with independent parameter storage."""

@@ -343,13 +343,51 @@ class Experiment:
 
         interaction_list = self.experimental_params.interactions()
 
+        H_tot = []
+
         for interaction in interaction_list:
 
-            if interaction.interaction_type in {InteractionType.DETUNING, InteractionType.DRIVE}:
+            type = interaction.interaction_type
+            system1 = interaction.subsystem1[0]
+            index1 = interaction.subsystem1[1]
 
-                if self.subsystem2 is not None:
-                    raise ValueError(f"Interaction type {interaction.interaction_type} is defined for single subsystems, but {interaction.subsystem2} was provided.")
-                if 
+            if type == InteractionType.DETUNING:
+
+                delta = interaction.parameters["delta"]
+
+                if system1 == 'cavity':
+                    a = self.operators["a_c"][index1]
+                    a_dag = self.operators["a_c_dag"][index1]
+                    H_term = qt.Qobj(delta * a_dag * a)
+
+                elif system1 == 'field':
+                    a = self.operators["a_f"][index1]
+                    a_dag = self.operators["a_f_dag"][index1]
+                    H_term = qt.Qobj(delta * a_dag * a)
+
+                elif system1 == 'qubit':
+                    sigma_z = self.operators["sigma_z"][index1]
+                    H_term = qt.Qobj(delta * sigma_z/2) 
+
+            if type == InteractionType.DRIVE:
+
+                eps = interaction.parameters["amplitude"]
+
+                if system1 == 'cavity':
+                    a = self.operators["a_c"][index1]
+                    a_dag = self.operators["a_c_dag"][index1]
+
+                elif system1 == 'field':
+                    a = self.operators["a_f"][index1]
+                    a_dag = self.operators["a_f_dag"][index1]
+
+                H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
+
+
+            
+
+            H_tot.append(H_term)
+
 
         # Extract individual chi values for each qubit
         # Type narrowing: chi is always a list for two-qubit experiments
