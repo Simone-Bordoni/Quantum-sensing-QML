@@ -122,6 +122,12 @@ class Interaction:
             if self.interaction_type == InteractionType.DRIVE:
                 self._validate_drive_interaction()
 
+        elif self.interaction_type in {InteractionType.COUPLING, InteractionType.INPUT_OUTPUT}:
+            if self.subsystem1[0] != 'cavity':
+                raise ValueError(f"{self.interaction_type.value} interaction must involve a cavity subsystem as subsystem1, but got {self.subsystem1}")
+            self._validate_cavity_field_interactions()
+
+        
         elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
             raise NotImplementedError("Jaynes-Cummings interaction is not implemented yet. Please use supported interactions or implement JC interaction validation and parameter handling.")
 
@@ -135,7 +141,7 @@ class Interaction:
         if self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
             raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits, but got {self.subsystem1} and {self.subsystem2}")
         elif isinstance(self.parameters, (int, float)):
-            self.parameters = {"chi": float(self.parameters)}
+            self.parameters = {"chi": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
                 "Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key"
@@ -159,15 +165,15 @@ class Interaction:
                 "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
                 UserWarning,
                 )
-        if isinstance(self.parameters["chi"], int):
-            self.parameters["chi"] = float(self.parameters["chi"])
+            
+        self.parameters["chi"] = float(self.parameters["chi"])
     
     def _validate_detuning_interaction(self):
         """Validate parameters for detuning interactions."""
         if self.subsystem1[0] not in {'cavity', 'field', 'qubit'}:
             raise ValueError(f"Detuning interaction must be on a cavity, field or qubit subsystem, but got {self.subsystem1}")
         elif isinstance(self.parameters, (int, float)):
-            self.parameters = {"delta": float(self.parameters)}
+            self.parameters = {"delta": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
                 "Parameters for detuning interaction must be a float or a dict with 'delta' key"
@@ -179,8 +185,8 @@ class Interaction:
         elif not isinstance(self.parameters["delta"], (int,float)):
             raise TypeError("Detuning value ('delta') must be a numeric value, float or int")
         
-        if isinstance(self.parameters["delta"], int):
-            self.parameters["delta"] = float(self.parameters["delta"])
+        self.parameters["delta"] = float(self.parameters["delta"])
+        
         if self.parameters["delta"] == 0:
             warnings.warn(
                 f"Detuning value (delta) is zero for subsystem {self.subsystem1}. This means the subsystem frequency is at the reference frequency, which may be intentional but should be double-checked.",
@@ -192,7 +198,7 @@ class Interaction:
         if self.subsystem1[0] not in {'cavity', 'field'}:
             raise ValueError(f"Drive interaction must be on a cavity or field subsystem, but got {self.subsystem1}")
         elif isinstance(self.parameters, (int, float, complex)):
-            self.parameters = {"amplitude": complex(self.parameters)}
+            self.parameters = {"amplitude": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
                 "Parameters for drive interaction must be a float, a complex or a dict with 'amplitude' key"
@@ -204,14 +210,44 @@ class Interaction:
         elif not isinstance(self.parameters["amplitude"], (int, float, complex)):
             raise TypeError("Drive amplitude must be a numeric value, float, int or complex")
         
-        if isinstance(self.parameters["amplitude"], int):
-            self.parameters["amplitude"] = float(self.parameters["amplitude"])
+        self.parameters["amplitude"] = complex(self.parameters["amplitude"])
+
         if self.parameters["amplitude"] == 0:
             warnings.warn(
                 f"Drive amplitude is zero for subsystem {self.subsystem1}. This means no drive is applied, which may be intentional but should be double-checked.",
                 UserWarning,
             )
 
+    def _validate_cavity_field_interactions(self):
+
+        if self.interaction_type == InteractionType.COUPLING:
+            if self.subsystem2 is None or self.subsystem2[0] != 'cavity':
+                raise ValueError(f"Coupling interaction must involve two cavity subsystems, but subsystem2 is {self.subsystem2}")
+            if isinstance(self.parameters, (int, float, complex)):
+                self.parameters = {"gamma": self.parameters}
+            elif not isinstance(self.parameters, dict):
+                raise TypeError(
+                    "Parameters for coupling interaction must be a float, a complex or a dict with 'gamma' key"
+                )
+            elif "gamma" not in self.parameters:
+                raise ValueError(
+                    "Parameters for coupling interaction must include 'gamma' key for coupling strength"
+                )
+            elif not isinstance(self.parameters["gamma"], (int, float, complex)):
+                raise TypeError("Coupling strength (gamma) must be a numeric value, float or complex")
+            
+            self.parameters["gamma"] = complex(self.parameters["gamma"])
+
+            if self.parameters["gamma"] == 0:
+                warnings.warn(
+                    f"Coupling strength (gamma) is zero for subsystems {self.subsystem1} and {self.subsystem2}. This means no coupling between these subsystems, which may be intentional but should be double-checked.",
+                    UserWarning,
+                )
+
+        elif self.interaction_type == InteractionType.INPUT_OUTPUT:
+            if self.subsystem2 is None or self.subsystem2[0] != 'field':
+                raise ValueError(f"Input-output interaction must involve a cavity subsystem and a field subsystem, but subsystem2 is {self.subsystem2}")
+            
 
 
     def copy(self) -> "Interaction":
