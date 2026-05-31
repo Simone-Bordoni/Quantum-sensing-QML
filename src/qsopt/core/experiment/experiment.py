@@ -345,7 +345,11 @@ class Experiment:
 
         for interaction in interaction_list:
 
-            if interaction.interaction_type == InteractionType.ZZ:
+            if interaction.interaction_type in {InteractionType.DETUNING, InteractionType.DRIVE}:
+
+                if self.subsystem2 is not None:
+                    raise ValueError(f"Interaction type {interaction.interaction_type} is defined for single subsystems, but {interaction.subsystem2} was provided.")
+                if 
 
         # Extract individual chi values for each qubit
         # Type narrowing: chi is always a list for two-qubit experiments

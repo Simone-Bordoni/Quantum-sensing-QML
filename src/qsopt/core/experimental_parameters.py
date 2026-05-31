@@ -34,20 +34,22 @@ class InitialStateType(Enum):
 class InteractionType(Enum):
     """Enumeration of supported interaction types."""
 
+    # single subsystem interactions
     DETUNING = "detuning" # detuning of cavity, field or qubit frequencies from reference frequency
     DRIVE = 'drive' # external drive on cavity or field modes
+
+    # cavity-field, cavity-cavity
+    COUPLING = "coupling" # coupling between cavities and fields
     INPUT_OUTPUT = "input_output" # input-output coupling between a cavity/field and the environment (e.g., for open system dynamics)
 
-    COUPLING = "coupling" # coupling between cavities and fields
+    # qubit-cavity, qubit-field
+    DISPERSIVE = "dispersive" # dispersive coupling between qubits and cavities/fields
+    JAYNES_CUMMINGS = "jaynes-cummings" # Jaynes-Cummings interaction between qubits and cavities/fields (not implemented yet)
 
     # qubit-qubit interactions
     ZZ = "sz-sz"  # σz ⊗ σz interaction
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
-
-    DISPERSIVE = "dispersive" # dispersive coupling between qubits and cavities/fields
-    JAYNES_CUMMINGS = "jaynes-cummings" # Jaynes-Cummings interaction between qubits and cavities/fields (not implemented yet)
-
 
 class Interaction:
     """
@@ -110,7 +112,16 @@ class Interaction:
         # Validate different interaction types
         if self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
             self._validate_qubit_qubit_interaction()
-        
+
+        elif self.interaction_type in {InteractionType.DETUNING, InteractionType.DRIVE}:
+            if self.subsystem2 is not None:
+                raise ValueError(f"Interaction type {self.interaction_type} is defined for single subsystems, but subsystem2 was provided: {self.subsystem2}")
+            if self.interaction_type == InteractionType.DETUNING:
+                
+                
+            if self.interaction_type == InteractionType.DRIVE:
+
+
         elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
             raise NotImplementedError("Jaynes-Cummings interaction is not implemented yet. Please use supported interactions or implement JC interaction validation and parameter handling.")
 
