@@ -35,8 +35,9 @@ class InteractionType(Enum):
     """Enumeration of supported interaction types."""
 
     # single subsystem interactions
-    DETUNING = "detuning" # detuning of cavity, field or qubit frequencies from reference frequency
+    DETUNING = "detuning" # detuning of cavity, input field or qubit frequencies from reference frequency
     DRIVE = 'drive' # external drive on cavity or field modes
+    DISSIPATION = 'dissipation' # dissipation processes on cavity subsystems
 
     # cavity-field, cavity-cavity
     COUPLING = "coupling" # coupling between cavities
@@ -59,8 +60,8 @@ class Interaction:
         interaction_type: InteractionType (ZZ, jaynes_cummings, etc.)
         subsystem1: Tuple of type (string) and index (int) of the first subsystem involved in the interaction (e.g., ('qubit', 3))
         subsystem2: Optional[Tuple[str,int]] of type (string) and index (int) of the second subsystem involved in the interaction (e.g., ('cavity', 1))
-        parameters: Dict[str, Any] of interaction parameters or float
-        time_modulation: Optional[Callable[[float], float]] function of time that modulates the interaction strength (e.g., for time-dependent interactions)
+        parameters: Dict[str, Any] of interaction parameters or a numeric value (int, float, complex)
+        time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] function of time that modulates the interaction strength (e.g., for time-dependent interactions). Must return a non-negative value.
     """
 
     def __init__(
@@ -69,7 +70,7 @@ class Interaction:
         subsystem1: Tuple[str, int],
         subsystem2: Optional[Tuple[str, int]] = None,
         parameters: Optional[Union[Dict[str, Any], int, float, complex]] = 1.0,
-        time_modulation: Optional[Callable[[float], float]] = None,
+        time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] = None
     ):
 
         self.interaction_type = interaction_type
@@ -82,199 +83,352 @@ class Interaction:
 
     def __post_init__(self):
         """Validate interaction parameters."""
-        
-        # Validate subsystem specifications
+        if not isinstance(self.interaction_type, InteractionType):
+            raise TypeError(
+                "interaction_type must be an InteractionType enum value"
+            )
+
+        # Validate subsystem specifications before using them in diagnostics
+        if not isinstance(self.subsystem1, tuple) or len(self.subsystem1) != 2:
+            raise ValueError(
+                f"subsystem1 must be a tuple of (type, index), but got {self.subsystem1}"
+            )
+        if self.subsystem1[0] is None or self.subsystem1[1] is None:
+            raise ValueError(
+                f"subsystem1 must be a tuple of (type, index), but got {self.subsystem1}"
+            )
+        if self.subsystem2 is not None:
+            if not isinstance(self.subsystem2, tuple) or len(self.subsystem2) != 2:
+                raise ValueError(
+                    f"subsystem2 must be a tuple of (type, index) if provided, but got {self.subsystem2}"
+                )
+            if self.subsystem2[0] is None or self.subsystem2[1] is None:
+                raise ValueError(
+                    f"subsystem2 must be a tuple of (type, index) if provided, but got {self.subsystem2}"
+                )
+
+        if not isinstance(self.subsystem1[1], int) or (
+            self.subsystem2 is not None and not isinstance(self.subsystem2[1], int)
+        ):
+            raise TypeError(
+                "Subsystem indices must be integers"
+            )
+        if not isinstance(self.subsystem1[0], str) or (
+            self.subsystem2 is not None and not isinstance(self.subsystem2[0], str)
+        ):
+            raise TypeError(
+                "Subsystem types must be strings like 'qubit', 'cavity', or 'field'"
+            )
         if self.subsystem1 == self.subsystem2:
             raise ValueError("subsystem1 and subsystem2 must refer to different subsystems")
         if self.subsystem1[1] < 0 or (self.subsystem2 is not None and self.subsystem2[1] < 0):
             raise ValueError("Subsystem indices must be non-negative")
-        if not (self.subsystem1[0] in ['qubit', 'cavity', 'field'] and (self.subsystem2 is None or self.subsystem2[0] in ['qubit', 'cavity', 'field'])):
+        if not (
+            self.subsystem1[0] in ['qubit', 'cavity', 'field']
+            and (self.subsystem2 is None or self.subsystem2[0] in ['qubit', 'cavity', 'field'])
+        ):
             raise ValueError("Subsystem types must be 'qubit', 'cavity', or 'field'")
         
         # Ensure canonical ordering (sort by type and then index)
         if self.subsystem2 is not None and (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
             self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
-
+        
         # Validate time modulation function
         if self.time_modulation is not None and not callable(self.time_modulation):
-            raise TypeError("time_modulation must be a callable function of time")
+            raise TypeError(
+                self._with_context(
+                    "time_modulation must be callable as time_modulation(time, parameters_dict)"
+                    f". Got type: {type(self.time_modulation)}"
+                )
+            )
         elif self.time_modulation is not None:
-            # Test the time modulation function with a sample time value
+            # Test the modulation function to catch signature/return-type issues early.
             try:
                 for _ in range(100):
                     random_time = np.random.uniform(-10, 10)
-                    test_value = self.time_modulation(random_time)
+                    test_value = self.time_modulation(random_time, self.parameters if isinstance(self.parameters, dict) else {})
                     if not isinstance(test_value, (int, float)):
-                        raise ValueError(f"time_modulation function must return a numeric value. Got type: {type(test_value)}")
+                        raise ValueError(
+                            self._with_context(
+                                "time_modulation must return a numeric value"
+                                f". Got type: {type(test_value)}"
+                            )
+                        )
+                    elif test_value < 0:
+                        raise ValueError(
+                            self._with_context(
+                                "time_modulation must return a non-negative value, "
+                                f"but got {test_value} for input time {random_time}"
+                            )
+                        )
             except Exception as e:
-                raise ValueError("time_modulation function is not callable with a float argument") from e
+                raise ValueError(
+                    self._with_context(
+                        "time_modulation must be callable with (time, parameters_dict) and return a non-negative numeric value. "
+                    )
+                ) from e
              
         # Validate different interaction types
-        if self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
-            self._validate_qubit_qubit_interaction()
 
-        elif self.interaction_type in {InteractionType.DETUNING, InteractionType.DRIVE}:
+        if self.interaction_type in {InteractionType.DETUNING, InteractionType.DRIVE, InteractionType.DISSIPATION}:
             if self.subsystem2 is not None:
-                raise ValueError(f"Interaction type {self.interaction_type} is defined for single subsystems, but subsystem2 was provided: {self.subsystem2}")
+                raise ValueError(
+                    self._with_context(
+                        f"Interaction type is defined for single subsystems, "
+                        f"but subsystem2 was provided: {self.subsystem2}"
+                    )
+                )
             if self.interaction_type == InteractionType.DETUNING:
-                self._validate_detuning_interaction()
+                self._validate_detuning()
 
             if self.interaction_type == InteractionType.DRIVE:
-                self._validate_drive_interaction()
+                self._validate_drive()
+
+            if self.interaction_type == InteractionType.DISSIPATION:
+                self._validate_dissipation()
 
         elif self.interaction_type == InteractionType.COUPLING:
-           self._validate_coupling_interaction()
+           self._validate_coupling()
         
         elif self.interaction_type == InteractionType.INPUT_OUTPUT:
-            self._validate_input_output_interaction()
+            self._validate_input_output()
 
+        elif self.interaction_type == InteractionType.DISPERSIVE:
+            self._validate_dispersive()
         
         elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
-            raise NotImplementedError("Jaynes-Cummings interaction is not implemented yet. Please use supported interactions or implement JC interaction validation and parameter handling.")
+            raise NotImplementedError(
+                self._with_context(
+                    "Jaynes-Cummings interaction is not implemented yet. "
+                    "Please use supported interactions or implement JC interaction validation and parameter handling."
+                )
+            )
+        
+        elif self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
+            self._validate_qubit_qubit()
 
         else:
-            raise NotImplementedError(f"Interaction type {self.interaction_type} is not supported yet. The following interactions are implemented:\n\
-                                      {[f'{interaction.value}' + f'\n' for interaction in InteractionType]}")
-
-    def _validate_qubit_qubit_interaction(self):
-        """Validate parameters for qubit-qubit interactions."""
-        
-        if self.subsystem1 is None or self.subsystem2 is None:
-            raise ValueError(f"{self.interaction_type.value} interaction must specify both subsystems, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
-        elif self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
-            raise ValueError(f"{self.interaction_type.value} interaction must be between two qubits, but got {self.subsystem1} and {self.subsystem2}")
-        elif isinstance(self.parameters, (int, float)):
-            self.parameters = {"chi": self.parameters}
-        elif not isinstance(self.parameters, dict):
-            raise TypeError(
-                "Parameters for ZZ, XX, YY interactions must be a float or a dict with 'chi' key"
-            )
-        elif "chi" not in self.parameters and "strength" not in self.parameters:
-            raise ValueError(
-                "Parameters for ZZ, XX, YY interactions must include 'chi' or 'strength' key for interaction strength"
-            )
-        
-        if "strength" in self.parameters:
-            warnings.warn("Using 'strength' value for 'chi'.", UserWarning)
-            self.parameters["chi"] = self.parameters.pop("strength")
-
-        if not isinstance(self.parameters["chi"], (int, float)):
-            raise TypeError("Qubit interaction strength ('chi') must be a numeric value, float or int")
-        elif self.parameters["chi"] < 0:
-            raise ValueError(f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}")
-        elif self.parameters["chi"] == 0:
-            warnings.warn(
-                f"Qubit-qubit interaction strength (chi) is zero for qubits {self.subsystem1[1]}, {self.subsystem2[1]}. "
-                "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments.",
-                UserWarning,
+            raise NotImplementedError(
+                self._with_context(
+                    f"Interaction type is not supported yet. The following interactions are implemented:\n"
+                    f"{[f'{interaction.value}' + f'\n' for interaction in InteractionType]}"
                 )
-            
-        self.parameters["chi"] = float(self.parameters["chi"])
-    
-    def _validate_detuning_interaction(self):
+            )
+        
+        if self.parameters is None:
+            self.parameters = {}
+
+    def _validate_detuning(self):
         """Validate parameters for detuning interactions."""
         if self.subsystem1[0] not in {'cavity', 'field', 'qubit'}:
-            raise ValueError(f"Detuning interaction must be on a cavity, field or qubit subsystem, but got {self.subsystem1}")
+            raise ValueError(
+                self._with_context(
+                    f"Detuning interaction must be on a cavity, field or qubit subsystem, but got {self.subsystem1}"
+                )
+            )
         elif isinstance(self.parameters, (int, float)):
             self.parameters = {"delta": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
-                "Parameters for detuning interaction must be a float or a dict with 'delta' key"
+                self._with_context(
+                    "Parameters for detuning interaction must be a float or a dict with 'delta' key for detuning value"
+                )
             )
         elif "delta" not in self.parameters:
             raise ValueError(
-                "Parameters for detuning interaction must include 'delta' key for detuning value"
+                self._with_context(
+                    "Parameters for detuning interaction must include 'delta' key for detuning value"
+                )
             )
         elif not isinstance(self.parameters["delta"], (int,float)):
-            raise TypeError("Detuning value ('delta') must be a numeric value, float or int")
+            raise TypeError(
+                self._with_context("Detuning value ('delta') must be a numeric value, float or int")
+            )
         
         self.parameters["delta"] = float(self.parameters["delta"])
         
         if self.parameters["delta"] == 0:
             warnings.warn(
-                f"Detuning value (delta) is zero for subsystem {self.subsystem1}. This means the subsystem frequency is at the reference frequency, which may be intentional but should be double-checked.",
+                self._with_context(
+                    "Detuning value (delta) is zero. This means the subsystem frequency is at "
+                    "the reference frequency, which may be intentional but should be double-checked."
+                ),
                 UserWarning,
             )
 
-    def _validate_drive_interaction(self):
+    def _validate_drive(self):
         """Validate parameters for drive interactions."""
         if self.subsystem1[0] not in {'cavity', 'field'}:
-            raise ValueError(f"Drive interaction must be on a cavity or field subsystem, but got {self.subsystem1}")
+            raise ValueError(
+                self._with_context(
+                    f"Drive interaction must be on a cavity or field subsystem, but got {self.subsystem1}"
+                )
+            )
         elif isinstance(self.parameters, (int, float, complex)):
             self.parameters = {"amplitude": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
-                "Parameters for drive interaction must be a float, a complex or a dict with 'amplitude' key"
+                self._with_context(
+                    "Parameters for drive interaction must be a float, a complex or a dict with 'amplitude' key"
+                )
             )
         elif "amplitude" not in self.parameters:
             raise ValueError(
-                "Parameters for drive interaction must include 'amplitude' key for drive strength"
+                self._with_context(
+                    "Parameters for drive interaction must include 'amplitude' key for drive strength"
+                )
             )
         elif not isinstance(self.parameters["amplitude"], (int, float, complex)):
-            raise TypeError("Drive amplitude must be a numeric value, float, int or complex")
+            raise TypeError(
+                self._with_context("Drive amplitude must be a numeric value, float, int or complex")
+            )
         
         self.parameters["amplitude"] = complex(self.parameters["amplitude"])
 
         if self.parameters["amplitude"] == 0:
             warnings.warn(
-                f"Drive amplitude is zero for subsystem {self.subsystem1}. This means no drive is applied, which may be intentional but should be double-checked.",
+                self._with_context(
+                    "Drive amplitude is zero. This means no drive is applied, "
+                    "which may be intentional but should be double-checked."
+                ),
                 UserWarning,
             )
 
-    def _validate_coupling_interaction(self):
+    def _validate_dissipation(self):
+        """Validate parameters for dissipation interactions."""
+        if self.subsystem1[0] != 'cavity':
+            raise ValueError(
+                self._with_context(
+                    f"Dissipation interaction must be on a cavity subsystem, but got {self.subsystem1}"
+                )
+            )
+        elif isinstance(self.parameters, (int, float)):
+            self.parameters = {"kappa": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    "Parameters for dissipation interaction must be a float or a dict with 'kappa' key"
+                )
+            )
+        elif "kappa" not in self.parameters:
+            raise ValueError(
+                self._with_context(
+                    "Parameters for dissipation interaction must include 'kappa' key for dissipation rate"
+                )
+            )
+        elif not isinstance(self.parameters["kappa"], (int, float)):
+            raise TypeError(
+                self._with_context("Dissipation rate (kappa) must be a numeric value, float or int")
+            )
+        
+        self.parameters["kappa"] = float(self.parameters["kappa"])
+
+        if self.parameters["kappa"] == 0:
+            warnings.warn(
+                self._with_context(
+                    "Dissipation rate (kappa) is zero. This means no dissipation is applied, "
+                    "which may be intentional but should be double-checked."
+                ),
+                UserWarning,
+            )
+        
+        if self.parameters["kappa"] < 0:
+            raise ValueError(
+                self._with_context(
+                    f"Dissipation rate (kappa) must be >= 0, got {self.parameters['kappa']}"
+                )
+            )
+
+    def _validate_coupling(self):
 
         if self.subsystem1 is None or self.subsystem2 is None:
-            raise ValueError(f"Coupling interaction must involve two cavity subsystems, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+            raise ValueError(
+                self._with_context(
+                    "Coupling interaction must involve two cavity subsystems"
+                )
+            )
         elif self.subsystem1[0] != 'cavity' or self.subsystem2[0] != 'cavity':
-            raise ValueError(f"Coupling interaction must involve two cavity subsystems, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+            raise ValueError(
+                self._with_context(
+                    "Coupling interaction must involve two cavity subsystems"
+                )
+            )
         
         if isinstance(self.parameters, (int, float, complex)):
             self.parameters = {"gamma": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
-                "Parameters for coupling interaction must be a float, a complex or a dict with 'gamma' key"
+                self._with_context(
+                    "Parameters for coupling interaction must be a float, a complex or a dict with 'gamma' key"
+                )
             )
         elif "gamma" not in self.parameters:
             raise ValueError(
-                "Parameters for coupling interaction must include 'gamma' key for coupling strength"
+                self._with_context(
+                    "Parameters for coupling interaction must include 'gamma' key for coupling strength"
+                )
             )
         elif not isinstance(self.parameters["gamma"], (int, float, complex)):
-            raise TypeError("Coupling strength (gamma) must be a numeric value, float or complex")
+            raise TypeError(
+                self._with_context("Coupling strength (gamma) must be a numeric value, float or complex")
+            )
         
         self.parameters["gamma"] = complex(self.parameters["gamma"])
 
         if self.parameters["gamma"] == 0:
             warnings.warn(
-                f"Coupling strength (gamma) is zero for subsystems {self.subsystem1} and {self.subsystem2}. This means no coupling between these subsystems, which may be intentional but should be double-checked.",
+                self._with_context(
+                    "Coupling strength (gamma) is zero. This means no coupling between these subsystems, "
+                    "which may be intentional but should be double-checked."
+                ),
                 UserWarning,
             )
 
-    def _validate_input_output_interaction(self):
+    def _validate_input_output(self):
 
         if self.subsystem1 is None or self.subsystem2 is None:
-            raise ValueError(f"Input-output interaction must involve a cavity and a field subsystem, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+            raise ValueError(
+                self._with_context(
+                    "Input-output interaction must involve a cavity and a field subsystem"
+                )
+            )
         elif set([self.subsystem1[0], self.subsystem2[0]]) != {'cavity', 'field'}:
-            raise ValueError(f"Input-output interaction must involve a cavity subsystem and a field subsystem, but got subsystem1: {self.subsystem1}, subsystem2: {self.subsystem2}")
+            raise ValueError(
+                self._with_context(
+                    "Input-output interaction must involve a cavity subsystem and a field subsystem"
+                )
+            )
 
         if isinstance(self.parameters, (int, float)):
             self.parameters = {"kappa": self.parameters}
         elif not isinstance(self.parameters, dict):
             raise TypeError(
-                "Parameters for input-output interaction must be a float or a dict with 'kappa' key for loss rate"
+                self._with_context(
+                    "Parameters for input-output interaction must be a float or a dict with 'kappa' key for loss rate"
+                )
             )
         elif "kappa" not in self.parameters:
             raise ValueError(
-                "Parameters dictionary for input-output interaction must include 'kappa' key for loss rate"
+                self._with_context(
+                    "Parameters dictionary for input-output interaction must include 'kappa' key for loss rate"
+                )
             )
         elif not isinstance(self.parameters["kappa"], (int, float)):
-            raise TypeError("Input-output loss rate (kappa) must be a numeric value, float")
+            raise TypeError(
+                self._with_context("Input-output loss rate (kappa) must be a numeric value, float")
+            )
         
         if "gamma" not in self.parameters and self.time_modulation is None:
             raise ValueError(
-                "Input-output interaction wasn't provided with a 'gamma' coupling nor with a time modulation function."
+                self._with_context(
+                    "Input-output interaction must provide a 'gamma' coupling or a time-modulated coupling "
+                    "via time_modulation"
+                )
             )
         elif "gamma" in self.parameters and not isinstance(self.parameters["gamma"], (int, float)):
-            raise TypeError("Input-output coupling strength (gamma) must be a numeric value, float")
+            raise TypeError(
+                self._with_context("Input-output coupling strength (gamma) must be a numeric value (float)")
+            )
         elif "gamma" not in self.parameters and self.time_modulation is not None:
             self.parameters["gamma"] = 1.0  # Default coupling strength for time-modulated input-output interaction if gamma not provided
 
@@ -283,20 +437,139 @@ class Interaction:
 
         if self.parameters["kappa"] == 0:
             warnings.warn(
-                f"Input-output loss rate (kappa) is zero. This means no loss through this input-output channel, which may be intentional but should be double-checked.",
+                self._with_context(
+                    "Input-output loss rate (kappa) is zero. This means no loss through this input-output channel, "
+                    "which may be intentional but should be double-checked."
+                ),
                 UserWarning,
             )
         elif self.parameters["kappa"] < 0:
-            raise ValueError(f"Input-output loss rate (kappa) must be >= 0, got {self.parameters['kappa']}")
+            raise ValueError(
+                self._with_context(
+                    f"Input-output loss rate (kappa) must be >= 0, got {self.parameters['kappa']}"
+                )
+            )
         
         if self.parameters["gamma"] == 0:
             warnings.warn(
-                f"Input-output coupling strength (gamma) is zero. This means no coupling between these subsystems, which may be intentional but should be double-checked.",
+                self._with_context(
+                    "Input-output coupling strength (gamma) is zero. This means no coupling between these subsystems, "
+                    "which may be intentional but should be double-checked."
+                ),
                 UserWarning,
             )
         elif self.parameters["gamma"] < 0:  
-            raise ValueError(f"Input-output coupling strength (gamma) must be >= 0, got {self.parameters['gamma']}")
+            raise ValueError(
+                self._with_context(
+                    f"Input-output coupling strength (gamma) must be >= 0, got {self.parameters['gamma']}"
+                )
+            )
 
+    def _validate_dispersive(self):
+        
+        if self.subsystem1 is None or self.subsystem2 is None:
+            raise ValueError(
+                self._with_context(
+                    "Dispersive interaction must involve a qubit and a cavity"
+                )
+            )
+        elif set([self.subsystem1[0], self.subsystem2[0]]) != {'cavity', 'qubit'}:
+            raise ValueError(
+                self._with_context(
+                    "Dispersive interaction must involve a qubit and a cavity"
+                )
+            )
+
+        if isinstance(self.parameters, (int, float)):
+            self.parameters = {"chi": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    "Parameters for dispersive interaction must be a float or a dict with 'chi' key for dispersive shift"
+                )
+            )
+        elif "chi" not in self.parameters:
+            raise ValueError(
+                self._with_context(
+                    "Parameters for dispersive interaction must include 'chi' key for dispersive shift value"
+                )
+            )
+        elif not isinstance(self.parameters["chi"], (int, float)):
+            raise TypeError(
+                self._with_context("Dispersive shift (chi) must be a float")
+            )
+        
+        self.parameters["chi"] = float(self.parameters["chi"])
+
+        if self.parameters["chi"] == 0:
+            warnings.warn(
+                self._with_context(
+                    "Dispersive shift (chi) is zero. This means no dispersive coupling between these subsystems, "
+                    "which may be intentional but should be double-checked."
+                ),
+                UserWarning,
+            )
+
+    def _validate_qubit_qubit(self):
+        """Validate parameters for qubit-qubit interactions."""
+        
+        if self.subsystem1 is None or self.subsystem2 is None:
+            raise ValueError(
+                self._with_context(
+                    "Interaction must specify both subsystems"
+                )
+            )
+        elif self.subsystem1[0] != 'qubit' or self.subsystem2[0] != 'qubit':
+            raise ValueError(
+                self._with_context(
+                    "Interaction must be between two qubits"
+                )
+            )
+        elif isinstance(self.parameters, (int, float)):
+            self.parameters = {"chi": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    "Parameters for interaction must be a float or a dict with 'chi' key"
+                )
+            )
+        elif "chi" not in self.parameters and "strength" not in self.parameters:
+            raise ValueError(
+                self._with_context(
+                    "Parameters for interaction must include 'chi' or 'strength' key for interaction strength"
+                )
+            )
+        
+        if "strength" in self.parameters:
+            warnings.warn(
+                self._with_context("Using 'strength' value for 'chi'."),
+                UserWarning,
+            )
+            self.parameters["chi"] = self.parameters.pop("strength")
+
+        if not isinstance(self.parameters["chi"], (int, float)):
+            raise TypeError(
+                self._with_context(
+                    "Qubit interaction strength ('chi') must be a numeric value, float or int"
+                )
+            )
+        elif self.parameters["chi"] < 0:
+            raise ValueError(
+                self._with_context(
+                    f"Qubit interaction strength (chi) must be >= 0, got {self.parameters['chi']}"
+                )
+            )
+        elif self.parameters["chi"] == 0:
+            warnings.warn(
+                self._with_context(
+                    "Qubit-qubit interaction strength (chi) is zero. "
+                    "This means no direct qubit-qubit coupling, which may be intentional for uncoupled qubit experiments."
+                ),
+                UserWarning,
+                )
+            
+        self.parameters["chi"] = float(self.parameters["chi"])
+    
 
         
 
@@ -309,6 +582,17 @@ class Interaction:
             parameters=copy.deepcopy(self.parameters),
             time_modulation=self.time_modulation,
         )
+
+    def _interaction_context(self) -> str:
+        """Return a compact interaction label like 'dispersive(cavity1,qubit3)'."""
+        parts = [f"{self.subsystem1[0]}{self.subsystem1[1]}"]
+        if self.subsystem2 is not None:
+            parts.append(f"{self.subsystem2[0]}{self.subsystem2[1]}")
+        return f"{self.interaction_type.value}({','.join(parts)})"
+
+    def _with_context(self, message: str) -> str:
+        """Prefix diagnostic messages with the interaction context label."""
+        return f"{self._interaction_context()}: {message}"
 
 
 @dataclass

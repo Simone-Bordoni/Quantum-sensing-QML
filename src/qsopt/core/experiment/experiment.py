@@ -246,77 +246,18 @@ class Experiment:
         - Individual qubit projectors based on detection criterion
         """
         # Get system dimensions
-        cavity_levels = self.experimental_params.cavity_levels
-        field_levels = self.experimental_params.field_levels
-        qubit_levels = self.experimental_params.qubit_levels
-        n_cavities = self.experimental_params.n_cavities
-        n_fields = self.experimental_params.n_fields
-        n_qubits = self.experimental_params.n_qubits
+        cavity_levels = self.cavity_levels
+        field_levels = self.field_levels
+        qubit_levels = self.qubit_levels
+        n_cavities = self.n_cavities
+        n_fields = self.n_fields
+        n_qubits = self.n_qubits
 
         # Generate system operators using utility function
         # Note: `generate_system_operators` expects (n_cavities, n_fields, n_qubits, cavity_levels, field_levels, qubit_levels)
         self.operators = generate_system_operators(
             n_cavities, n_fields, n_qubits, cavity_levels, field_levels, qubit_levels
         )
-
-    def _build_qubit_interaction_hamiltonian(self) -> qt.Qobj:
-        """
-        Build qubit-qubit interaction Hamiltonian from configured interactions.
-
-        Constructs interaction terms like:
-        - ZZ: (χ/2) σz ⊗ σz
-        - XX: (χ/2) σx ⊗ σx
-        - YY: (χ/2) σy ⊗ σy
-
-        Returns:
-            Hamiltonian operator for qubit-qubit interactions (0 if no interactions)
-        """
-        from qsopt.core.experimental_parameters import InteractionType
-
-        if self.operators is None:
-            raise RuntimeError(
-                "Operators must be generated before building interaction Hamiltonian"
-            )
-
-        # Get qubit interactions from experimental parameters
-        interactions = self.experimental_params.physical_constants.qubit_interactions
-
-        if not interactions:
-            # No interactions - return zero operator
-            dims = self.operators["a"].dims
-            return qt.Qobj(np.zeros((np.prod(dims[0]), np.prod(dims[0]))), dims=dims)
-
-        # Start with zero Hamiltonian
-        dims = self.operators["a"].dims
-        H_interaction = qt.Qobj(np.zeros((np.prod(dims[0]), np.prod(dims[0]))), dims=dims)
-
-        # Build each interaction term
-        for interaction in interactions:
-            idx1, idx2 = interaction.qubit_indices
-            chi = interaction.chi
-            interaction_type = interaction.interaction_type
-
-            # Get appropriate Pauli operators based on interaction type
-            if interaction_type == InteractionType.ZZ:
-                # σz ⊗ σz interaction
-                sigma1 = self.operators["sigma_z"][idx1]
-                sigma2 = self.operators["sigma_z"][idx2]
-            elif interaction_type == InteractionType.XX:
-                # σx ⊗ σx interaction
-                sigma1 = self.operators[f"sigma_x"][idx1]
-                sigma2 = self.operators[f"sigma_x"][idx2]
-            elif interaction_type == InteractionType.YY:
-                # σy ⊗ σy interaction
-                sigma1 = self.operators[f"sigma_y"][idx1]
-                sigma2 = self.operators[f"sigma_y"][idx2]
-            else:
-                raise ValueError(f"Unknown interaction type: {interaction_type}")
-
-            # Add interaction term: (χ/2) σᵢ ⊗ σⱼ
-            H_interaction += qt.Qobj((chi / 2) * sigma1 * sigma2)  # type: ignore
-
-        return H_interaction
-
 
     def _generate_hamiltonian(self) -> None:
         """
@@ -333,177 +274,45 @@ class Experiment:
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
 
-        n_cavities = self.experimental_params.n_cavities
-        n_fields = self.experimental_params.n_fields
-        n_qubits = self.experimental_params.n_qubits
-
-        cavity_levels = self.experimental_params.cavity_levels
-        field_levels = self.experimental_params.field_levels
-        qubit_levels = self.experimental_params.qubit_levels
-
         interaction_list = self.experimental_params.interactions()
 
-        H_tot = []
+        H_const = []
         H_time_dependent = []
-        L_tot = []
+        L_interaction = []
 
         for interaction in interaction_list:
+            
+            H_term, L_term, t_func, args = self._generate_hamiltonian_term(interaction)
 
-            type = interaction.interaction_type
-            system1 = interaction.subsystem1[0]
-            index1 = interaction.subsystem1[1]
-            t_func = interaction.time_modulation
-
-            if type == InteractionType.DETUNING:
-
-                delta = interaction.parameters["delta"]
-
-                if system1 == 'cavity':
-                    a = self.operators["a_c"][index1]
-                    a_dag = self.operators["a_c_dag"][index1]
-                    H_term = qt.Qobj(delta * a_dag * a)
-
-                elif system1 == 'field':
-                    a = self.operators["a_f"][index1]
-                    a_dag = self.operators["a_f_dag"][index1]
-                    H_term = qt.Qobj(delta * a_dag * a)
-
-                elif system1 == 'qubit':
-                    sigma_z = self.operators["sigma_z"][index1]
-                    H_term = qt.Qobj(delta * sigma_z/2) 
-
-            if type == InteractionType.DRIVE:
-
-                eps = interaction.parameters["amplitude"]
-
-                if system1 == 'cavity':
-                    a = self.operators["a_c"][index1]
-                    a_dag = self.operators["a_c_dag"][index1]
-
-                elif system1 == 'field':
-                    a = self.operators["a_f"][index1]
-                    a_dag = self.operators["a_f_dag"][index1]
-
-                H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
-
-            system2 = interaction.subsystem2[0]
-            index2 = interaction.subsystem2[1]
-
-            if type == InteractionType.COUPLING:
-
-                gm = interaction.parameters["gamma"]
-
-                a1 = self.operators["a_c"][index1]
-                a1_dag = self.operators["a_c_dag"][index1]
-                a2 = self.operators["a_c"][index2]
-                a2_dag = self.operators["a_c_dag"][index2]
-
-                H_term = qt.Qobj( gm * (a1_dag * a2 + a1 * a2_dag))
-
-            if type == InteractionType.INPUT_OUTPUT:
-
-                k = interaction.parameters["kappa"]
-                gm = interaction.parameters["gamma"]
-
-                if system2 == 'cavity':
-                    system1, index1, system2, index2 = system2, index2, system1, index1
-
-                ac = self.operators["a_c"][index1]
-                ac_dag = self.operators["a_c_dag"][index1]
-                af = self.operators["a_f"][index2]
-                af_dag = self.operators["a_f_dag"][index2]
-
-                H_term = qt.Qobj(1j/2 * np.sqrt(k) * gm * (af_dag * ac - af * ac_dag))
-
-            if t_func is not None:
+            if H_term is not None and t_func is not None:
+                H_term = qt.QobjEvo([H_term, t_func], args=args)
                 H_time_dependent.append([H_term, t_func])
-            else:
-                H_tot.append(H_term)
+            elif H_term is not None:
+                H_const.append(H_term)
+            
+            if L_term is not None:
+                L_interaction.append(L_term)
 
+        H_static = sum(H_const)
+        H_base = qt.QobjEvo([H_static] + H_time_dependent, args=args)
 
-        # Extract individual chi values for each qubit
-        # Type narrowing: chi is always a list for two-qubit experiments
-        if isinstance(chi_list, list):
-            chi = chi_list
-        else:
-            # Should not reach here due to __init__ validation, but type checker needs this
-            chi = [chi_list] * n_qubits
-
-        # Get operators
-        a_in = self.operators["a_in"]
-        a_in_dag = self.operators["a_in_dag"]
-        a = self.operators["a"]
-        a_dag = self.operators["a_dag"]
-
-        # Qubit operators
-        sigma_z = self.operators["sigma_z"]
-        sigma_x = self.operators["sigma_x"]
-        sigma_y = self.operators["sigma_y"]
-        sigma_minus = self.operators["sigma_minus"]
-
-        # Time-dependent coupling function arguments
-        args = {"sigma": sigma}
-
-        # Time-dependent cavity-field coupling Hamiltonian
-        # H_c = (i/2)√γ (a_in† a - a_in a†)
-        coupling_coeff = 1j / 2 * jnp.sqrt(gm)
-        H_coupling = qt.Qobj(coupling_coeff * (a_in_dag * a - a_in * a_dag))  # type: ignore
-
-        # Dispersive qubit-resonator interaction Hamiltonians
-        # H_q = -Σᵢ χᵢ a†a σz_i
-        H_dispersive_list = [qt.Qobj(-chi[i] * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
-        H_dispersive = sum(H_dispersive_list)
-
-        # Qubit-qubit interaction Hamiltonians
-        # H_interaction = Σⱼ (χⱼ/2) σᵢ ⊗ σⱼ
-        # where σᵢ and σⱼ can be σx, σy, or σz depending on interaction type
-        H_qubit_interaction = self._build_qubit_interaction_hamiltonian()
-
-        # Complete time-dependent Hamiltonian
-        # H(t) = H_dispersive + H_qubit_interaction + H_coupling * g(t)
-        H_total = qt.QobjEvo([H_dispersive + H_qubit_interaction, [H_coupling, gu]], args=args)
-
-        # Noise configuration
-        noise_config = self.experimental_params.noise_config
+        # Noise model
+        noise_model = self.experimental_params.noise_model
 
         # Extract noise rates for each qubit
-        depolarizing = noise_config.depolarizing
-        dephasing = noise_config.dephasing
-        relaxation = noise_config.relaxation
-
-        # Convert float parameters to lists of length n_qubits, or validate list lengths
-        if isinstance(depolarizing, float):
-            depolarizing = [depolarizing] * n_qubits
-        elif isinstance(depolarizing, list):
-            if len(depolarizing) != n_qubits:
-                raise ValueError(
-                    f"depolarizing list length ({len(depolarizing)}) must match n_qubits ({n_qubits})"
-                )
-        else:
-            raise TypeError(f"depolarizing must be float or list, got {type(depolarizing)}")
-
-        if isinstance(dephasing, float):
-            dephasing = [dephasing] * n_qubits
-        elif isinstance(dephasing, list):
-            if len(dephasing) != n_qubits:
-                raise ValueError(
-                    f"dephasing list length ({len(dephasing)}) must match n_qubits ({n_qubits})"
-                )
-        else:
-            raise TypeError(f"dephasing must be float or list, got {type(dephasing)}")
-
-        if isinstance(relaxation, float):
-            relaxation = [relaxation] * n_qubits
-        elif isinstance(relaxation, list):
-            if len(relaxation) != n_qubits:
-                raise ValueError(
-                    f"relaxation list length ({len(relaxation)}) must match n_qubits ({n_qubits})"
-                )
-        else:
-            raise TypeError(f"relaxation must be float or list, got {type(relaxation)}")
+        depolarizing = noise_model.depolarizing
+        dephasing = noise_model.dephasing
+        relaxation = noise_model.relaxation
 
         # Build Lindblad noise operators for each qubit using helper function
-        lindblad_noise_q = [build_qubit_noise_operators(
+
+        sigma_x = self.operators["sigma_x"]
+        sigma_y = self.operators["sigma_y"]
+        sigma_z = self.operators["sigma_z"]
+        sigma_minus = self.operators["sigma_minus"]
+        n_qubits = self.n_qubits
+
+        L_qb_noise = [build_qubit_noise_operators(
             sigma_x=sigma_x[i],
             sigma_y=sigma_y[i],
             sigma_z=sigma_z[i],
@@ -515,35 +324,212 @@ class Experiment:
 
         # Combine noise operators for all qubits
         # Flatten list: collect all operators from each qubit
-        lindblad_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [
-            op for i in range(n_qubits) for op in lindblad_noise_q[i]
+        L_base_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [
+            op for i in range(n_qubits) for op in L_qb_noise[i]
         ]
 
         # Add custom Lindblad operators if provided
-        if noise_config.custom_operators is not None:
-            lindblad_noise.extend(noise_config.custom_operators)
+        if noise_model.custom_operators is not None:
+            L_base_noise.extend(noise_model.custom_operators)
 
-        # Lindblad interaction operator (same for with/without photon)
-        L_int = qt.QobjEvo([a_in, gu], args=args) + np.sqrt(gm) * a
+        # Lindblad list
+        L_base = L_interaction + L_base_noise
 
-        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = [L_int] + lindblad_noise
-        no_interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = lindblad_noise
-
-        # Store Hamiltonians and Lindblad operators
+        # Generate base hamiltonian and lindblad operators and for each configuration
         self.hamiltonians = {
-            "total": H_total,
-            "dispersive": H_dispersive,
-            "dispersive_list": H_dispersive_list,
-            "coupling": H_coupling,
-        }
-
+            'base': H_base,
+            }
+        
         self.lindblad_operators = {
-            "interaction": interaction_ops,
-            "no_interaction": no_interaction_ops,
-        }
+            'base': L_base,
+            }
 
-    
-    def _generate_coherent_hamiltonian(self) -> None:
+        for configuration in self.experimental_params.configuration_set:
+            
+            const_terms = []
+            time_dependent_terms = []
+            lindblad_terms = []
+            
+            for interaction in configuration.interactions:
+                
+                H_term, L_term, t_func, args = self._generate_hamiltonian_term(interaction)
+
+                if H_term is not None and t_func is not None:
+                    H_term = qt.QobjEvo([H_term, t_func], args=args)
+                    time_dependent_terms.append([H_term, t_func])
+                elif H_term is not None:
+                    const_terms.append(H_term)
+                
+                if L_term is not None:
+                    lindblad_terms.append(L_term)
+            
+            if configuration.noise_model is not None:
+                
+                # Extract noise rates for each qubit
+                depolarizing = configuration.noise_model.depolarizing
+                dephasing = configuration.noise_model.dephasing
+                relaxation = configuration.noise_model.relaxation
+
+                qb_noise_terms = [build_qubit_noise_operators(
+                    sigma_x=sigma_x[i],
+                    sigma_y=sigma_y[i],
+                    sigma_z=sigma_z[i],
+                    sigma_minus=sigma_minus[i],
+                    depolarizing_rate=depolarizing[i],
+                    dephasing_rate=dephasing[i],
+                    relaxation_rate=relaxation[i],
+                ) for i in range(n_qubits)]
+
+                # Flatten list: collect all operators from each qubit
+                noise_terms: List[Union[qt.Qobj, qt.QobjEvo]] = [
+                    op for i in range(n_qubits) for op in qb_noise_terms[i]
+                ]
+
+                # Add custom Lindblad operators if provided
+                if configuration.noise_model.custom_operators is not None:
+                    noise_terms.extend(configuration.noise_model.custom_operators)
+
+            else:
+                noise_terms = L_base_noise
+
+            conf_H_static = H_static + sum(const_terms)
+            conf_H_time = H_time_dependent + time_dependent_terms
+            conf_L_tot = L_interaction + lindblad_terms + noise_terms
+
+            self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=args)
+            self.lindblad_operators[configuration.name] = conf_L_tot
+
+            
+
+    def _generate_hamiltonian_term(self, interaction: Interaction):
+        """
+        Generate Hamiltonian term for a given interaction.
+
+        Args:
+            interaction: Interaction object containing type, subsystems, parameters, and time modulation
+        Returns:
+            H_term: Hamiltonian term as a Qobj or QobjEvo
+            L_term: Lindblad operator term as a Qobj or QobjEvo (if applicable)
+        """
+
+        type = interaction.interaction_type
+        system1 = interaction.subsystem1[0]
+        index1 = interaction.subsystem1[1]
+        t_func = interaction.time_modulation
+        args = interaction.parameters
+
+        H_term, L_term = None, None
+
+        if type == InteractionType.DETUNING:
+
+            delta = args["delta"]
+
+            if system1 == 'cavity':
+                a = self.operators["a_c"][index1]
+                a_dag = self.operators["a_c_dag"][index1]
+                H_term = qt.Qobj(delta * a_dag * a)
+
+            elif system1 == 'field':
+                a = self.operators["a_f"][index1]
+                a_dag = self.operators["a_f_dag"][index1]
+                H_term = qt.Qobj(delta * a_dag * a)
+
+            elif system1 == 'qubit':
+                sigma_z = self.operators["sigma_z"][index1]
+                H_term = qt.Qobj(delta * sigma_z/2) 
+
+        elif type == InteractionType.DRIVE:
+
+            eps = args["amplitude"]
+
+            if system1 == 'cavity':
+                a = self.operators["a_c"][index1]
+                a_dag = self.operators["a_c_dag"][index1]
+
+            elif system1 == 'field':
+                a = self.operators["a_f"][index1]
+                a_dag = self.operators["a_f_dag"][index1]
+
+            H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
+
+        elif type == InteractionType.DISSIPATION:
+
+            k = args["kappa"]
+            a = self.operators["a_c"][index1]
+
+            if t_func is not None:
+                L_term = qt.QobjEvo([np.sqrt(k) * a, t_func], args=args)
+            else:
+                L_term = qt.Qobj(np.sqrt(k) * a)
+
+        system2 = interaction.subsystem2[0]
+        index2 = interaction.subsystem2[1]
+
+        if type == InteractionType.COUPLING:
+
+            gm = args["gamma"]
+
+            a1 = self.operators["a_c"][index1]
+            a1_dag = self.operators["a_c_dag"][index1]
+            a2 = self.operators["a_c"][index2]
+            a2_dag = self.operators["a_c_dag"][index2]
+
+            H_term = qt.Qobj( gm * (a1_dag * a2 + a1 * a2_dag))
+
+        if type == InteractionType.INPUT_OUTPUT:
+
+            k = args["kappa"]
+            gm = args["gamma"]
+
+            if system2 == 'cavity':
+                system1, index1, system2, index2 = system2, index2, system1, index1
+
+            ac = self.operators["a_c"][index1]
+            ac_dag = self.operators["a_c_dag"][index1]
+            af = self.operators["a_f"][index2]
+            af_dag = self.operators["a_f_dag"][index2]
+
+            H_term = qt.Qobj(1j/2 * np.sqrt(k) * gm * (af_dag * ac - af * ac_dag))
+            if t_func is not None:
+                L_term = qt.QobjEvo([af*gm, t_func], args=args) + np.sqrt(k) * ac
+            else:
+                L_term = qt.Qobj(af*gm + np.sqrt(k) * ac)
+        
+        if type == InteractionType.DISPERSIVE:
+
+            chi = args['chi']
+
+            if system2 == 'cavity':
+                system1, index1, system2, index2 = system2, index2, system1, index1
+
+            ac = self.operators["a_c"][index1]
+            ac_dag = self.operators["a_c_dag"][index1]
+            sz = self.operators["sigma_z"][index2]
+
+            H_term = qt.Qobj(-chi * ac_dag * ac * sz)
+
+        if type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
+
+            chi = args['chi']
+
+            if system1 != 'qubit' or system2 != 'qubit':
+                raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
+
+            if type == InteractionType.XX:
+                op1 = self.operators["sigma_x"][index1]
+                op2 = self.operators["sigma_x"][index2]
+            elif type == InteractionType.YY:
+                op1 = self.operators["sigma_y"][index1]
+                op2 = self.operators["sigma_y"][index2]
+            elif type == InteractionType.ZZ:
+                op1 = self.operators["sigma_z"][index1]
+                op2 = self.operators["sigma_z"][index2]
+
+            H_term = qt.Qobj(chi/2 * op1 * op2)
+
+        return H_term, L_term, t_func, args
+
+    def _generate_old_hamiltonian(self) -> None:
         """
         Generate Hamiltonian for n-qubit system.
 
@@ -562,7 +548,7 @@ class Experiment:
         gm = self.experimental_params.photon_cavity_coupling
         chi_list = self.experimental_params.chi  # List of [chi1, chi2, ... , chin]
         sigma = self.experimental_params.inverse_pulse_width
-        n_qubits = self.experimental_params.n_qubits
+        n_qubits = self.n_qubits
 
         # Extract individual chi values for each qubit
         # Type narrowing: chi is always a list for two-qubit experiments
@@ -607,12 +593,12 @@ class Experiment:
         H_total = qt.QobjEvo([H_dispersive + H_qubit_interaction, [H_coupling, gu]], args=args)
 
         # Noise configuration
-        noise_config = self.experimental_params.noise_config
+        noise_model = self.experimental_params.noise_model
 
         # Extract noise rates for each qubit
-        depolarizing = noise_config.depolarizing
-        dephasing = noise_config.dephasing
-        relaxation = noise_config.relaxation
+        depolarizing = noise_model.depolarizing
+        dephasing = noise_model.dephasing
+        relaxation = noise_model.relaxation
 
         # Convert float parameters to lists of length n_qubits, or validate list lengths
         if isinstance(depolarizing, float):
@@ -663,8 +649,8 @@ class Experiment:
         ]
 
         # Add custom Lindblad operators if provided
-        if noise_config.custom_operators is not None:
-            lindblad_noise.extend(noise_config.custom_operators)
+        if noise_model.custom_operators is not None:
+            lindblad_noise.extend(noise_model.custom_operators)
 
         # Lindblad interaction operator (same for with/without photon)
         L_int = qt.QobjEvo([a_in, gu], args=args) + np.sqrt(gm) * a
@@ -691,10 +677,10 @@ class Experiment:
         """
         self._cached_initial_state = generate_initial_state(
             initial_config=self.experimental_params.initial_state,
-            field_levels=self.experimental_params.field_levels,
-            cavity_levels=self.experimental_params.cavity_levels,
-            qubit_levels=self.experimental_params.qubit_levels,
-            n_qubits=self.experimental_params.n_qubits,
+            field_levels=self.field_levels,
+            cavity_levels=self.cavity_levels,
+            qubit_levels=self.qubit_levels,
+            n_qubits=self.n_qubits,
         )
 
     def get_solver_with_interaction(self) -> qt.MESolver:
@@ -733,8 +719,8 @@ class Experiment:
         final_unitary_circuit = self.final_circuit.get_unitary(qutip=False)
 
         # Embed into full composite space (JAX arrays) using utility function
-        field_levels = self.experimental_params.field_levels
-        cavity_levels = self.experimental_params.cavity_levels
+        field_levels = self.field_levels
+        cavity_levels = self.cavity_levels
         initial_unitary_jax = embed_circuit_unitary(initial_unitary_circuit, field_levels, cavity_levels)
         final_unitary_jax = embed_circuit_unitary(final_unitary_circuit, field_levels, cavity_levels)
 
@@ -1174,7 +1160,7 @@ class Experiment:
 
         # Build detection inputs in the shape expected by the selected metric mode.
         detection_name = self.detection_metric.detection_name
-        n_qubits = self.experimental_params.n_qubits
+        n_qubits = self.n_qubits
 
         if detection_name in ["min fidelity", "max trace distance"]:
             detection_with, detection_without = self.detection_metric.batching_logic(
@@ -1310,7 +1296,7 @@ class Experiment:
         args = {"sigma": self.experimental_params.inverse_pulse_width}
 
         # Get number of qubits and generate all possible states
-        n_qubits = self.experimental_params.n_qubits
+        n_qubits = self.n_qubits
         all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)] ################
         qubit_indices = list(range(0, n_qubits))
 
@@ -2337,7 +2323,7 @@ class Experiment:
         detection_without_map = np.zeros((resolution_gamma, resolution_chi))
 
         # Determine number of qubits
-        n_qubits = self.experimental_params.n_qubits
+        n_qubits = self.n_qubits
         store_state_prob_maps = n_qubits >= 2
         all_states = [format(k, f"0{n_qubits}b") for k in range(2**n_qubits)]
 
@@ -2423,11 +2409,11 @@ class Experiment:
         n_measurements = len(meas_times) if meas_times is not None else 0
 
         # Get noise rates (could be list or float)
-        depol = self.experimental_params.noise_config.depolarizing
+        depol = self.experimental_params.noise_model.depolarizing
         depol_val = depol[0] if isinstance(depol, list) else depol
-        dephasing = self.experimental_params.noise_config.dephasing
+        dephasing = self.experimental_params.noise_model.dephasing
         dephasing_val = dephasing[0] if isinstance(dephasing, list) else dephasing
-        relax = self.experimental_params.noise_config.relaxation
+        relax = self.experimental_params.noise_model.relaxation
         relax_val = relax[0] if isinstance(relax, list) else relax
 
         metadata = {
@@ -2437,9 +2423,9 @@ class Experiment:
             "optimal_idx": max_idx,
             # System characteristics
             "n_qubits": n_qubits,
-            "cavity_levels": self.experimental_params.system_dims.cavity_levels,
-            "qubit_levels": self.experimental_params.system_dims.qubit_levels,
-            "field_levels": self.experimental_params.system_dims.field_levels,
+            "cavity_levels": self.cavity_levels,
+            "qubit_levels": self.qubit_levels,
+            "field_levels": self.field_levels,
             "n_measurements": n_measurements,
             "measurement_times": meas_times,
             "initial_time_uncertainty": self.experimental_params.measurement.initial_time_uncertainty,
@@ -2482,10 +2468,10 @@ class Experiment:
         """
         from .quantum_utils import measure_qubits_probability
 
-        field_levels = self.experimental_params.field_levels
-        cavity_levels = self.experimental_params.cavity_levels
-        qubit_levels = self.experimental_params.qubit_levels
-        n_qubits = self.experimental_params.n_qubits
+        field_levels = self.field_levels
+        cavity_levels = self.cavity_levels
+        qubit_levels = self.qubit_levels
+        n_qubits = self.n_qubits
         all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
 
         return {
