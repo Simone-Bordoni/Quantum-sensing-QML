@@ -227,6 +227,7 @@ def generate_system_operators(
             "I_c": I_c,
             "I_f": I_f,
             "I_q": I_q,
+            "identity": embed_qubit_op(I_q[0], 0)  # Identity of the whole system
         }
 
         return operators

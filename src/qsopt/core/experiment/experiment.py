@@ -23,7 +23,8 @@ from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     InteractionType,
     QubitInteraction,
-    MeasurementProtocol
+    MeasurementProtocol,
+    Interaction
 )
 from qsopt.core.loss_functions import DetectionMetric
 from qsopt.utils.results import SweepResults
@@ -274,27 +275,178 @@ class Experiment:
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
 
-        interaction_list = self.experimental_params.interactions()
+        interaction_list = self.experimental_params.interactions
+
+
+        def generate_hamiltonian_term(self, interaction: Interaction):
+            """
+            Generate Hamiltonian term for a given interaction.
+
+            Args:
+                interaction: Interaction object containing interaction_type, subsystems, parameters, and time modulation
+            Returns:
+                H_term: Hamiltonian term as a Qobj or QobjEvo
+                L_term: Lindblad operator term as a Qobj or QobjEvo (if applicable)
+            """
+
+            int_type = interaction.interaction_type
+            system1 = interaction.subsystem1[0]
+            index1 = interaction.subsystem1[1]
+            t_func = interaction.time_modulation
+            args = interaction.parameters
+
+            if args is None:
+                args = {}
+
+            H_term, L_term = None, None
+
+            if int_type == InteractionType.DETUNING:
+
+                delta = args["delta"]
+
+                if system1 == 'cavity':
+                    a = self.operators["a_c"][index1]
+                    a_dag = self.operators["a_c_dag"][index1]
+                    H_term = qt.Qobj(delta * a_dag * a)
+
+                elif system1 == 'field':
+                    a = self.operators["a_f"][index1]
+                    a_dag = self.operators["a_f_dag"][index1]
+                    H_term = qt.Qobj(delta * a_dag * a)
+
+                elif system1 == 'qubit':
+                    sigma_z = self.operators["sigma_z"][index1]
+                    H_term = qt.Qobj(delta * sigma_z/2) 
+
+            elif int_type == InteractionType.DRIVE:
+
+                eps = args["amplitude"]
+
+                if system1 == 'cavity':
+                    a = self.operators["a_c"][index1]
+                    a_dag = self.operators["a_c_dag"][index1]
+
+                elif system1 == 'field':
+                    a = self.operators["a_f"][index1]
+                    a_dag = self.operators["a_f_dag"][index1]
+
+                H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
+
+            elif int_type == InteractionType.DISSIPATION:
+
+                k = args["kappa"]
+                a = self.operators["a_c"][index1]
+
+                if t_func is not None:
+                    L_term = qt.QobjEvo([np.sqrt(k) * a, t_func], args=args)
+                else:
+                    L_term = qt.Qobj(np.sqrt(k) * a)
+
+            if interaction.subsystem2 is not None:
+                system2 = interaction.subsystem2[0]
+                index2 = interaction.subsystem2[1]
+
+            if int_type == InteractionType.COUPLING:
+
+                gm = args["gamma"]
+
+                a1 = self.operators["a_c"][index1]
+                a1_dag = self.operators["a_c_dag"][index1]
+                a2 = self.operators["a_c"][index2]
+                a2_dag = self.operators["a_c_dag"][index2]
+
+                H_term = qt.Qobj( gm * (a1_dag * a2 + a1 * a2_dag))
+
+            if int_type == InteractionType.INPUT_OUTPUT:
+
+                k = args["kappa"]
+                gm = args["gamma"]
+
+                if system2 == 'cavity':
+                    system1, index1, system2, index2 = system2, index2, system1, index1
+
+                ac = self.operators["a_c"][index1]
+                ac_dag = self.operators["a_c_dag"][index1]
+                af = self.operators["a_f"][index2]
+                af_dag = self.operators["a_f_dag"][index2]
+
+                H_term = qt.Qobj(1j/2 * np.sqrt(k) * gm * (af_dag * ac - af * ac_dag))
+                if t_func is not None:
+                    L_term = qt.QobjEvo([af*gm, t_func], args=args) + np.sqrt(k) * ac
+                else:
+                    L_term = qt.Qobj(af*gm + np.sqrt(k) * ac)
+            
+            if int_type == InteractionType.DISPERSIVE:
+
+                chi = args['chi']
+
+                if system2 == 'cavity':
+                    system1, index1, system2, index2 = system2, index2, system1, index1
+
+                ac = self.operators["a_c"][index1]
+                ac_dag = self.operators["a_c_dag"][index1]
+                sz = self.operators["sigma_z"][index2]
+
+                H_term = qt.Qobj(-chi * ac_dag * ac * sz)
+
+            if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
+
+                chi = args['chi']
+
+                if system1 != 'qubit' or system2 != 'qubit':
+                    raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
+
+                if int_type == InteractionType.XX:
+                    op1 = self.operators["sigma_x"][index1]
+                    op2 = self.operators["sigma_x"][index2]
+                elif int_type == InteractionType.YY:
+                    op1 = self.operators["sigma_y"][index1]
+                    op2 = self.operators["sigma_y"][index2]
+                elif int_type == InteractionType.ZZ:
+                    op1 = self.operators["sigma_z"][index1]
+                    op2 = self.operators["sigma_z"][index2]
+
+                H_term = qt.Qobj(chi/2 * op1 * op2)
+
+            return H_term, L_term, t_func, args
+
+        def _wrap_time_modulation(func, key_map):
+            def wrapped(t, all_args):
+                local = {k: all_args[v] for k, v in key_map.items()}
+                return func(t, local)
+            return wrapped
 
         H_const = []
         H_time_dependent = []
         L_interaction = []
+        self.global_args = {}
 
         for interaction in interaction_list:
             
-            H_term, L_term, t_func, args = self._generate_hamiltonian_term(interaction)
+            H_term, L_term, t_func, args = generate_hamiltonian_term(interaction)
+
+            params = interaction.parameters if isinstance(interaction.parameters, dict) else {}
+            key_map = {}
+            for key, value in params.items():
+                global_key = f"BaseModel_{interaction._interaction_context()}__{key}"
+                key_map[key] = global_key
+                self.global_args[global_key] = value
+
 
             if H_term is not None and t_func is not None:
-                H_term = qt.QobjEvo([H_term, t_func], args=args)
-                H_time_dependent.append([H_term, t_func])
+                modulation = _wrap_time_modulation(t_func, key_map)
+                H_time_dependent.append([H_term, modulation])
             elif H_term is not None:
                 H_const.append(H_term)
             
             if L_term is not None:
                 L_interaction.append(L_term)
 
-        H_static = sum(H_const)
-        H_base = qt.QobjEvo([H_static] + H_time_dependent, args=args)
+        if len(H_const) == 0:
+            H_static = self.operators["identity"]  # Identity operator if no constant terms
+        else:
+            H_static = sum(H_const)
+        H_base = qt.QobjEvo([H_static] + H_time_dependent, args=self.global_args)
 
         # Noise model
         noise_model = self.experimental_params.noise_model
@@ -352,11 +504,19 @@ class Experiment:
             
             for interaction in configuration.interactions:
                 
-                H_term, L_term, t_func, args = self._generate_hamiltonian_term(interaction)
+                H_term, L_term, t_func, args = generate_hamiltonian_term(interaction)
+
+                params = interaction.parameters if isinstance(interaction.parameters, dict) else {}
+                key_map = {}
+                for key, value in params.items():
+                    global_key = f"Conf:{configuration.name}_{interaction._interaction_context()}__{key}"
+                    key_map[key] = global_key
+                    self.global_args[global_key] = value
+
 
                 if H_term is not None and t_func is not None:
-                    H_term = qt.QobjEvo([H_term, t_func], args=args)
-                    time_dependent_terms.append([H_term, t_func])
+                    modulation = _wrap_time_modulation(t_func, key_map)
+                    time_dependent_terms.append([H_term, modulation])
                 elif H_term is not None:
                     const_terms.append(H_term)
                 
@@ -392,142 +552,15 @@ class Experiment:
             else:
                 noise_terms = L_base_noise
 
-            conf_H_static = H_static + sum(const_terms)
+            if len(const_terms) == 0:
+                conf_H_static = H_static.copy()
+            else:
+                conf_H_static = H_static + sum(const_terms)
             conf_H_time = H_time_dependent + time_dependent_terms
             conf_L_tot = L_interaction + lindblad_terms + noise_terms
 
-            self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=args)
+            self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=self.global_args)
             self.lindblad_operators[configuration.name] = conf_L_tot
-
-            
-
-    def _generate_hamiltonian_term(self, interaction: Interaction):
-        """
-        Generate Hamiltonian term for a given interaction.
-
-        Args:
-            interaction: Interaction object containing type, subsystems, parameters, and time modulation
-        Returns:
-            H_term: Hamiltonian term as a Qobj or QobjEvo
-            L_term: Lindblad operator term as a Qobj or QobjEvo (if applicable)
-        """
-
-        type = interaction.interaction_type
-        system1 = interaction.subsystem1[0]
-        index1 = interaction.subsystem1[1]
-        t_func = interaction.time_modulation
-        args = interaction.parameters
-
-        H_term, L_term = None, None
-
-        if type == InteractionType.DETUNING:
-
-            delta = args["delta"]
-
-            if system1 == 'cavity':
-                a = self.operators["a_c"][index1]
-                a_dag = self.operators["a_c_dag"][index1]
-                H_term = qt.Qobj(delta * a_dag * a)
-
-            elif system1 == 'field':
-                a = self.operators["a_f"][index1]
-                a_dag = self.operators["a_f_dag"][index1]
-                H_term = qt.Qobj(delta * a_dag * a)
-
-            elif system1 == 'qubit':
-                sigma_z = self.operators["sigma_z"][index1]
-                H_term = qt.Qobj(delta * sigma_z/2) 
-
-        elif type == InteractionType.DRIVE:
-
-            eps = args["amplitude"]
-
-            if system1 == 'cavity':
-                a = self.operators["a_c"][index1]
-                a_dag = self.operators["a_c_dag"][index1]
-
-            elif system1 == 'field':
-                a = self.operators["a_f"][index1]
-                a_dag = self.operators["a_f_dag"][index1]
-
-            H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
-
-        elif type == InteractionType.DISSIPATION:
-
-            k = args["kappa"]
-            a = self.operators["a_c"][index1]
-
-            if t_func is not None:
-                L_term = qt.QobjEvo([np.sqrt(k) * a, t_func], args=args)
-            else:
-                L_term = qt.Qobj(np.sqrt(k) * a)
-
-        system2 = interaction.subsystem2[0]
-        index2 = interaction.subsystem2[1]
-
-        if type == InteractionType.COUPLING:
-
-            gm = args["gamma"]
-
-            a1 = self.operators["a_c"][index1]
-            a1_dag = self.operators["a_c_dag"][index1]
-            a2 = self.operators["a_c"][index2]
-            a2_dag = self.operators["a_c_dag"][index2]
-
-            H_term = qt.Qobj( gm * (a1_dag * a2 + a1 * a2_dag))
-
-        if type == InteractionType.INPUT_OUTPUT:
-
-            k = args["kappa"]
-            gm = args["gamma"]
-
-            if system2 == 'cavity':
-                system1, index1, system2, index2 = system2, index2, system1, index1
-
-            ac = self.operators["a_c"][index1]
-            ac_dag = self.operators["a_c_dag"][index1]
-            af = self.operators["a_f"][index2]
-            af_dag = self.operators["a_f_dag"][index2]
-
-            H_term = qt.Qobj(1j/2 * np.sqrt(k) * gm * (af_dag * ac - af * ac_dag))
-            if t_func is not None:
-                L_term = qt.QobjEvo([af*gm, t_func], args=args) + np.sqrt(k) * ac
-            else:
-                L_term = qt.Qobj(af*gm + np.sqrt(k) * ac)
-        
-        if type == InteractionType.DISPERSIVE:
-
-            chi = args['chi']
-
-            if system2 == 'cavity':
-                system1, index1, system2, index2 = system2, index2, system1, index1
-
-            ac = self.operators["a_c"][index1]
-            ac_dag = self.operators["a_c_dag"][index1]
-            sz = self.operators["sigma_z"][index2]
-
-            H_term = qt.Qobj(-chi * ac_dag * ac * sz)
-
-        if type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
-
-            chi = args['chi']
-
-            if system1 != 'qubit' or system2 != 'qubit':
-                raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
-
-            if type == InteractionType.XX:
-                op1 = self.operators["sigma_x"][index1]
-                op2 = self.operators["sigma_x"][index2]
-            elif type == InteractionType.YY:
-                op1 = self.operators["sigma_y"][index1]
-                op2 = self.operators["sigma_y"][index2]
-            elif type == InteractionType.ZZ:
-                op1 = self.operators["sigma_z"][index1]
-                op2 = self.operators["sigma_z"][index2]
-
-            H_term = qt.Qobj(chi/2 * op1 * op2)
-
-        return H_term, L_term, t_func, args
 
     def _generate_old_hamiltonian(self) -> None:
         """

@@ -651,7 +651,15 @@ class PhysicalModel:
                     raise ValueError(
                         f"Interaction involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
                     )
-                
+        
+        duplicate_check = [((int1.name == int2.name) and (int1.subsystem1 == int2.subsystem1) and (int1.subsystem2 == int2.subsystem2)) for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
+        interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
+
+        if any(duplicate_check):
+            duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]
+            raise ValueError(f"PhysicalModel interactions must be unique, interactions between the same two subsystems and of the same kind cannot be repeated (even if with different parameters).\n\
+                             Found interactions: {duplicates}")
+
     def _normalize_levels(self, levels: Union[int, List[int]], count: int, label: str) -> List[int]:
         """Normalize levels to list format."""
         if label == 'cavity':
@@ -998,6 +1006,15 @@ class SystemConfiguration:
             for interaction in self.interactions:
                 if not isinstance(interaction, Interaction):
                     raise TypeError("All interactions must be Interaction instances")
+                
+            
+            duplicate_check = [((int1.name == int2.name) and (int1.subsystem1 == int2.subsystem1) and (int1.subsystem2 == int2.subsystem2)) for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
+            interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
+
+            if any(duplicate_check):
+                duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]
+                raise ValueError(f"SystemConfiguration interactions must be unique, interactions between the same two subsystems and of the same kind cannot be repeated (even if with different parameters).\n\
+                                Found interactions: {duplicates}")
         else:
             self.interactions = []
 
@@ -1232,6 +1249,16 @@ class ExperimentalParameters:
                             raise ValueError(
                                 f"Custom interaction of {config.name} involves qubit {subsystem[1]}, but only {self.physical_model.n_qubits} qubits in system"
                             )
+                        
+                
+                duplicate_check = [((int1.name == int2.name) and (int1.subsystem1 == int2.subsystem1) and (int1.subsystem2 == int2.subsystem2)) for int1 in self.interactions for int2 in config.interactions]
+                interaction_list = [int1._interaction_context() for int1 in self.interactions for int2 in config.interactions]
+
+                if any(duplicate_check):
+                    duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]
+                    raise ValueError(f"PhysicalModel interactions cannot be used inside systemconfigurations (even if with different parameters), found duplicates in {configuration.name} configuration.\n\
+                                    Found interactions: {duplicates}")
+
             if config.initial_state is not None:
                 if config.initial_state.cavity_states is not None:
                     for (index, state) in config.initial_state.cavity_states.items():
