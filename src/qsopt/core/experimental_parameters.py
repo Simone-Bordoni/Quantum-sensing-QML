@@ -874,8 +874,8 @@ class InitialState:
         density_matrix: Optional density matrix state for the {cavities} ⊗ {fields} subsystem
     """
 
-    cavity_states: Dict[int, SubsystemState] = None
-    field_states: Dict[int, SubsystemState] = None
+    cavity_states: Optional[Dict[int, SubsystemState]] = None
+    field_states: Optional[Dict[int, SubsystemState]] = None
     density_matrix: Optional[qt.Qobj] = None  # Overrides cavity_states and field_states when provided
 
     def __post_init__(self):
@@ -901,13 +901,13 @@ class InitialState:
                     "density_matrix is provided; cavity_states and field_states will be ignored.",
                     UserWarning,
                 )
-     
-        if self.density_matrix is not None:
             if not isinstance(self.density_matrix, qt.Qobj):
                 raise ValueError("density_matrix must be a Qobj representing the density matrix")
             if not self.density_matrix.isherm or not self.density_matrix.ispositive or not np.isclose(self.density_matrix.tr(), 1.0):
                 raise ValueError("density_matrix must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
-
+        if self.cavity_states is None and self.field_states is None and self.density_matrix is None:
+            raise ValueError("Either the subsystem states must be specified or the custom density matrix must be provided to define the initial state")
+        
     def copy(self) -> "InitialState":
         """Return a copy with independent subsystem state storage."""
         cavity_states = None
