@@ -315,10 +315,10 @@ def generate_initial_state(
     Supports various possible initial state types for each field and cavity subsystems,
     (qubit subsystems are always initialized in ground state the circuit is used to prepare the qubits).
     Possible subsystem states:
-    - VACUUM: All subsystems in ground state
-    - SINGLE_PHOTON: One photon in field, vacuum cavity, qubits in ground or superposition
-    - COHERENT: Coherent state in field
-    - THERMAL: Thermal state in field
+    - VACUUM: ground state
+    - SINGLE_PHOTON: One photon Fock state
+    - COHERENT: Coherent state
+    - THERMAL: Thermal state
     - CUSTOM: User-defined superposition
 
     Args:

@@ -1294,14 +1294,6 @@ class ExperimentalParameters:
                                     UserWarning,
                                 )
 
-                    keys = set(config.initial_state.cavity_states.keys())
-                    cavities = set(range(self.n_cavities))
-                    for index in list(cavities - keys):
-                        config.initial_state.cavity_states[index] = SubsystemState(
-                            state_type=InitialStateType.VACUUM
-                        )
-
-
                 if config.initial_state.field_states is not None:
                     for (index, state) in config.initial_state.field_states.items():
                         if not 0 <= index < self.n_fields:
@@ -1335,13 +1327,6 @@ class ExperimentalParameters:
                                     UserWarning,
                                 )
                                 
-                    keys = set(config.initial_state.cavity_states.keys())
-                    cavities = set(range(self.n_cavities))
-                    for index in list(cavities - keys):
-                        config.initial_state.cavity_states[index] = SubsystemState(
-                            state_type=InitialStateType.VACUUM
-                        )
-
                 if config.initial_state.density_matrix is not None:
                     dim = math.prod(self.cavity_levels) * math.prod(self.field_levels)
                     if config.initial_state.density_matrix.shape != (dim, dim):
