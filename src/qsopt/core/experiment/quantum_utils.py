@@ -17,7 +17,7 @@ import numpy as np
 import qutip as qt
 from jax.scipy.special import erfc
 
-from qsopt.core.experimental_parameters import InitialStateType
+from qsopt.core.experimental_parameters import InitialStateType, InitialState
 
 
 @jax.jit
@@ -301,30 +301,33 @@ def build_qubit_noise_operators(
 
 
 def generate_initial_state(
-    initial_config,
-    field_levels: int,
-    cavity_levels: int,
+    initial_state: InitialState,
+    cavity_levels: Union[int, List[int]],
+    field_levels: Union[int, List[int]],
     qubit_levels: Union[int, List[int]],
+    n_cavities: int = 1,
+    n_fields: int = 1,
     n_qubits: int = 1,
 ) -> qt.Qobj:
     """
     Generate initial density matrix based on configuration and system type.
 
-    Supports multiple initial state types:
+    Supports various possible initial state types for each field and cavity subsystems,
+    (qubit subsystems are always initialized in ground state the circuit is used to prepare the qubits).
+    Possible subsystem states:
     - VACUUM: All subsystems in ground state
     - SINGLE_PHOTON: One photon in field, vacuum cavity, qubits in ground or superposition
     - COHERENT: Coherent state in field
     - THERMAL: Thermal state in field
     - CUSTOM: User-defined superposition
 
-    Qubits are initialized in equal superposition (|1⟩+|2⟩+...+|n⟩)/√n
-    unless otherwise specified.
-
     Args:
-        initial_config: InitialStateConfig object with state type and parameters
-        field_levels: Number of Fock levels for input field
-        cavity_levels: Number of Fock levels for resonator cavity
+        initial_state: InitialState object with dictionaries of subsystems states or custom initial density_matrix
+        cavity_levels: Number of Fock levels for each resonator cavity
+        field_levels: Number of Fock levels for each input field
         qubit_levels: Number of levels for each qubit (int or list)
+        n_cavities: Number of cavities in the system
+        n_fields: Number of input fields in the system
         n_qubits: Number of qubits in the system
     Returns:
         Initial density matrix in composite Hilbert space
@@ -338,13 +341,35 @@ def generate_initial_state(
         >>> rho0 = generate_initial_state(config, 2, 2, 2, n_qubits=1)
     """
 
-    state_type = initial_config.state_type
+    if isinstance(cavity_levels, int):
+        c_levels = [cavity_levels] * n_cavities
+    else:
+        c_levels = cavity_levels[:n_cavities]
 
+    if isinstance(field_levels, int):
+        f_levels = [field_levels] * n_fields
+    else:
+        f_levels = field_levels[:n_fields]
+
+    if isinstance(qubit_levels, int):
+        q_levels = [qubit_levels] * n_qubits
+    else:
+        q_levels = qubit_levels[:n_qubits]
     # Use JAX backend for compatibility
     with qt.CoreOptions(default_dtype="jax"):
         # Create ground state base (cavity + qubits always in ground state)
-        ground_base = _create_ground_state_base(cavity_levels, qubit_levels, n_qubits)
+        qubits_ground = _create_ground_state_base(q_levels, n_qubits)
 
+        if initial_state.density_matrix is not None:
+            # Validate dimensions of provided density matrix
+            expected_dim = math.prod(f_levels + c_levels)
+            if initial_state.density_matrix.shape != (expected_dim, expected_dim):
+                raise ValueError(f"Custom density matrix was provided, expected dimensions ({expected_dim}, {expected_dim}), but got {initial_state.density_matrix.shape}.\n\
+                                Please ensure the custom density matrix is defined for the correct subsystem {'{cavities} ⊗ {fields}'}, qubits are always initialized in ground state.")
+            else:
+                return qt.tensor(initial_state.density_matrix, qubits_ground)
+
+        for 
         # Create field state (varies by experiment)
         if state_type == InitialStateType.VACUUM:
             field_dm = _create_field_vacuum(field_levels)
@@ -376,22 +401,20 @@ def generate_initial_state(
 # ==================== Private Helper Functions ====================
 
 
-def _create_ground_state_base(
-    cavity_levels: int, qubit_levels: Union[int, List[int]], n_qubits: int
+def _create_ground_state_base(qubit_levels: Union[int, List[int]], n_qubits: int
 ) -> qt.Qobj:
     """
-    Create ground state for cavity and qubits: |0⟩_cavity ⊗ |0⟩_q1 ⊗ |0⟩_q2 ⊗ ...
+    Create ground state for qubits: |0⟩_q1 ⊗ |0⟩_q2 ⊗ ... ⊗ |0⟩_qn
 
-    The cavity and qubits are always initialized in ground state. Only the input
-    field state varies depending on the experiment.
+    The qubits are always initialized in ground state and are 
+    prepared by the circuit during the simulation.
 
     Args:
-        cavity_levels: Number of cavity levels
         qubit_levels: Number of levels for each qubit (int or list)
         n_qubits: Number of qubits
 
     Returns:
-        Ground state density matrix for cavity + qubits subsystem
+        Ground state density matrix for qubits subsystem
     """
     # Extract qubit levels for each qubit
     if isinstance(qubit_levels, int):
@@ -399,14 +422,11 @@ def _create_ground_state_base(
     else:
         q_levels = qubit_levels[:n_qubits]
 
-    # Start with cavity ground state
-    cavity_ground = qt.basis(cavity_levels, 0)
-
     # Build ground state for all qubits
     qubit_grounds = [qt.basis(q_levels[i], 0) for i in range(n_qubits)]
 
-    # Create state vector: cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
-    psi = qt.tensor(cavity_ground, *qubit_grounds)
+    # Create state vector: qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
+    psi = qt.tensor(*qubit_grounds)
     return psi * psi.dag()  # type: ignore
 
 

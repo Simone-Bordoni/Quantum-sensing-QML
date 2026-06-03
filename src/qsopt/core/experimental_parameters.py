@@ -871,7 +871,7 @@ class InitialState:
     Attributes:
         cavity_states: Dict of cavity states, keyed by cavity index (0-based)
         field_states: Dict of input field states, keyed by field mode index (0-based)
-        density_matrix: Optional density matrix state for the cavity/field subsystem
+        density_matrix: Optional density matrix state for the {cavities} ⊗ {fields} subsystem
     """
 
     cavity_states: Dict[int, SubsystemState] = None
