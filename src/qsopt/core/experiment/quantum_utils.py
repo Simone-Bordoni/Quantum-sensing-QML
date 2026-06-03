@@ -341,6 +341,10 @@ def generate_initial_state(
         >>> rho0 = generate_initial_state(config, 2, 2, 2, n_qubits=1)
     """
 
+    cavity_states = initial_state.cavity_states
+    field_states = initial_state.field_states
+    density_matrix = initial_state.density_matrix
+
     if isinstance(cavity_levels, int):
         c_levels = [cavity_levels] * n_cavities
     else:
@@ -355,6 +359,7 @@ def generate_initial_state(
         q_levels = [qubit_levels] * n_qubits
     else:
         q_levels = qubit_levels[:n_qubits]
+
     # Use JAX backend for compatibility
     with qt.CoreOptions(default_dtype="jax"):
         # Create ground state base (cavity + qubits always in ground state)
@@ -363,13 +368,13 @@ def generate_initial_state(
         if initial_state.density_matrix is not None:
             # Validate dimensions of provided density matrix
             expected_dim = math.prod(f_levels + c_levels)
-            if initial_state.density_matrix.shape != (expected_dim, expected_dim):
-                raise ValueError(f"Custom density matrix was provided, expected dimensions ({expected_dim}, {expected_dim}), but got {initial_state.density_matrix.shape}.\n\
+            if density_matrix.shape != (expected_dim, expected_dim):
+                raise ValueError(f"Custom density matrix was provided, expected dimensions ({expected_dim}, {expected_dim}), but got {density_matrix.shape}.\n\
                                 Please ensure the custom density matrix is defined for the correct subsystem {'{cavities} ⊗ {fields}'}, qubits are always initialized in ground state.")
             else:
-                return qt.tensor(initial_state.density_matrix, qubits_ground)
+                return qt.tensor(density_matrix, qubits_ground)
 
-        for 
+        for i in range(n_cavities):
         # Create field state (varies by experiment)
         if state_type == InitialStateType.VACUUM:
             field_dm = _create_field_vacuum(field_levels)

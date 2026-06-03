@@ -866,7 +866,7 @@ class SubsystemState:
 @dataclass 
 class InitialState:
     """
-    Initial state configuration for the entire system.
+    Initial state configuration for the entire system. Any non explicited subsystem will be initialized in the vacuum state.
     
     Attributes:
         cavity_states: Dict of cavity states, keyed by cavity index (0-based)
@@ -874,8 +874,8 @@ class InitialState:
         density_matrix: Optional density matrix state for the {cavities} ⊗ {fields} subsystem
     """
 
-    cavity_states: Optional[Dict[int, SubsystemState]] = None
-    field_states: Optional[Dict[int, SubsystemState]] = None
+    cavity_states: Optional[Dict[int, SubsystemState]] = {}
+    field_states: Optional[Dict[int, SubsystemState]] = {}
     density_matrix: Optional[qt.Qobj] = None  # Overrides cavity_states and field_states when provided
 
     def __post_init__(self):
@@ -905,9 +905,9 @@ class InitialState:
                 raise ValueError("density_matrix must be a Qobj representing the density matrix")
             if not self.density_matrix.isherm or not self.density_matrix.ispositive or not np.isclose(self.density_matrix.tr(), 1.0):
                 raise ValueError("density_matrix must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
-        if self.cavity_states is None and self.field_states is None and self.density_matrix is None:
-            raise ValueError("Either the subsystem states must be specified or the custom density matrix must be provided to define the initial state")
-        
+        if self.cavity_states == {} and self.field_states == {} and self.density_matrix is None:
+            warnings.warn("No subsystem state was initialized nor a density_matrix was provided. The initial state will be the vacuum state.", UserWarning)
+
     def copy(self) -> "InitialState":
         """Return a copy with independent subsystem state storage."""
         cavity_states = None
@@ -1069,7 +1069,7 @@ class ExperimentalParameters:
         self.configuration_set = configuration_set
 
         # Normalize multi-qubit parameters based on n_qubits
-        n_qubits = self.physical_model.n_qubits
+        n_qubits = self.n_qubits
         self.noise_model._normalize_noise_rates(n_qubits)
 
         # Random seed for uncertainty calculations
@@ -1201,13 +1201,13 @@ class ExperimentalParameters:
     def _validate_experimental_parameters(self) -> None:
         """Validate parameter consistency and physical constraints."""
         # Validate subsystem levels
-        for i, level in enumerate(self.physical_model.cavity_levels):
+        for i, level in enumerate(self.cavity_levels):
             if level < 2:
                 raise ValueError(f"Every cavity must have at least 2 levels. Cavity_{i} got {level}")
-        for i, level in enumerate(self.physical_model.field_levels):
+        for i, level in enumerate(self.field_levels):
             if level < 2:
                 raise ValueError(f"Every field must have at least 2 levels. Field_{i} got {level}")
-        for i, level in enumerate(self.physical_model.qubit_levels):
+        for i, level in enumerate(self.qubit_levels):
             if level < 2:
                 raise ValueError(f"Every qubit must have at least 2 levels. Qubit_{i} got {level}")
 
@@ -1233,21 +1233,21 @@ class ExperimentalParameters:
             if not isinstance(config, SystemConfiguration):
                 raise TypeError("All items in configuration_set must be SystemConfiguration instances")
             if config.noise_model is not None:
-                config.noise_model._normalize_noise_rates(self.physical_model.n_qubits)
+                config.noise_model._normalize_noise_rates(self.n_qubits)
             if config.interactions:
                 for interaction in config.interactions:
                     for subsystem in [interaction.subsystem1, interaction.subsystem2]:
-                        if subsystem[0] == 'cavity' and subsystem[1] >= self.physical_model.n_cavities:
+                        if subsystem[0] == 'cavity' and subsystem[1] >= self.n_cavities:
                             raise ValueError(
-                                f"Custom interaction of {config.name} involves cavity {subsystem[1]}, but only {self.physical_model.n_cavities} cavities in system"
+                                f"Custom interaction of {config.name} involves cavity {subsystem[1]}, but only {self.n_cavities} cavities in system"
                             )
-                        if subsystem[0] == 'field' and subsystem[1] >= self.physical_model.n_fields:
+                        if subsystem[0] == 'field' and subsystem[1] >= self.n_fields:
                             raise ValueError(
-                                f"Custom interaction of {config.name} involves field mode {subsystem[1]}, but only {self.physical_model.n_fields} field modes in system"
+                                f"Custom interaction of {config.name} involves field mode {subsystem[1]}, but only {self.n_fields} field modes in system"
                             )
-                        if subsystem[0] == 'qubit' and subsystem[1] >= self.physical_model.n_qubits:
+                        if subsystem[0] == 'qubit' and subsystem[1] >= self.n_qubits:
                             raise ValueError(
-                                f"Custom interaction of {config.name} involves qubit {subsystem[1]}, but only {self.physical_model.n_qubits} qubits in system"
+                                f"Custom interaction of {config.name} involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
                             )
                         
                 
@@ -1262,73 +1262,88 @@ class ExperimentalParameters:
             if config.initial_state is not None:
                 if config.initial_state.cavity_states is not None:
                     for (index, state) in config.initial_state.cavity_states.items():
-                        if not 0 <= index < self.physical_model.n_cavities:
+                        if not 0 <= index < self.n_cavities:
                             raise ValueError(
-                                f"Initial state of {config.name} specifies cavity state for cavity {index}, but only {self.physical_model.n_cavities} cavities in system. Indexing starts from 0."
+                                f"Initial state of {config.name} specifies cavity state for cavity {index}, but only {self.n_cavities} cavities in system. Indexing starts from 0."
                             )
                         if state.state_type == InitialStateType.FOCK:
                             n = state.parameters["n"]
-                            if self.physical_model.cavity_levels[index] < n:
+                            if self.cavity_levels[index] < n:
                                 raise ValueError(
                                     f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for cavity {index},\n\
-                                    but cavity truncation level is {self.physical_model.cavity_levels[index]}.\n\
-                                    Valid n values are 0 to {self.physical_model.cavity_levels[index]-1}, or raise the cavity_levels truncation parameter."
+                                    but cavity truncation level is {self.cavity_levels[index]}.\n\
+                                    Valid n values are 0 to {self.cavity_levels[index]-1}, or raise the cavity_levels truncation parameter."
                                 )
                             
                         if state.state_type == InitialStateType.COHERENT:
                             n_avg = pow(abs(state.parameters["alpha"]), 2)
-                            if self.physical_model.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
+                            if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
                                 warnings.warn(
                                     f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for cavity {index},\n\
-                                    which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}.\n\
+                                    which may lead to significant population in levels above the cavity truncation level {self.cavity_levels[index]}.\n\
                                     Consider increasing cavity_levels or reducing alpha for more accurate simulations.",
                                     UserWarning,
                                 )
                         if state.state_type == InitialStateType.THERMAL:
                             n_avg = state.parameters["n_avg"]
-                            if self.physical_model.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
+                            if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
                                 warnings.warn(
                                     f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for cavity {index},\n\
-                                    which may lead to significant population in levels above the cavity truncation level {self.physical_model.cavity_levels[index]}.\n\
+                                    which may lead to significant population in levels above the cavity truncation level {self.cavity_levels[index]}.\n\
                                     Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
                                     UserWarning,
                                 )
 
+                    keys = set(config.initial_state.cavity_states.keys())
+                    cavities = set(range(self.n_cavities))
+                    for index in list(cavities - keys):
+                        config.initial_state.cavity_states[index] = SubsystemState(
+                            state_type=InitialStateType.VACUUM
+                        )
+
+
                 if config.initial_state.field_states is not None:
                     for (index, state) in config.initial_state.field_states.items():
-                        if not 0 <= index < self.physical_model.n_fields:
+                        if not 0 <= index < self.n_fields:
                             raise ValueError(
-                                f"Initial state of {config.name} specifies field state for field mode {index}, but only {self.physical_model.n_fields} field modes in system. Indexing starts from 0."
+                                f"Initial state of {config.name} specifies field state for field mode {index}, but only {self.n_fields} field modes in system. Indexing starts from 0."
                             )
                         if state.state_type == InitialStateType.FOCK:
                             n = state.parameters["n"]
-                            if self.physical_model.field_levels[index] < n:
+                            if self.field_levels[index] < n:
                                 raise ValueError(
                                     f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for field mode {index},\n\
-                                    but field truncation level is {self.physical_model.field_levels[index]}.\n\
-                                    Valid n values are 0 to {self.physical_model.field_levels[index]-1}, or raise the field_levels truncation parameter."
+                                    but field truncation level is {self.field_levels[index]}.\n\
+                                    Valid n values are 0 to {self.field_levels[index]-1}, or raise the field_levels truncation parameter."
                                 )
                         if state.state_type == InitialStateType.COHERENT:
                             n_avg = pow(abs(state.parameters["alpha"]), 2)
-                            if self.physical_model.field_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
+                            if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
                                 warnings.warn(
                                     f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for field mode {index},\n\
-                                    which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}.\n\
+                                    which may lead to significant population in levels above the field truncation level {self.field_levels[index]}.\n\
                                     Consider increasing field_levels or reducing alpha for more accurate simulations.",
                                     UserWarning,
                                 )
                         if state.state_type == InitialStateType.THERMAL:
                             n_avg = state.parameters["n_avg"]
-                            if self.physical_model.field_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
+                            if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
                                 warnings.warn(
                                     f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for field mode {index},\n\
-                                    which may lead to significant population in levels above the field truncation level {self.physical_model.field_levels[index]}.\n\
+                                    which may lead to significant population in levels above the field truncation level {self.field_levels[index]}.\n\
                                     Consider increasing field_levels or reducing n_avg for more accurate simulations.",
                                     UserWarning,
                                 )
+                                
+                    keys = set(config.initial_state.cavity_states.keys())
+                    cavities = set(range(self.n_cavities))
+                    for index in list(cavities - keys):
+                        config.initial_state.cavity_states[index] = SubsystemState(
+                            state_type=InitialStateType.VACUUM
+                        )
 
                 if config.initial_state.density_matrix is not None:
-                    dim = math.prod(self.physical_model.cavity_levels) * math.prod(self.physical_model.field_levels)
+                    dim = math.prod(self.cavity_levels) * math.prod(self.field_levels)
                     if config.initial_state.density_matrix.shape != (dim, dim):
                         raise ValueError(
                             f"Initial state of {config.name} specifies a density matrix with shape {config.initial_state.density_matrix.shape}, but expected shape is ({dim}, {dim}) based on the physical model dimensions (only considers cavity and field modes)."
@@ -1336,19 +1351,19 @@ class ExperimentalParameters:
                 else:
                     if config.initial_state.cavity_states is not None:
                         vacuum_cavity_idx = list(
-                            set(range(self.physical_model.n_cavities))
+                            set(range(self.n_cavities))
                             - set(config.initial_state.cavity_states.keys())
                         )
                     else:
-                        vacuum_cavity_idx = list(range(self.physical_model.n_cavities))
+                        vacuum_cavity_idx = list(range(self.n_cavities))
                         config.initial_state.cavity_states = {}
                     if config.initial_state.field_states is not None:
                         vacuum_field_idx = list(
-                            set(range(self.physical_model.n_fields))
+                            set(range(self.n_fields))
                             - set(config.initial_state.field_states.keys())
                         )
                     else:
-                        vacuum_field_idx = list(range(self.physical_model.n_fields))
+                        vacuum_field_idx = list(range(self.n_fields))
                         config.initial_state.field_states = {}
 
                     for idx in vacuum_cavity_idx:
@@ -1704,12 +1719,12 @@ class ExperimentalParameters:
         lines.append("SYSTEM DIMENSIONS")
 
         # Calculate total dimension
-        n_cavities = self.physical_model.n_cavities
-        n_fields = self.physical_model.n_fields
-        n_qubits = self.physical_model.n_qubits
-        qubit_levels_list = self.physical_model.qubit_levels
-        cavity_levels_list = self.physical_model.cavity_levels
-        field_levels_list = self.physical_model.field_levels
+        n_cavities = self.n_cavities
+        n_fields = self.n_fields
+        n_qubits = self.n_qubits
+        qubit_levels_list = self.qubit_levels
+        cavity_levels_list = self.cavity_levels
+        field_levels_list = self.field_levels
 
         qubit_dim = int(np.prod(qubit_levels_list))
         cavity_dim = int(np.prod(cavity_levels_list))
