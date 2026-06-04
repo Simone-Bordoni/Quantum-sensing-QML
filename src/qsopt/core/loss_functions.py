@@ -135,16 +135,14 @@ class DetectionMetric:
             self.name = name        
 
 
-    def __call__(self, list_rho_a: List[qt.Qobj], list_rho_b: List[qt.Qobj], epoch_fraction: float = 1) -> Tuple[float, Tuple[float, float]]:
+    def __call__(self, rho_lists: Dict[str, List[qt.Qobj]], epoch_fraction: float = 1) -> Tuple[float, Tuple[Dict[str, float], float]]:
         """
         Compute loss from detection probability.
 
         Parameters
         ----------
-        list_rho_a : List[qt.Qobj]
-            List of density matrices from simulation a.
-        list_rho_b : List[qt.Qobj]
-            List of density matrices from simulation b.
+        rho_lists : Dict[str, List[qt.Qobj]]
+            Dictionary of density matrices from different simulations.
         epoch_fraction : Optional[float]
             Fraction of the epoch for which to compute the detection metric.
 
@@ -152,11 +150,24 @@ class DetectionMetric:
         -------
         float
             Detection metric value computed according to the defined criterion and metric.
-        tuple of floats
-            (detection measure with photon, detection measure without photon) if applicable.
+        tuple of dict and float
+            detection measures for different simulations if applicable (dict), and validation metric (float).
         """
-        return self.callable_detection(list_rho_a, list_rho_b, epoch_fraction)
 
+        metric = 0
+        validation = 0
+        detection_dict = {}
+        keys = list(rho_lists.keys())
+        for i, key1 in enumerate(keys):
+            for key2 in keys[i+1:]:
+                temp_metric, (detection1, detection2, temp_validation) = self.callable_detection(rho_lists[key1], rho_lists[key2], epoch_fraction)
+                metric += temp_metric
+                validation += temp_validation
+                detection_dict[{key1}] = detection1
+                detection_dict[{key2}] = detection2
+        
+
+        return metric, (detection_dict, validation)
     def init_detection(self, criterion, parameter, metric, multi_measurement_logic \
                         ) -> Tuple[Callable[[List[qt.Qobj], List[qt.Qobj]], Tuple[float, Tuple[float, float]]], str]:
         """

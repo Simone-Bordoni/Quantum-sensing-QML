@@ -24,7 +24,9 @@ from qsopt.core.experimental_parameters import (
     InteractionType,
     QubitInteraction,
     MeasurementProtocol,
-    Interaction
+    Interaction,
+    SystemConfiguration,
+    InitialState
 )
 from qsopt.core.loss_functions import DetectionMetric
 from qsopt.utils.results import SweepResults
@@ -124,7 +126,7 @@ class Experiment:
         self.trainable_params_final = self.final_circuit.get_trainable_parameters()
 
         # Caches
-        self._cached_initial_state: Optional[qt.Qobj] = None
+        self._cached_initial_states: Optional[Dict[str, qt.Qobj]] = None
         self._cached_projectors: Dict[str, qt.Qobj] = {} # IS THIS USED??????????? TO BE CHECKED
         self._cached_solvers: Dict[str, qt.MESolver] = {}
         self._cached_circuit_unitaries: Optional[tuple] = None
@@ -144,11 +146,14 @@ class Experiment:
 
         self._generate_operators()
         self._generate_hamiltonian()
-        self.cached_initial_states = {
+        self._cached_initial_states = {
             config.name: self._initialize_initial_state(initial_state=config.initial_state) \
                 for config in self.experimental_params.configuration_set
         }
-        self.n_configs = len(self.experimental_params.configuration_set)
+
+        if len(self._cached_initial_states) != len(self.experimental_params.configuration_set):
+            raise RuntimeError("Not all initial states were cached. Check experimental parameters.")
+
         self.detection_metric.initialize(self.operators["P_all"])
 
 
@@ -566,148 +571,6 @@ class Experiment:
             self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=self.global_args)
             self.lindblad_operators[configuration.name] = conf_L_tot
 
-    def _generate_old_hamiltonian(self) -> None:
-        """
-        Generate Hamiltonian for n-qubit system.
-
-        Creates:
-        1. Time-dependent cavity-field coupling: H_cavity = (i/2)√γ (a_in† a - a_in a†) g(t)
-        2. Dispersive qubit-cavity interactions: H_dispersive = -Σᵢ (χᵢ/2) a† a σz_i
-        3. Lindblad operators for noise processes on each qubit
-
-        The Hamiltonian uses individual chi values for each qubit, allowing for
-        differential dispersive coupling strengths between qubits and the cavity.
-        """
-        if self.operators is None:
-            raise RuntimeError("Operators must be generated before Hamiltonian")
-
-        # Extract coupling constants
-        gm = self.experimental_params.photon_cavity_coupling
-        chi_list = self.experimental_params.chi  # List of [chi1, chi2, ... , chin]
-        sigma = self.experimental_params.inverse_pulse_width
-        n_qubits = self.n_qubits
-
-        # Extract individual chi values for each qubit
-        # Type narrowing: chi is always a list for two-qubit experiments
-        if isinstance(chi_list, list):
-            chi = chi_list
-        else:
-            # Should not reach here due to __init__ validation, but type checker needs this
-            chi = [chi_list] * n_qubits
-
-        # Get operators
-        a_in = self.operators["a_in"]
-        a_in_dag = self.operators["a_in_dag"]
-        a = self.operators["a"]
-        a_dag = self.operators["a_dag"]
-
-        # Qubit operators
-        sigma_z = self.operators["sigma_z"]
-        sigma_x = self.operators["sigma_x"]
-        sigma_y = self.operators["sigma_y"]
-        sigma_minus = self.operators["sigma_minus"]
-
-        # Time-dependent coupling function arguments
-        args = {"sigma": sigma}
-
-        # Time-dependent cavity-field coupling Hamiltonian
-        # H_c = (i/2)√γ (a_in† a - a_in a†)
-        coupling_coeff = 1j / 2 * jnp.sqrt(gm)
-        H_coupling = qt.Qobj(coupling_coeff * (a_in_dag * a - a_in * a_dag))  # type: ignore
-
-        # Dispersive qubit-resonator interaction Hamiltonians
-        # H_q = -Σᵢ χᵢ a†a σz_i
-        H_dispersive_list = [qt.Qobj(-chi[i] * a_dag * a * sigma_z[i]) for i in range(n_qubits)]  # type: ignore
-        H_dispersive = sum(H_dispersive_list)
-
-        # Qubit-qubit interaction Hamiltonians
-        # H_interaction = Σⱼ (χⱼ/2) σᵢ ⊗ σⱼ
-        # where σᵢ and σⱼ can be σx, σy, or σz depending on interaction type
-        H_qubit_interaction = self._build_qubit_interaction_hamiltonian()
-
-        # Complete time-dependent Hamiltonian
-        # H(t) = H_dispersive + H_qubit_interaction + H_coupling * g(t)
-        H_total = qt.QobjEvo([H_dispersive + H_qubit_interaction, [H_coupling, gu]], args=args)
-
-        # Noise configuration
-        noise_model = self.experimental_params.noise_model
-
-        # Extract noise rates for each qubit
-        depolarizing = noise_model.depolarizing
-        dephasing = noise_model.dephasing
-        relaxation = noise_model.relaxation
-
-        # Convert float parameters to lists of length n_qubits, or validate list lengths
-        if isinstance(depolarizing, float):
-            depolarizing = [depolarizing] * n_qubits
-        elif isinstance(depolarizing, list):
-            if len(depolarizing) != n_qubits:
-                raise ValueError(
-                    f"depolarizing list length ({len(depolarizing)}) must match n_qubits ({n_qubits})"
-                )
-        else:
-            raise TypeError(f"depolarizing must be float or list, got {type(depolarizing)}")
-
-        if isinstance(dephasing, float):
-            dephasing = [dephasing] * n_qubits
-        elif isinstance(dephasing, list):
-            if len(dephasing) != n_qubits:
-                raise ValueError(
-                    f"dephasing list length ({len(dephasing)}) must match n_qubits ({n_qubits})"
-                )
-        else:
-            raise TypeError(f"dephasing must be float or list, got {type(dephasing)}")
-
-        if isinstance(relaxation, float):
-            relaxation = [relaxation] * n_qubits
-        elif isinstance(relaxation, list):
-            if len(relaxation) != n_qubits:
-                raise ValueError(
-                    f"relaxation list length ({len(relaxation)}) must match n_qubits ({n_qubits})"
-                )
-        else:
-            raise TypeError(f"relaxation must be float or list, got {type(relaxation)}")
-
-        # Build Lindblad noise operators for each qubit using helper function
-        lindblad_noise_q = [build_qubit_noise_operators(
-            sigma_x=sigma_x[i],
-            sigma_y=sigma_y[i],
-            sigma_z=sigma_z[i],
-            sigma_minus=sigma_minus[i],
-            depolarizing_rate=depolarizing[i],
-            dephasing_rate=dephasing[i],
-            relaxation_rate=relaxation[i],
-        ) for i in range(n_qubits)]
-
-        # Combine noise operators for all qubits
-        # Flatten list: collect all operators from each qubit
-        lindblad_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [
-            op for i in range(n_qubits) for op in lindblad_noise_q[i]
-        ]
-
-        # Add custom Lindblad operators if provided
-        if noise_model.custom_operators is not None:
-            lindblad_noise.extend(noise_model.custom_operators)
-
-        # Lindblad interaction operator (same for with/without photon)
-        L_int = qt.QobjEvo([a_in, gu], args=args) + np.sqrt(gm) * a
-
-        interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = [L_int] + lindblad_noise
-        no_interaction_ops: List[Union[qt.Qobj, qt.QobjEvo]] = lindblad_noise
-
-        # Store Hamiltonians and Lindblad operators
-        self.hamiltonians = {
-            "total": H_total,
-            "dispersive": H_dispersive,
-            "dispersive_list": H_dispersive_list,
-            "coupling": H_coupling,
-        }
-
-        self.lindblad_operators = {
-            "interaction": interaction_ops,
-            "no_interaction": no_interaction_ops,
-        }
-
     def _initialize_initial_state(self, initial_state: InitialState) -> None:
         """
         Generate and cache the initial state of the system.
@@ -720,26 +583,19 @@ class Experiment:
             n_qubits=self.n_qubits
         )
 
-    def get_solver_with_interaction(self) -> qt.MESolver:
-        """Get Lindblad master equation solver WITH input photon interaction (cached)."""
-        if "with_interaction" not in self._cached_solvers:
-            self._cached_solvers["with_interaction"] = qt.MESolver(
-                self.hamiltonians["total"],
-                self.lindblad_operators["interaction"],
-                options={"method": "diffrax", "progress_bar": False, "normalize_output": False},
-            )
-        return self._cached_solvers["with_interaction"]
+    def get_solvers(self) -> qt.MESolver:
+        """Get Lindblad master equation solvers for all configurations (cached)."""
 
-    def get_solver_no_interaction(self) -> qt.MESolver:
-        """Get Lindblad master equation solver WITHOUT input photon interaction (cached)."""
-        if "no_interaction" not in self._cached_solvers:
-            self._cached_solvers["no_interaction"] = qt.MESolver(
-                self.hamiltonians["dispersive"],
-                self.lindblad_operators["no_interaction"],
-                options={"method": "diffrax", "progress_bar": False, "normalize_output": False},
-            )
-        return self._cached_solvers["no_interaction"]
+        for config in self.experimental_params.configuration_set:
+            if config.name not in self._cached_solvers:
+                self._cached_solvers[config.name] = qt.MESolver(
+                    self.hamiltonians[config.name],
+                    self.lindblad_operators[config.name],
+                    options={"method": "diffrax", "progress_bar": False, "normalize_output": False},
+                )
 
+        return self._cached_solvers[config.name]
+    
     def _prepare_circuit_unitaries(self) -> tuple:
         """
         Get embedded unitaries for initial and final circuits with their daggers.
@@ -950,12 +806,11 @@ class Experiment:
             self.debug_times.append({ f'initialize_solvers' : t.time()})
 
  
-        rho0 = self._cached_initial_state
-        if rho0 is None:
-            raise RuntimeError("Initial state cache is not initialized.")
-        solver_with = self.get_solver_with_interaction()
-        solver_without = self.get_solver_no_interaction()
-
+        init_states = self._cached_initial_states
+        if init_states is None:
+            raise RuntimeError("Initial states cache is not initialized.")
+        
+        solvers = self.get_solvers() 
         if debug:
             self.debug_times.append({ f'get_measurements' : t.time()})
  
@@ -994,6 +849,7 @@ class Experiment:
 
         # initialize batches
         batch_metric = []
+        batch_detect = { config.name : [] for config in self.experimental_params.configuration_set }
         batch_detect_with = []
         batch_detect_without = []
         batch_validation = []
@@ -1009,38 +865,33 @@ class Experiment:
         for measurement_times in measurement_sequences:
             if debug:
                 self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})
-    
-            # Simulation with photon interaction
-            rho_with_list = simulation_fn(
-                solver=solver_with,
-                rho=rho0,
-                measurements=measurement_times,
-                precomputed_unitaries=circuit_unitaries,
-            )
+            
+            rho_lists = {}
 
-            if debug:
-                self.debug_times.append({ f'start_simulation_no{self.step}' : t.time()})
+            for config in self.experimental_params.configuration_set:
 
-            # Simulation without photon interaction (reference)
-            rho_without_list = simulation_fn(
-                solver=solver_without,
-                rho=rho0,
-                measurements=measurement_times,
-                precomputed_unitaries=circuit_unitaries,
-            )
+                # Simulation for each configuration with its specific solver and initial state
+                rho_lists[config.name] = simulation_fn(
+                    solver=solvers[config.name],
+                    rho=init_states[config.name],
+                    measurements=measurement_times,
+                    precomputed_unitaries=circuit_unitaries,
+                )
+                if debug:
+                    self.debug_times.append({ f'start_simulation_{config.name}_{self.step}' : t.time()})
             
             if debug:
                 self.debug_times.append({ f'calculate_detection_metric{self.step}' : t.time()})
 
             if states_probabilities:
-                batch_for_prob.append((rho_with_list, rho_without_list))
+                batch_for_prob.append(rho_lists)
 
-            metric_value, (detection_with, detection_without, validation) = self.detection_metric(rho_with_list,rho_without_list)
+            metric_value, (detection_dict, validation) = self.detection_metric(rho_lists)
 
-            batch_metric.append(metric_value)            
-            batch_detect_with.append(detection_with)
-            batch_detect_without.append(detection_without)
-            batch_validation.append(validation)
+            batch_metric.append(metric_value)          
+            batch_validation.append(validation)  
+            for name, value in detection_dict.items():
+                batch_detect[name].append(value)
 
             if debug:
                 self.step += 1
