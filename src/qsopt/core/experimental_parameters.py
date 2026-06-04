@@ -76,7 +76,7 @@ class Interaction:
         subsystem1: Tuple[str, int],
         subsystem2: Optional[Tuple[str, int]] = None,
         parameters: Optional[Union[Dict[str, Any], int, float, complex]] = 1.0,
-        time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] = None
+        time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] = None,
         custom_matrix: Optional[qt.Qobj] = None,
     ):
 
@@ -85,6 +85,7 @@ class Interaction:
         self.subsystem2 = subsystem2
         self.parameters = parameters
         self.time_modulation = time_modulation
+        self.custom_matrix = custom_matrix
 
         self.__post_init__()
 
@@ -666,6 +667,7 @@ class Interaction:
             interaction_type=self.interaction_type,
             parameters=copy.deepcopy(self.parameters),
             time_modulation=self.time_modulation,
+            custom_matrix=copy.deepcopy(self.custom_matrix) if self.custom_matrix is not None else None,
         )
 
     def _interaction_context(self) -> str:
@@ -749,18 +751,18 @@ class PhysicalModel:
                         )                        
                 else:   
                     if interaction.subsystem1[0] == 'cavity':
-                        dim1 = cavity_levels[interaction.subsystem1[1]]
+                        dim1 = self.cavity_levels[interaction.subsystem1[1]]
                     elif interaction.subsystem1[0] == 'field':
-                        dim1 = field_levels[interaction.subsystem1[1]]
+                        dim1 = self.field_levels[interaction.subsystem1[1]]
                     elif interaction.subsystem1[0] == 'qubit':
-                        dim1 = qubit_levels[interaction.subsystem1[1]]
+                        dim1 = self.qubit_levels[interaction.subsystem1[1]]
                     if interaction.subsystem2 is not None:
                         if interaction.subsystem2[0] == 'cavity':
-                            dim2 = cavity_levels[interaction.subsystem2[1]]
+                            dim2 = self.cavity_levels[interaction.subsystem2[1]]
                         elif interaction.subsystem2[0] == 'field':
-                            dim2 = field_levels[interaction.subsystem2[1]]
+                            dim2 = self.field_levels[interaction.subsystem2[1]]
                         elif interaction.subsystem2[0] == 'qubit':
-                            dim2 = qubit_levels[interaction.subsystem2[1]]
+                            dim2 = self.qubit_levels[interaction.subsystem2[1]]
                         if  interaction.custom_matrix.dims != [[dim1, dim2], [dim1, dim2]]:
                             raise ValueError(
                                 f"Custom Hamiltonian interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}, {dim2}], [{dim1}, {dim2}]]"
@@ -807,9 +809,9 @@ class PhysicalModel:
         duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
                             (int1.subsystem1 == int2.subsystem1) and \
                             (int1.subsystem2 == int2.subsystem2)) \
-                                for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+                                for i, int1 in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
                                     if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
-        interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+        interaction_list = [int1._interaction_context() for i, int1 in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
                                     if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
 
         if any(duplicate_check):
@@ -1031,8 +1033,8 @@ class InitialState:
         density_matrix: Optional density matrix state for the {cavities} ⊗ {fields} subsystem
     """
 
-    cavity_states: Optional[Dict[int, SubsystemState]] = {}
-    field_states: Optional[Dict[int, SubsystemState]] = {}
+    cavity_states: Optional[Dict[int, SubsystemState]] = field(default_factory=dict)
+    field_states: Optional[Dict[int, SubsystemState]] = field(default_factory=dict)
     density_matrix: Optional[qt.Qobj] = None  # Overrides cavity_states and field_states when provided
 
     def __post_init__(self):
@@ -1168,9 +1170,9 @@ class SystemConfiguration:
             duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
                                 (int1.subsystem1 == int2.subsystem1) and \
                                 (int1.subsystem2 == int2.subsystem2)) \
-                                    for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+                                    for i, int1 in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
                                     if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
-            interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+            interaction_list = [int1._interaction_context() for i, int1 in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
                                     if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
 
             if any(duplicate_check):

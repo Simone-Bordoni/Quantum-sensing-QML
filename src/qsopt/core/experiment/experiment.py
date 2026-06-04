@@ -145,8 +145,10 @@ class Experiment:
         self._generate_operators()
         self._generate_hamiltonian()
         self.cached_initial_states = {
-            self._initialize_initial_state()
+            config.name: self._initialize_initial_state(initial_state=config.initial_state) \
+                for config in self.experimental_params.configuration_set
         }
+        self.n_configs = len(self.experimental_params.configuration_set)
         self.detection_metric.initialize(self.operators["P_all"])
 
 
@@ -280,7 +282,7 @@ class Experiment:
         interaction_list = self.experimental_params.interactions
 
 
-        def generate_hamiltonian_term(self, interaction: Interaction):
+        def generate_hamiltonian_term(interaction: Interaction):
             """
             Generate Hamiltonian term for a given interaction.
 
@@ -706,17 +708,16 @@ class Experiment:
             "no_interaction": no_interaction_ops,
         }
 
-    def _initialize_initial_state(self, configuration: SystemConfiguration) -> None:
+    def _initialize_initial_state(self, initial_state: InitialState) -> None:
         """
         Generate and cache the initial state of the system.
         """
         return generate_initial_state(
-            initial_config=self.experimental_params.initial_state,
+            initial_config=initial_state,
             field_levels=self.field_levels,
             cavity_levels=self.cavity_levels,
             qubit_levels=self.qubit_levels,
-            n_qubits=self.n_qubits,
-            configuration_set=self.experimental_params.configuration_set
+            n_qubits=self.n_qubits
         )
 
     def get_solver_with_interaction(self) -> qt.MESolver:

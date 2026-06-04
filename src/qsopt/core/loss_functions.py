@@ -105,6 +105,8 @@ class DetectionMetric:
 
     def __init__(
         self,  \
+            n_cavities: int, \
+            n_fields: int, \
             n_qubits: int, \
             detection_criterion: str = "any excited", \
             detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]]] = None, \
@@ -115,7 +117,7 @@ class DetectionMetric:
         """Initialize the detection metric."""
 
         self.n_qubits = n_qubits
-        self.n_subsystems = n_qubits + 2
+        self.n_subsystems = n_cavities + n_fields + n_qubits
 
         # create the detection metric initializer:
         # we need the projectors which are built in the experiment, so the callable 
