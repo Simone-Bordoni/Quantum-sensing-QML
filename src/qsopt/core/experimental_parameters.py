@@ -52,6 +52,11 @@ class InteractionType(Enum):
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
 
+    # custom interactions
+    CUSTOM_HAMILTONIAN= "custom_hamiltonian"  # Custom coherent interaction defined by user-provided matrix
+    CUSTOM_LINDBLAD = "custom_lindblad"  # Custom dissipation defined by user-provided Lindblad operator
+
+
 class Interaction:
     """
     Configuration for interaction between subsystems.
@@ -62,6 +67,7 @@ class Interaction:
         subsystem2: Optional[Tuple[str,int]] of type (string) and index (int) of the second subsystem involved in the interaction (e.g., ('cavity', 1))
         parameters: Dict[str, Any] of interaction parameters or a numeric value (int, float, complex)
         time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] function of time that modulates the interaction strength (e.g., for time-dependent interactions). Must return a non-negative value.
+        custom_matrix: Optional[qt.Qobj] = None
     """
 
     def __init__(
@@ -71,6 +77,7 @@ class Interaction:
         subsystem2: Optional[Tuple[str, int]] = None,
         parameters: Optional[Union[Dict[str, Any], int, float, complex]] = 1.0,
         time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] = None
+        custom_matrix: Optional[qt.Qobj] = None,
     ):
 
         self.interaction_type = interaction_type
@@ -207,6 +214,12 @@ class Interaction:
         elif self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
             self._validate_qubit_qubit()
 
+        elif self.interaction_type == InteractionType.CUSTOM_HAMILTONIAN:
+            self._validate_custom_hamiltonian()
+
+        elif self.interaction_type == InteractionType.CUSTOM_LINDBLAD:
+            self._validate_custom_lindblad()
+
         else:
             raise NotImplementedError(
                 self._with_context(
@@ -214,7 +227,17 @@ class Interaction:
                     f"{[f'{interaction.value}' + f'\n' for interaction in InteractionType]}"
                 )
             )
-        
+
+        if self.interaction_type not in {InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD} and self.custom_matrix is not None:
+            warnings.warn(
+                self._with_context(
+                    "Custom matrix is provided but the interaction type is not a custom Hamiltonian or Lindblad. "
+                    "The custom matrix will be ignored."
+                ),
+                UserWarning,
+            )
+            self.custom_matrix = None
+
         if self.parameters is None:
             self.parameters = {}
 
@@ -570,6 +593,68 @@ class Interaction:
             
         self.parameters["chi"] = float(self.parameters["chi"])
     
+    def _validate_custom_hamiltonian(self):
+        """Validate parameters for custom Hamiltonian interactions."""
+        if self.custom_matrix is None:
+            raise ValueError(
+                self._with_context(
+                    "custom_matrix must be provided for custom Hamiltonian interactions"
+                )
+            )
+        elif not isinstance(self.custom_matrix, qt.Qobj):
+            raise TypeError(
+                self._with_context(
+                    "custom_matrix must be a qutip.Qobj instance representing the interaction Hamiltonian"
+                )
+            )
+        if self.custom_matrix.isherm == False:
+            raise ValueError(
+                self._with_context(
+                    "custom_matrix for custom Hamiltonian interactions must be Hermitian"
+                )
+            )
+        if self.custom_matrix.dims[0] != self.custom_matrix.dims[1]:
+            raise ValueError(
+                self._with_context(
+                    f"custom_matrix for custom Hamiltonian interactions must have equal dimensions for both axes, got dims: {self.custom_matrix.dims}"
+                )
+            )
+
+        if self.time_modulation is not None and self.parameters is not None and not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    "Parameters for time-modulated custom Hamiltonian interaction must be provided as a dict"
+                )
+            )
+    
+    def _validate_custom_lindblad(self):
+        """Validate parameters for custom Lindblad interactions."""
+        if self.custom_matrix is None:
+            raise ValueError(
+                self._with_context(
+                    "custom_matrix must be provided for custom Lindblad interactions"
+                )
+            )
+        elif not isinstance(self.custom_matrix, qt.Qobj):
+            raise TypeError(
+                self._with_context(
+                    "custom_matrix must be a qutip.Qobj instance representing the Lindblad operator"
+                )
+            )
+        if self.custom_matrix.dims[0] != self.custom_matrix.dims[1]:
+            raise ValueError(
+                self._with_context(
+                    f"custom_matrix for custom Lindblad interactions must have equal dimensions for both axes, got dims: {self.custom_matrix.dims}"
+                )
+            )
+
+        if self.time_modulation is not None and self.parameters is not None and not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    "Parameters for time-modulated custom Lindblad interaction must be provided as a dict"
+                )
+            )
+        
 
         
 
@@ -651,9 +736,81 @@ class PhysicalModel:
                     raise ValueError(
                         f"Interaction involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
                     )
+
+            if interaction.interaction_type == InteractionType.CUSTOM_HAMILTONIAN:
+                
+                
+
+                total_dims = self.cavity_levels + self.field_levels + self.qubit_levels
+
+                if interaction.custom_matrix.dims != [total_dims, total_dims]:
+                    raise ValueError(
+                        f"Custom Hamiltonian interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [{total_dims}, {total_dims}]"
+                        )                        
+                else:   
+                    if interaction.subsystem1[0] == 'cavity':
+                        dim1 = cavity_levels[interaction.subsystem1[1]]
+                    elif interaction.subsystem1[0] == 'field':
+                        dim1 = field_levels[interaction.subsystem1[1]]
+                    elif interaction.subsystem1[0] == 'qubit':
+                        dim1 = qubit_levels[interaction.subsystem1[1]]
+                    if interaction.subsystem2 is not None:
+                        if interaction.subsystem2[0] == 'cavity':
+                            dim2 = cavity_levels[interaction.subsystem2[1]]
+                        elif interaction.subsystem2[0] == 'field':
+                            dim2 = field_levels[interaction.subsystem2[1]]
+                        elif interaction.subsystem2[0] == 'qubit':
+                            dim2 = qubit_levels[interaction.subsystem2[1]]
+                        if  interaction.custom_matrix.dims != [[dim1, dim2], [dim1, dim2]]:
+                            raise ValueError(
+                                f"Custom Hamiltonian interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}, {dim2}], [{dim1}, {dim2}]]"
+                            )   
+                        else:
+                            banana = 1 #figure out how to embed it for 2 subsystems
+                    else:
+                        banana = 1 #figure out how to embed it for single subsystem
+            elif interaction.interaction_type == InteractionType.CUSTOM_LINDBLAD:
+                total_dims = self.cavity_levels + self.field_levels + self.qubit_levels
+
+                if interaction.custom_matrix.dims != [total_dims, total_dims]:
+                    raise ValueError(
+                        f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [{total_dims}, {total_dims}]"
+                        )
+                else:
+                    if interaction.subsystem1[0] == 'cavity':
+                        dim1 = cavity_levels[interaction.subsystem1[1]]
+                    elif interaction.subsystem1[0] == 'field':
+                        dim1 = field_levels[interaction.subsystem1[1]]
+                    elif interaction.subsystem1[0] == 'qubit':
+                        dim1 = qubit_levels[interaction.subsystem1[1]]
+                    if interaction.subsystem2 is None:
+                        if interaction.custom_matrix.dims != [[dim1], [dim1]]:
+                            raise ValueError(
+                                f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}], [{dim1}]]"
+                            )
+                        banana = 1 #figure out how to embed it for single subsystem (simple)
+                    else:
+                        if interaction.subsystem2[0] == 'cavity':
+                            dim2 = cavity_levels[interaction.subsystem2[1]]
+                        elif interaction.subsystem2[0] == 'field':
+                            dim2 = field_levels[interaction.subsystem2[1]]
+                        elif interaction.subsystem2[0] == 'qubit':
+                            dim2 = qubit_levels[interaction.subsystem2[1]]
+                        if  interaction.custom_matrix.dims != [[dim1, dim2], [dim1, dim2]]:
+                            raise ValueError(
+                                f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}, {dim2}], [{dim1}, {dim2}]]"
+                            )
+                        banana = 1 #figure out how to embed it for 2 subsystems (hard because of possible mixed terms)
+                    
+
         
-        duplicate_check = [((int1.name == int2.name) and (int1.subsystem1 == int2.subsystem1) and (int1.subsystem2 == int2.subsystem2)) for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
-        interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
+        duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
+                            (int1.subsystem1 == int2.subsystem1) and \
+                            (int1.subsystem2 == int2.subsystem2)) \
+                                for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+                                    if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
+        interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+                                    if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
 
         if any(duplicate_check):
             duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]
@@ -824,7 +981,7 @@ class SubsystemState:
             if not isinstance(n, int) or n < 0:
                 raise ValueError("FOCK state 'n' parameter must be a non-negative integer")
             
-        if self.state_type == InitialStateType.COHERENT:
+        elif self.state_type == InitialStateType.COHERENT:
             if self.parameters is None or "alpha" not in self.parameters:
                 raise ValueError("COHERENT state requires 'alpha' parameter for coherent amplitude")
             alpha = self.parameters["alpha"]
@@ -832,7 +989,7 @@ class SubsystemState:
                 raise ValueError("COHERENT state 'alpha' parameter must be a numeric value (real or complex)")
             self.parameters["alpha"] = complex(alpha)  # Ensure alpha is stored as a complex number
 
-        if self.state_type == InitialStateType.THERMAL:
+        elif self.state_type == InitialStateType.THERMAL:
             if self.parameters is None or "n_avg" not in self.parameters:
                 raise ValueError("THERMAL state requires 'n_avg' parameter for mean photon number")
             n_avg = self.parameters["n_avg"]
@@ -840,7 +997,7 @@ class SubsystemState:
                 raise ValueError("THERMAL state 'n_avg' parameter must be a non-negative number")
             self.parameters["n_avg"] = float(n_avg)  # Ensure n_avg is stored as a float
 
-        if self.state_type == InitialStateType.CUSTOM:
+        elif self.state_type == InitialStateType.CUSTOM:
             raise NotImplementedError(
                 "CUSTOM state type is not implemented yet for SubsystemState. Use supported states or a density matrix."
             )
@@ -1008,8 +1165,13 @@ class SystemConfiguration:
                     raise TypeError("All interactions must be Interaction instances")
                 
             
-            duplicate_check = [((int1.name == int2.name) and (int1.subsystem1 == int2.subsystem1) and (int1.subsystem2 == int2.subsystem2)) for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
-            interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:]]
+            duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
+                                (int1.subsystem1 == int2.subsystem1) and \
+                                (int1.subsystem2 == int2.subsystem2)) \
+                                    for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+                                    if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
+            interaction_list = [int1._interaction_context() for int1, i in enumerate(self.interactions) for int2 in self.interactions[i+1:] \
+                                    if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
 
             if any(duplicate_check):
                 duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]
@@ -1251,8 +1413,13 @@ class ExperimentalParameters:
                             )
                         
                 
-                duplicate_check = [((int1.name == int2.name) and (int1.subsystem1 == int2.subsystem1) and (int1.subsystem2 == int2.subsystem2)) for int1 in self.interactions for int2 in config.interactions]
-                interaction_list = [int1._interaction_context() for int1 in self.interactions for int2 in config.interactions]
+                duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
+                                    (int1.subsystem1 == int2.subsystem1) and \
+                                    (int1.subsystem2 == int2.subsystem2)) \
+                                        for int1 in self.interactions for int2 in config.interactions \
+                                    if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
+                interaction_list = [int1._interaction_context() for int1 in self.interactions for int2 in config.interactions \
+                                    if not (int1.interaction_type in [InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD])]
 
                 if any(duplicate_check):
                     duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]

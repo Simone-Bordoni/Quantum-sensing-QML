@@ -344,6 +344,8 @@ def generate_initial_state(
     cavity_states = initial_state.cavity_states
     field_states = initial_state.field_states
     density_matrix = initial_state.density_matrix
+    if (cavity_states is None or field_states is None) and density_matrix is None:
+        raise ValueError("Either cavity_states and field_states dictionaries or a custom density_matrix must be provided in initial_state.")
 
     if isinstance(cavity_levels, int):
         c_levels = [cavity_levels] * n_cavities
@@ -362,51 +364,73 @@ def generate_initial_state(
 
     # Use JAX backend for compatibility
     with qt.CoreOptions(default_dtype="jax"):
-        # Create ground state base (cavity + qubits always in ground state)
-        qubits_ground = _create_ground_state_base(q_levels, n_qubits)
+        # Create ground state base for qubits (qubits always in ground state)
+        qubits_ground = _create_qubit_ground_state(q_levels, n_qubits)
 
-        if initial_state.density_matrix is not None:
+        if density_matrix is not None:
             # Validate dimensions of provided density matrix
-            expected_dim = math.prod(f_levels + c_levels)
+            expected_dim = math.prod(c_levels + f_levels)
             if density_matrix.shape != (expected_dim, expected_dim):
                 raise ValueError(f"Custom density matrix was provided, expected dimensions ({expected_dim}, {expected_dim}), but got {density_matrix.shape}.\n\
                                 Please ensure the custom density matrix is defined for the correct subsystem {'{cavities} ⊗ {fields}'}, qubits are always initialized in ground state.")
             else:
                 return qt.tensor(density_matrix, qubits_ground)
 
+        cavity_keys = cavity_states.keys()
+        field_keys = field_states.keys()
+
+        state_matrix_list = []
+
         for i in range(n_cavities):
-        # Create field state (varies by experiment)
-        if state_type == InitialStateType.VACUUM:
-            field_dm = _create_field_vacuum(field_levels)
-
-        elif state_type == InitialStateType.SINGLE_PHOTON:
-            field_dm = _create_field_single_photon(field_levels)
-
-        elif state_type == InitialStateType.COHERENT:
-            alpha = initial_config.coherent_alpha
-            if alpha is None:
-                raise ValueError("coherent_alpha must be specified for COHERENT state type")
-            field_dm = _create_field_coherent(field_levels, alpha)
-
-        elif state_type == InitialStateType.CUSTOM:
-            custom_amps = initial_config.custom_amplitudes
-            if custom_amps is None:
-                raise ValueError("custom_amplitudes must be specified for CUSTOM state type")
-            return _create_custom_state(
-                custom_amps, field_levels, cavity_levels, qubit_levels, n_qubits
-            )
-
-        else:
-            raise ValueError(f"Unknown initial state type: {state_type}")
+            if i in cavity_keys:
+                state = cavity_states[i]
+                if state.state_type == InitialStateType.THERMAL:
+                    n_avg = state.parameters["n_avg"]
+                    state_matrix = _create_thermal(c_levels[i], n_avg)
+                elif state.state_type == InitialStateType.FOCK:
+                    n = state.parameters["n"]
+                    state_matrix = _create_fock(c_levels[i], n)
+                elif state.state_type == InitialStateType.COHERENT:
+                    alpha = state.parameters["alpha"]
+                    state_matrix = _create_coherent(c_levels[i], alpha)
+                elif state.state_type == InitialStateType.CUSTOM:
+                    raise NotImplementedError("Custom cavity states not yet implemented")
+                else:
+                    state_matrix = _create_vacuum(c_levels[i])
+                state_matrix_list.append(state_matrix)
+            else:
+                vacuum = _create_vacuum(c_levels[i])
+                state_matrix_list.append(vacuum)
+            
+        for i in range(n_fields):
+            if i in field_keys:
+                state = field_states[i]
+                if state.state_type == InitialStateType.THERMAL:
+                    n_avg = state.parameters["n_avg"]
+                    state_matrix = _create_thermal(f_levels[i], n_avg)
+                elif state.state_type == InitialStateType.FOCK:
+                    n = state.parameters["n"]
+                    state_matrix = _create_fock(f_levels[i], n)
+                elif state.state_type == InitialStateType.COHERENT:
+                    alpha = state.parameters["alpha"]
+                    state_matrix = _create_coherent(f_levels[i], alpha)
+                elif state.state_type == InitialStateType.CUSTOM:
+                    raise NotImplementedError("Custom field states not yet implemented")
+                else:
+                    state_matrix = _create_vacuum(f_levels[i])
+                state_matrix_list.append(state_matrix)
+            else:
+                vacuum = _create_vacuum(f_levels[i])
+                state_matrix_list.append(vacuum)
 
         # Combine field state with ground state base (field ⊗ cavity ⊗ qubits)
-        return qt.tensor(field_dm, ground_base)
+        return qt.tensor(*state_matrix_list, qubits_ground)  
 
 
 # ==================== Private Helper Functions ====================
 
 
-def _create_ground_state_base(qubit_levels: Union[int, List[int]], n_qubits: int
+def _create_qubit_ground_state(qubit_levels: Union[int, List[int]], n_qubits: int
 ) -> qt.Qobj:
     """
     Create ground state for qubits: |0⟩_q1 ⊗ |0⟩_q2 ⊗ ... ⊗ |0⟩_qn
@@ -435,31 +459,27 @@ def _create_ground_state_base(qubit_levels: Union[int, List[int]], n_qubits: int
     return psi * psi.dag()  # type: ignore
 
 
-def _create_field_vacuum(field_levels: int) -> qt.Qobj:
-    """Create vacuum state for input field: |0⟩_field."""
-    field_state = qt.basis(field_levels, 0)
-    return field_state * field_state.dag()  # type: ignore
+def _create_vacuum(levels: int) -> qt.Qobj:
+    """Create vacuum state: |0⟩."""
+    state = qt.basis(levels, 0)
+    return state * state.dag()  # type: ignore
 
 
-def _create_field_single_photon(field_levels: int) -> qt.Qobj:
-    """Create single photon state for input field: |1⟩_field."""
-    field_state = qt.basis(field_levels, 1)
-    return field_state * field_state.dag()  # type: ignore
+def _create_fock(levels: int, n: int) -> qt.Qobj:
+    """Create fock state with n photons: |n⟩."""
+    state = qt.basis(levels, n)
+    return state * state.dag()  # type: ignore
 
 
-def _create_field_coherent(field_levels: int, alpha: complex) -> qt.Qobj:
-    """Create coherent state for input field: |α⟩_field."""
-    coherent_field = qt.coherent(field_levels, alpha)
-    return coherent_field * coherent_field.dag()  # type: ignore
+def _create_coherent(levels: int, alpha: complex) -> qt.Qobj:
+    """Create coherent state: |α⟩."""
+    coherent_state = qt.coherent(levels, alpha)
+    return coherent_state * coherent_state.dag()  # type: ignore
 
 
-def _create_field_thermal(cavity_levels: int, n_bar: float) -> qt.Qobj:
-    """
-    Create thermal state in cavity with average photon number n_bar.
-
-    Note: This is a special case where the cavity is NOT in ground state.
-    """
-    return qt.thermal_dm(cavity_levels, n_bar)
+def _create_thermal(levels: int, n_bar: float) -> qt.Qobj:
+    """Create thermal state with average photon number n_bar."""
+    return qt.thermal_dm(levels, n_bar)
 
 
 def _create_custom_state(
