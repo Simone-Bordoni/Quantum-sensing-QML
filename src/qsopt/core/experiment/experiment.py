@@ -864,7 +864,7 @@ class Experiment:
  
         for measurement_times in measurement_sequences:
             if debug:
-                self.debug_times.append({ f'start_simulation_with{self.step}' : t.time()})
+                self.debug_times.append({ f'start_simulations_{self.step}' : t.time()})
             
             rho_lists = {}
 
@@ -878,7 +878,7 @@ class Experiment:
                     precomputed_unitaries=circuit_unitaries,
                 )
                 if debug:
-                    self.debug_times.append({ f'start_simulation_{config.name}_{self.step}' : t.time()})
+                    self.debug_times.append({ f'end_simulation_{config.name}_{self.step}' : t.time()})
             
             if debug:
                 self.debug_times.append({ f'calculate_detection_metric{self.step}' : t.time()})
@@ -891,7 +891,7 @@ class Experiment:
             batch_metric.append(metric_value)          
             batch_validation.append(validation)  
             for name, value in detection_dict.items():
-                batch_detect[name].append(value)
+                batch_detect[name].append(float(value))
 
             if debug:
                 self.step += 1
@@ -904,38 +904,38 @@ class Experiment:
         # but custom detection metrics may define any scalar objective.
 
         mean_metric = sum(batch_metric)/len(batch_metric)
-        mean_detect_with = sum(batch_detect_with)/len(batch_detect_with)
-        mean_detect_without = sum(batch_detect_without)/len(batch_detect_without)
+        mean_detect_dict = {name: sum(values)/len(values) for name, values in batch_detect.items()}
         mean_validation = sum(batch_validation)/len(batch_validation)
 
         if states_probabilities:
 
             P_all = self.operators['P_all']
-            prob_with = []
-            prob_without = []
+            prob_dict = {}
+            avg_prob_dict = {}
 
-            for rho_list_with, rho_list_without in batch_for_prob:
+            for rho_lists in batch_for_prob:
                 
                 # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
-                rho_with = rho_list_with[0]      
-                rho_without = rho_list_without[0]     
-                
-                prob_with.append([np.real((proj * rho_with * proj).tr()) for proj in P_all])                
-                prob_without.append([np.real((proj * rho_without * proj).tr()) for proj in P_all])
+                rho_list_restricted = {name: rho_list[0] for name, rho_list in rho_lists.items()}
+
+                for name, rho in rho_list_restricted.items():
+                    if name not in prob_dict:
+                        prob_dict[name] = []
+                    prob_dict[name].append([np.real((proj * rho * proj).tr()) for proj in P_all])
 
             # Shape before averaging:
-            #   prob_with / prob_without -> (batch_size, n_states)
+            #   prob -> (batch_size, n_states)
             # Note: only first measurement is used (rho_list[0]), so no measurement axis.
             # Average across the batch axis only.
-            prob_with = np.array(prob_with)
-            prob_without = np.array(prob_without)
+            for name, lists in prob_dict.items():
+                prob_dict[name] = np.array(lists)
+                # Resulting shape after mean(axis=0): (n_states,)
+                avg_prob_dict[name] = np.mean(prob_dict[name], axis=0).tolist()
 
-            # Resulting shape after mean(axis=0): (n_states,)
-            avg_prob_with = np.mean(prob_with, axis=0).tolist()
-            avg_prob_without = np.mean(prob_without, axis=0).tolist()
-            state_prob_with = {format(i, f"0{self.n_qubits}b"): avg_prob_with[i] for i in range(len(avg_prob_with))}
-            state_prob_without = {format(i, f"0{self.n_qubits}b"): avg_prob_without[i] for i in range(len(avg_prob_without))}
-
+            state_prob_dict = {name: \
+                                    {format(i, f"0{self.n_qubits}b"): avg_prob[i]   
+                                        for i in range(len(avg_prob))}     
+                                for name, avg_prob in avg_prob_dict.items()}
         if debug:
             self.debug_times.append({ f'save_callback' : t.time()})
 
@@ -947,12 +947,11 @@ class Experiment:
             callback(
                 trainable_params_initial=self.trainable_params_initial,
                 trainable_params_final=self.trainable_params_final,
-                detection_with=float(mean_detect_with),
-                detection_without=float(mean_detect_without),
+                detection_dict=detection_dict,
                 metric=float(mean_metric),
                 validation=float(mean_validation),
-                state_probabilities_with=state_prob_with,
-                state_probabilities_without=state_prob_without,
+                state_probabilities=state_prob_dict,
+                state_probabilities_without=state_prob_dict,
             )
 
         else:
@@ -960,8 +959,7 @@ class Experiment:
             callback(
                 trainable_params_initial=self.trainable_params_initial,
                 trainable_params_final=self.trainable_params_final,
-                detection_with=float(mean_detect_with),
-                detection_without=float(mean_detect_without),
+                detection_dict=detection_dict,
                 metric=float(mean_metric),
                 validation=float(mean_validation),
             )
