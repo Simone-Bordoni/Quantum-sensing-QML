@@ -48,6 +48,7 @@ class OptimizationCallback:
         Args:
             save_every: Save metrics every N epochs (default: 1 = every epoch)
             save_best: Whether to track best parameters based on the metric (default: True)
+            configuration_names: Names of the configurations being optimized (optional, for preprocessing purposes)
         """
         self.save_every = save_every
         self.save_best = save_best
@@ -58,24 +59,19 @@ class OptimizationCallback:
 
         # Best tracking (maximize the metric)
         self.best_trainable_params: Optional[Any] = None
-        self.best_metric: float = -float("inf")
+        self.best_validation: float = -float("inf")
         self.best_metrics: Optional[Dict[str, float]] = None
 
         # Optional per-run state probabilities populated by experiment.run_simulation
-        self.state_probabilities_with: Optional[Dict[str, float]] = None
-        self.state_probabilities_without: Optional[Dict[str, float]] = None
+        self.state_probabilities: Optional[Dict[str, Dict[str, float]]] = None
 
         # Optimization completion info
         self.converged: bool = False
         self.final_grad_norm: Optional[float] = None
 
         # Detection state tracking from set_measurement_protocol
-        self.interaction_detection_states: List[str] = []
-        self.noninteraction_detection_states: List[str] = []
-        self.true_positive: float = 0.0
-        self.true_negative: float = 0.0
-        self.false_positive: float = 0.0
-        self.false_negative: float = 0.0
+        self.detection_states: Dict[List[str]] = {}
+        self.confusion_matrix: Dict[Tuple[str, str], float] = {}
 
     @staticmethod
     def _empty_history_template() -> Dict[str, List[Any]]:
@@ -83,8 +79,7 @@ class OptimizationCallback:
         return {
             "epochs": [],
             "metric": [],
-            "detection_with": [],
-            "detection_without": [],
+            "detection_dict": [],
             "trainable_params": [],
             "optimizer_state": [],
             "grads": [],
@@ -101,14 +96,12 @@ class OptimizationCallback:
         self,
         trainable_params_initial: Optional[list] = None,
         trainable_params_final: Optional[list] = None,
-        detection_with: float = 0.0,
-        detection_without: float = 0.0,
+        detection_dict: Dict[str, float] = None,
         metric: float = 0.0,
         validation: float = 0.0,
         optimizer_state: Any = None,
         grads: Any = None,
-        state_probabilities_with: Optional[Dict[str, float]] = None,
-        state_probabilities_without: Optional[Dict[str, float]] = None,
+        state_probabilities: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> None:
         """
         Record metrics from current optimization step.
@@ -119,14 +112,16 @@ class OptimizationCallback:
         Args:
             trainable_params_initial: Initial circuit trainable parameters (list of values)
             trainable_params_final: Final circuit trainable parameters (list of values)
-            detection_with: Detection measure with photon interaction
-            detection_without: Detection measure without photon interaction
+            detection_dict: Dictionary mapping configuration names to detection measures
             metric: Optimization metric value
+            validation: Optimization validation metric value
             optimizer_state: Optimizer state
             grads: Gradients at current step
+            state_probabilities: Optional dict containing per configuration state probabilities
         """
         self.epoch += 1
         metric_value = float(metric)
+        validation_value = float(validation)
 
         # Store trainable parameters as plain Python float lists for robust serialization.
         initial_values = (
@@ -147,28 +142,28 @@ class OptimizationCallback:
         if self.epoch % self.save_every == 0:
             self.history["epochs"].append(self.epoch)
             self.history["metric"].append(metric_value)
-            self.history["detection_with"].append(float(detection_with))
-            self.history["detection_without"].append(float(detection_without))
+            self.history["validation"].append(validation_value)
             # Save a deep copy of trainable_params to preserve state
+            self.history["detection_dict"].append(copy.deepcopy(detection_dict))
             self.history["trainable_params"].append(copy.deepcopy(trainable_params))
             self.history["optimizer_state"].append(copy.deepcopy(optimizer_state))
             self.history["grads"].append(copy.deepcopy(grads))
 
         # Track best parameters if enabled (maximize the metric)
-        if self.save_best and metric_value > self.best_metric:
-            self.best_metric = metric_value
+        if self.save_best and validation_value > self.best_validation:
+            self.best_validation = validation_value
             self.best_trainable_params = copy.deepcopy(trainable_params)
             self.best_metrics = {
                 "epoch": self.epoch,
                 "metric": metric_value,
-                "detection_with": float(detection_with),
-                "detection_without": float(detection_without),
+                "validation": validation_value,
+                "detection_dict": copy.deepcopy(detection_dict),
             }
 
-        if state_probabilities_with is not None and state_probabilities_without is not None:
-            self.set_measurement_protocol(state_probabilities_with, state_probabilities_without)
+        if state_probabilities is not None:
+            self.set_measurement_protocol(state_probabilities)
 
-    def set_measurement_protocol(self, with_photon: Optional[Dict[str, float]], without_photon: Optional[Dict[str, float]]) -> None:
+    def set_measurement_protocol(self, state_probabilities: Optional[Dict[str, Dict[str, float]]]) -> None:
         """
         Set state probabilities for the current optimization step and classify detection states.
 
@@ -183,34 +178,26 @@ class OptimizationCallback:
         such as after a final evaluation run.
 
         Args:
-            with_photon: Dict mapping binary state strings to probabilities with photon interaction
-            without_photon: Dict mapping binary state strings to probabilities without photon interaction
+            state_probabilities: Dict of dicts mapping binary state strings to probabilities with photon interaction
         """
     
-        self.state_probabilities_with = copy.deepcopy(with_photon)
-        self.state_probabilities_without = copy.deepcopy(without_photon)
+        self.state_probabilities = copy.deepcopy(state_probabilities)
+        config_names = list(state_probabilities.keys())
+        
+        # dictionary of binary strings where interaction is detected
+        self.detection_states = {name: [] for name in config_names}
 
-        self.interaction_detection_states = []  # Binary strings where interaction is detected
-        self.noninteraction_detection_states = []  # Binary strings where no interaction is detected
-        self.true_positive = 0.0  # P(interaction state | with photon)
-        self.true_negative = 0.0  # P(non-interaction state | without photon)
-        self.false_positive = 0.0  # P(interaction state | without photon)
-        self.false_negative = 0.0  # P(non-interaction state | with photon)
+        # dictionary to hold probabilities for each state (True: name1, Predicted: name2)
+        self.confusion_matrix = {(name1, name2): 0.0 for name1 in config_names for name2 in config_names}
 
-        # Classify states based on measurement outcome probabilities
-        for (state, p_with) in with_photon.items():
-            p_without = without_photon.get(state, 0.0)
-            if p_with > p_without:
-                # Photon interaction more likely - classify as interaction detection state
-                self.interaction_detection_states.append(state)
-                self.true_positive += p_with
-                self.false_positive += p_without
-            elif p_without >= p_with:
-                # Photon absence more likely - classify as non-interaction state
-                self.noninteraction_detection_states.append(state)
-                self.true_negative += p_without
-                self.false_negative += p_with
-
+        for state in state_probabilities[config_names[0]].keys():
+            prob_state = {name: probs.get(state, 0.0) for name, probs in state_probabilities.items()}
+            max_config = max(prob_state, key=prob_state.get)
+            self.detection_states[max_config].append(state)
+            # Update confusion matrix counts for this state based on the predicted max_config
+            for name1 in config_names:
+                self.confusion_matrix[(name1, max_config)] += prob_state.get(name1, 0.0)
+            
     def get_best_trainable_params(self) -> Optional[tuple[list, list]]:
         """
         Get the best trainable parameters found during optimization.
@@ -349,8 +336,8 @@ class OptimizationCallback:
         save_dict = {
             "epochs": np.array(self.history["epochs"]),
             "metric": np.array(self.history["metric"]),
-            "detection_with": np.array(self.history["detection_with"]),
-            "detection_without": np.array(self.history["detection_without"]),
+            "validation": np.array(self.history["validation"]),
+            "detection_dict": np.array(self.history["detection_dict"], dtype=object),
             "trainable_params_initial_history": self._to_object_array(initial_history),
             "trainable_params_final_history": self._to_object_array(final_history),
             "optimizer_state_history": self._to_object_array(self.history["optimizer_state"]),
@@ -363,18 +350,12 @@ class OptimizationCallback:
         }
 
         # Save optional per-run state probabilities if available
-        if self.state_probabilities_with is not None:
-            save_dict["state_probabilities_with"] = np.array(self.state_probabilities_with, dtype=object)
-        if self.state_probabilities_without is not None:
-            save_dict["state_probabilities_without"] = np.array(self.state_probabilities_without, dtype=object)
+        if self.state_probabilities is not None:
+            save_dict["state_probabilities"] = np.array(self.state_probabilities, dtype=object)
 
         # Save detection states and metrics
-        save_dict["interaction_detection_states"] = np.array(self.interaction_detection_states, dtype=object)
-        save_dict["noninteraction_detection_states"] = np.array(self.noninteraction_detection_states, dtype=object)
-        save_dict["true_positive"] = np.array(self.true_positive)
-        save_dict["true_negative"] = np.array(self.true_negative)
-        save_dict["false_positive"] = np.array(self.false_positive)
-        save_dict["false_negative"] = np.array(self.false_negative)
+        save_dict["detection_states"] = np.array(self.detection_states, dtype=object)
+        save_dict["confusion_matrix"] = np.array(self.confusion_matrix, dtype=object)
 
         # Add best parameters if available
         if self.best_trainable_params is not None:
@@ -382,11 +363,11 @@ class OptimizationCallback:
             save_dict["best_initial_params"] = np.array(initial_best, dtype=float) 
             save_dict["best_final_params"] = np.array(final_best, dtype=float)
             save_dict["best_metric"] = np.array(self.best_metric)
+            save_dict["best_validation"] = np.array(self.best_validation)
 
             if self.best_metrics is not None:
                 save_dict["best_epoch"] = np.array(self.best_metrics["epoch"])
-                save_dict["best_detection_with"] = np.array(self.best_metrics["detection_with"])
-                save_dict["best_detection_without"] = np.array(self.best_metrics["detection_without"])
+                save_dict["best_detection"] = np.array(self.best_metrics["detection_dict"], dtype=object)
 
         # Save to NPZ file
         np.savez(filepath, **save_dict)
@@ -432,11 +413,9 @@ class OptimizationCallback:
 
         callback.history["epochs"] = np.asarray(data.get("epochs", np.array([])), dtype=int).tolist()
         callback.history["metric"] = np.asarray(data.get("metric", np.array([])), dtype=float).tolist()
-        callback.history["detection_with"] = np.asarray(
-            data.get("detection_with", np.array([])), dtype=float
-        ).tolist()
-        callback.history["detection_without"] = np.asarray(
-            data.get("detection_without", np.array([])), dtype=float
+        callback.history["validation"] = np.asarray(data.get("validation", np.array([])), dtype=float).tolist()
+        callback.history["detection_dict"] = np.asarray(
+            data.get("detection_dict", np.array([])), dtype=object
         ).tolist()
 
         if (
@@ -476,6 +455,9 @@ class OptimizationCallback:
         if "best_metric" in data:
             callback.best_metric = float(np.asarray(data["best_metric"]).item())
 
+        if "best_validation" in data:
+            callback.best_validation = float(np.asarray(data["best_validation"]).item())
+
         if "best_initial_params" in data and "best_final_params" in data:
             callback.best_trainable_params = (
                 np.asarray(data["best_initial_params"], dtype=float).reshape(-1).tolist(),
@@ -485,14 +467,14 @@ class OptimizationCallback:
         if (
             "best_epoch" in data
             and "best_metric" in data
-            and "best_detection_with" in data
-            and "best_detection_without" in data
+            and "best_validation" in data
+            and "best_detection" in data
         ):
             callback.best_metrics = {
                 "epoch": int(np.asarray(data["best_epoch"]).item()),
                 "metric": float(np.asarray(data["best_metric"]).item()),
-                "detection_with": float(np.asarray(data["best_detection_with"]).item()),
-                "detection_without": float(np.asarray(data["best_detection_without"]).item()),
+                "validation": float(np.asarray(data["best_validation"]).item()),
+                "detection_dict": float(np.asarray(data["best_detection"]).item()),
             }
 
         # Restore optional per-run state probabilities if present

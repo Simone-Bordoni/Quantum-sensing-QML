@@ -951,7 +951,6 @@ class Experiment:
                 metric=float(mean_metric),
                 validation=float(mean_validation),
                 state_probabilities=state_prob_dict,
-                state_probabilities_without=state_prob_dict,
             )
 
         else:
