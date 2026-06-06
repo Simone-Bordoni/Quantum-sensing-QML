@@ -8,7 +8,7 @@ metric values, and trainable parameters.
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -60,7 +60,7 @@ class OptimizationCallback:
         # Best tracking (maximize the metric)
         self.best_trainable_params: Optional[Any] = None
         self.best_validation: float = -float("inf")
-        self.best_metrics: Optional[Dict[str, float]] = None
+        self.best_metrics: Optional[Dict[str, Union[int, float, Dict[str, float]]]] = None
 
         # Optional per-run state probabilities populated by experiment.run_simulation
         self.state_probabilities: Optional[Dict[str, Dict[str, float]]] = None
@@ -70,7 +70,7 @@ class OptimizationCallback:
         self.final_grad_norm: Optional[float] = None
 
         # Detection state tracking from set_measurement_protocol
-        self.detection_states: Dict[List[str]] = {}
+        self.detection_states: Dict[str, List[str]] = {}
         self.confusion_matrix: Dict[Tuple[str, str], float] = {}
 
     @staticmethod
@@ -79,6 +79,7 @@ class OptimizationCallback:
         return {
             "epochs": [],
             "metric": [],
+            "validation": [],
             "detection_dict": [],
             "trainable_params": [],
             "optimizer_state": [],
@@ -208,7 +209,7 @@ class OptimizationCallback:
         """
         return self.best_trainable_params
 
-    def get_best_metrics(self) -> Optional[Dict[str, float]]:
+    def get_best_metrics(self) -> Optional[Dict[str, Union[int, float, Dict[str, float]]]]:
         """
         Get the metrics at the best parameters.
 
@@ -362,11 +363,11 @@ class OptimizationCallback:
             initial_best, final_best = self.best_trainable_params
             save_dict["best_initial_params"] = np.array(initial_best, dtype=float) 
             save_dict["best_final_params"] = np.array(final_best, dtype=float)
-            save_dict["best_metric"] = np.array(self.best_metric)
             save_dict["best_validation"] = np.array(self.best_validation)
 
             if self.best_metrics is not None:
                 save_dict["best_epoch"] = np.array(self.best_metrics["epoch"])
+                save_dict["best_metric"] = np.array(self.best_metrics["metric"])
                 save_dict["best_detection"] = np.array(self.best_metrics["detection_dict"], dtype=object)
 
         # Save to NPZ file
@@ -452,9 +453,6 @@ class OptimizationCallback:
         final_grad_norm_value = float(np.asarray(data.get("final_grad_norm", np.array(np.nan))).item())
         callback.final_grad_norm = None if np.isnan(final_grad_norm_value) else final_grad_norm_value
 
-        if "best_metric" in data:
-            callback.best_metric = float(np.asarray(data["best_metric"]).item())
-
         if "best_validation" in data:
             callback.best_validation = float(np.asarray(data["best_validation"]).item())
 
@@ -474,41 +472,18 @@ class OptimizationCallback:
                 "epoch": int(np.asarray(data["best_epoch"]).item()),
                 "metric": float(np.asarray(data["best_metric"]).item()),
                 "validation": float(np.asarray(data["best_validation"]).item()),
-                "detection_dict": float(np.asarray(data["best_detection"]).item()),
+                "detection_dict": data["best_detection"].item(),
             }
 
         # Restore optional per-run state probabilities if present
-        if "state_probabilities_with" in data:
-            try:
-                callback.state_probabilities_with = data["state_probabilities_with"].tolist()
-            except Exception:
-                try:
-                    callback.state_probabilities_with = data["state_probabilities_with"].item()
-                except Exception:
-                    callback.state_probabilities_with = data["state_probabilities_with"]
-
-        if "state_probabilities_without" in data:
-            try:
-                callback.state_probabilities_without = data["state_probabilities_without"].tolist()
-            except Exception:
-                try:
-                    callback.state_probabilities_without = data["state_probabilities_without"].item()
-                except Exception:
-                    callback.state_probabilities_without = data["state_probabilities_without"]
+        if "state_probabilities" in data:
+            callback.state_probabilities = data["state_probabilities"].item()
 
         # Restore detection states and metrics
-        if "interaction_detection_states" in data:
-            callback.interaction_detection_states = data["interaction_detection_states"].tolist()
-        if "noninteraction_detection_states" in data:
-            callback.noninteraction_detection_states = data["noninteraction_detection_states"].tolist()
-        if "true_positive" in data:
-            callback.true_positive = float(np.asarray(data["true_positive"]).item())
-        if "true_negative" in data:
-            callback.true_negative = float(np.asarray(data["true_negative"]).item())
-        if "false_positive" in data:
-            callback.false_positive = float(np.asarray(data["false_positive"]).item())
-        if "false_negative" in data:
-            callback.false_negative = float(np.asarray(data["false_negative"]).item())
+        if "detection_states" in data:
+            callback.detection_states = data["detection_states"].item()
+        if "confusion_matrix" in data:
+            callback.confusion_matrix = data["confusion_matrix"].item()
 
         return callback
 
@@ -542,14 +517,12 @@ class OptimizationCallback:
 
         self.epoch = 0
         self.best_trainable_params = None
-        self.best_metric = -float("inf")
+        self.best_validation = -float("inf")
         self.best_metrics = None
         self.converged = False
         self.final_grad_norm = None
-        self.state_probabilities_with = None
-        self.state_probabilities_without = None
-        self.interaction_detection_states = []
-        self.noninteraction_detection_states = []
+        self.state_probabilities = None
+        self.detection_states = []
         self.true_positive = 0.0
         self.true_negative = 0.0
         self.false_positive = 0.0
