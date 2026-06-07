@@ -719,6 +719,9 @@ class PhysicalModel:
         if self.interactions is None:
             self.interactions = []
 
+        if self.n_qubits < 1:
+            raise ValueError("There must be at least one qubit in the system (n_qubits >= 1)")
+
         # Validate interactions
         for interaction in self.interactions:
             if not isinstance(interaction, Interaction):

@@ -571,7 +571,7 @@ class Experiment:
             self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=self.global_args)
             self.lindblad_operators[configuration.name] = conf_L_tot
 
-    def _initialize_initial_state(self, initial_state: InitialState) -> None:
+    def _initialize_initial_state(self, initial_state: InitialState) -> qt.Qobj:
         """
         Generate and cache the initial state of the system.
         """
@@ -594,7 +594,7 @@ class Experiment:
                     options={"method": "diffrax", "progress_bar": False, "normalize_output": False},
                 )
 
-        return self._cached_solvers[config.name]
+        return self._cached_solvers
     
     def _prepare_circuit_unitaries(self) -> tuple:
         """
@@ -771,7 +771,7 @@ class Experiment:
 
         return rho_list
 
-    def run_simulation(self, batch_size: int = 1, measurement_times = None, states_probabilities: bool = False, debug: bool=False) -> OptimizationCallback:
+    def run_simulation(self, batch_size: int = 1, measurement_times = None, detection_states: bool = False, debug: bool=False) -> OptimizationCallback:
         """
         Run n-qubit sensing protocol with current parameters.
 
@@ -786,7 +786,7 @@ class Experiment:
                        uncertainty (default: 1). Each realization uses a different
                        random shift in measurement times based on initial_time_uncertainty.
             measurement_times: Optional measurement times instead of the ones determined by the experimental parameters.
-            states_probabilities: Whether to return the probabilities of the final quantum states (default: False)
+            detection_states: Whether to return the probabilities of the final quantum states (default: False)
             debug: Whether to enable detailed timing debug output (default: False)
         Returns:
             OptimizationCallback: Callback containing simulation results with:
@@ -800,7 +800,7 @@ class Experiment:
         """
         # Get initial state and solvers
 
-        if debug or states_probabilities:
+        if debug or detection_states:
             self.debug_times = []
             self.step=0
             self.debug_times.append({ f'initialize_solvers' : t.time()})
@@ -838,8 +838,8 @@ class Experiment:
         else:
             measurement_sequences = [measurement_times_batch[i, :] for i in range(batch_size)]
 
-        if states_probabilities and len(measurement_sequences[0]) != 2:
-            raise ValueError("states_probabilities=True is only supported for single measurements")
+        if detection_states and len(measurement_sequences[0]) != 2:
+            raise ValueError("detection_states=True is only supported for single measurements")
 
         if debug:
             self.debug_times.append({ f'get_circuits' : t.time()})
@@ -854,13 +854,13 @@ class Experiment:
         batch_detect_without = []
         batch_validation = []
 
-        if states_probabilities:
+        if detection_states:
             batch_for_prob = []
 
         if debug:
             self.debug_times.append({ f'start_measurement_loop' : t.time()})
 
-        simulation_fn = self.debug_simulation if (debug or states_probabilities) else self.simulation
+        simulation_fn = self.debug_simulation if (debug or detection_states) else self.simulation
  
         for measurement_times in measurement_sequences:
             if debug:
@@ -883,13 +883,13 @@ class Experiment:
             if debug:
                 self.debug_times.append({ f'calculate_detection_metric{self.step}' : t.time()})
 
-            if states_probabilities:
+            if detection_states:
                 batch_for_prob.append(rho_lists)
 
-            metric_value, (detection_dict, validation) = self.detection_metric(rho_lists)
+            metric_value, (detection_dict, validation_value) = self.detection_metric(rho_lists)
 
             batch_metric.append(metric_value)          
-            batch_validation.append(validation)  
+            batch_validation.append(validation_value)  
             for name, value in detection_dict.items():
                 batch_detect[name].append(float(value))
 
@@ -904,10 +904,10 @@ class Experiment:
         # but custom detection metrics may define any scalar objective.
 
         mean_metric = sum(batch_metric)/len(batch_metric)
-        mean_detect_dict = {name: sum(values)/len(values) for name, values in batch_detect.items()}
         mean_validation = sum(batch_validation)/len(batch_validation)
+        mean_detect_dict = {name: sum(values)/len(values) for name, values in batch_detect.items()}
 
-        if states_probabilities:
+        if detection_states:
 
             P_all = self.operators['P_all']
             prob_dict = {}
@@ -915,7 +915,7 @@ class Experiment:
 
             for rho_lists in batch_for_prob:
                 
-                # We only compute probabilities for the first measurement in the sequence, as states_probabilities is only supported for single measurements
+                # We only compute probabilities for the first measurement in the sequence, as detection_states is only supported for single measurements
                 rho_list_restricted = {name: rho_list[0] for name, rho_list in rho_lists.items()}
 
                 for name, rho in rho_list_restricted.items():
@@ -942,7 +942,7 @@ class Experiment:
         # Create callback with single epoch for simulation results
         callback = OptimizationCallback(save_every=1, save_best=True)
 
-        if states_probabilities:
+        if detection_states:
             
             callback(
                 trainable_params_initial=self.trainable_params_initial,
@@ -1081,6 +1081,7 @@ class Experiment:
         n_points: int = 200,
         with_interaction: bool = True,
         measurement_protocol: Optional[MeasurementProtocol] = None,
+        callback: Optional[OptimizationCallback] = None,
     ) -> "TimeEvolutionResults":
         """
         Compute time evolution of n-qubit probabilities.
@@ -1135,18 +1136,6 @@ class Experiment:
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
 
-        metric_name = self.detection_metric.name
-        metric_name_lower = metric_name.lower()
-        requires_pair = any(
-            key in metric_name_lower
-            for key in (
-                "fidelity",
-                "trace distance",
-                "computational distance",
-                "custom matrix distance",
-            )
-        )
-
         # Use provided measurement protocol or default from experimental parameters
         if measurement_protocol is None:
             measurement_protocol = self.experimental_params.measurement
@@ -1158,30 +1147,36 @@ class Experiment:
         t_end = float(measurement_times[-1])
 
         # Get initial state and solvers
-        rho0 = self._cached_initial_state
-        if rho0 is None:
+        init_states = self._cached_initial_states
+        if init_states is None:
             raise RuntimeError("Initial state cache is not initialized.")
 
-        solver_with = self.get_solver_with_interaction()
-        solver_without = self.get_solver_no_interaction()
+        solvers_dict = self.get_solvers()
 
         # Prepare circuit unitaries as QuTiP objects (including daggers)
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
 
-        # Apply initial circuit  # type: ignore
+        n_cavities = self.n_cavities
+        n_fields = self.n_fields
+        n_qubits = self.n_qubits
 
+        if callback is None or callback.detection_states is None:
+            if callback is not None and callback.detection_states is None:
+                print("Warning: Callback provided without detection states. Creating new one.")
+            callback = self.run_simulation(measurement_times=(t_start, t_end), detection_states=True)
+        
         # Get number operators for population calculation
-        n_cavity = self.operators["a_dag"] * self.operators["a"]
-        n_field = self.operators["a_in_dag"] * self.operators["a_in"]
+        op_n_cavity = [self.operators["a_c_dag"][i] * self.operators["a_c"][i] for i in range(len(n_cavities))]
+        op_n_field = [self.operators["a_f_dag"][i] * self.operators["a_f"][i] for i in range(len(n_fields))]
 
         # Get measurement operators and sigma
         measure_reset = self.operators["measure_reset"]
         measure_reset_dag = self.operators["measure_reset_dag"]
 
-        args = {"sigma": self.experimental_params.inverse_pulse_width}
+        args = self.global_args
 
-        # Get number of qubits and generate all possible states
-        n_qubits = self.n_qubits
+        # Generate all possible qubit's computational states
+        n_qubits = self.n_qubits 
         all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)] ################
         qubit_indices = list(range(0, n_qubits))
 
@@ -1189,8 +1184,8 @@ class Experiment:
         all_times = []
         detection_list = []
         detection_probability_list = []
-        cavity_population_list = []
-        field_population_list = []
+        cavities_population_lists = []
+        fields_population_lists = []
 
         # Set up measurements
         intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
@@ -1697,7 +1692,7 @@ class Experiment:
 
         final_results_callback = self.run_simulation(batch_size=batch_size, 
                                             measurement_times=[base_measurement_times[0], base_measurement_times[-1]], # run_simulation only accepts 1 measurement
-                                            states_probabilities=True,
+                                            detection_states=True,
                                             debug=False
                                             )
 

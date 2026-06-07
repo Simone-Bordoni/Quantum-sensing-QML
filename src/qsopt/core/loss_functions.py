@@ -40,25 +40,36 @@ class DetectionMetric:
 
     Parameters
     ----------
+    n_cavities : int
+        Number of cavities in the system.
+    n_fields : int
+        Number of fields in the system.
     n_qubits : int
         Number of qubits in the system.
+    config_names: List[str]
+        List of configuration names for the states 
     metric : Callable[[float,float], float], optional
         Custom function that takes detection measures with and without photon and derives a metric value (loss).
         If None, defaults to std_metric (contrast: x - y).
     detection_criterion : str, optional
         Criterion of detection, each criterion uses differently detection_param:
 
-            - 'any excited' (default): detects if there is any excitation.
-                Takes no parameter, detection_param default None
+            - 'any excited' (works only for 2-configuration systems): detects when there is any excitation.
+                First configuration is assigned to the all-zeros state, the second configuration is assigned to all the other states.
+                Takes bool parameter, detection_param default False, if True, the all-zeros state is assigned to the second configuration
 
-            - 'min excited': detects if there are more than a set number of excitations.
-                Takes int number of excitations as parameter, detection_param default 1
+            - 'num excited': different configurations are assigned to different numbers of excitations.
+                Takes Dict[str, int] dictionary mapping configuration names to number of excitations as parameter,
+                detection_param default None (cardinality of the config_name list is used)
 
-            - 'excited qubits': detects if one or more of the qubits in a list are excited
-                Takes List[int] list of qubit indexes, detection_param default [0]
+            - 'control qubits': different configurations are assigned to specific lists of qubits.
+                Majority vote is applied over the qubits to assign intermidiate states to one of the configurations.
+                Takes Dict[str, List[int]] dictionary mapping configuration names to List[int] list of qubit indexes as parameter.
+                detection_param default None (cardonality of the config_name list is used, each configuration is assigned one qubit)
 
-            - 'custom states': detects states that belong to a list of states
-                Takes List[str] list of state keys (e.g., ['00', '11']), detection_param default None (all-zeros state)
+            - 'custom states': different configurations are assigned to specific lists of states.
+                Takes Dict[str, List[str]] dictionary mapping configuration names to List[str] list of state keys (e.g., ['00', '11']) as parameter.
+                detection_param default None (each state counting up in binary is assigned to a configuration cardinally)
 
             - 'min fidelity': evolves the mixture of states, minimizes the fidelity between with/without photon
                 Takes no parameter, detection_param default None
@@ -67,8 +78,13 @@ class DetectionMetric:
                 Takes no parameter, detection_param default None
             
             - 'max computational distance': maximizes the orthogonality between interaction and 
-            non-interaction measurements (on the computational basis) for all states
+                non-interaction measurements (on the computational basis) for all states
                 Takes optional Tuple[float, float] (inverse_pow_coefficient, pow_exp), default (4, 2)
+            
+            - 'custom matrix distance': maximizes a custom metric between the with/without photon density matrices.
+                Takes Callable[[Array, Array], float] a function that takes as input the two density matrices 
+                and outputs a distance measure to be maximized.
+                detection_param default None
 
     detection_param : Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]], optional
         Parameter for the detection criterion, defaults to None
@@ -108,7 +124,8 @@ class DetectionMetric:
             n_cavities: int, \
             n_fields: int, \
             n_qubits: int, \
-            detection_criterion: str = "any excited", \
+            config_names: List[str], \
+            detection_criterion: str = "num excited", \
             detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]]] = None, \
             metric: Optional[Callable[[float,float], float]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator[Array], Aggregator[list]]] = None, \
@@ -118,6 +135,8 @@ class DetectionMetric:
 
         self.n_qubits = n_qubits
         self.n_subsystems = n_cavities + n_fields + n_qubits
+        self.config_names = config_names
+        self.detection_criterion = detection_criterion
 
         # create the detection metric initializer:
         # we need the projectors which are built in the experiment, so the callable 
@@ -157,17 +176,18 @@ class DetectionMetric:
         metric = 0
         validation = 0
         detection_dict = {}
-        keys = list(rho_lists.keys())
-        for i, key1 in enumerate(keys):
-            for key2 in keys[i+1:]:
+
+        for i, key1 in enumerate(self.config_names):
+
+            for key2 in self.config_names[i+1:]:
                 temp_metric, (detection1, detection2, temp_validation) = self.callable_detection(rho_lists[key1], rho_lists[key2], epoch_fraction)
                 metric += temp_metric
                 validation += temp_validation
-                detection_dict[{key1}] = detection1
-                detection_dict[{key2}] = detection2
-        
+                detection_dict[key1] = detection1
+                detection_dict[key2] = detection2
 
         return metric, (detection_dict, validation)
+    
     def init_detection(self, criterion, parameter, metric, multi_measurement_logic \
                         ) -> Tuple[Callable[[List[qt.Qobj], List[qt.Qobj]], Tuple[float, Tuple[float, float]]], str]:
         """
@@ -192,34 +212,39 @@ class DetectionMetric:
             detection_name describing the criterion and parameters used, for logging and visualization purposes.
         
         Criterion types:
+            - 'any excited' (works only for 2-configuration systems): detects when there is any excitation.
+                First configuration is assigned to the all-zeros state, the second configuration is assigned to all the other states.
+                Takes bool parameter, detection_param default False, if True, the all-zeros state is assigned to the second configuration
 
-            - 'any excited': detects if there is any excitation.
-                detection_param: None
+            - 'num excited': different configurations are assigned to different numbers of excitations.
+                Takes Dict[str, int] dictionary mapping configuration names to number of excitations as parameter,
+                detection_param default None (cardinality of the config_name list is used)
 
-            - 'min excited': detects if there are more than a set number of excitations
-                detection_param: int, number of excitations
+            - 'control qubits': different configurations are assigned to specific lists of qubits.
+                Majority vote is applied over the qubits to assign intermidiate states to one of the configurations.
+                Takes Dict[str, List[int]] dictionary mapping configuration names to List[int] list of qubit indexes as parameter.
+                detection_param default None (cardonality of the config_name list is used, each configuration is assigned one qubit)
 
-            - 'excited qubits': detects if one or more of the qubits in a list are excited
-                detection_param: List[int], list of qubit indexes
+            - 'custom states': different configurations are assigned to specific lists of states.
+                Takes Dict[str, List[str]] dictionary mapping configuration names to List[str] list of state keys (e.g., ['00', '11']) as parameter.
+                detection_param default None (each state counting up in binary is assigned to a configuration cardinally)
 
-            - 'custom states': detects states that belong to a list of states
-                detection_param: List[str], list of state keys
+            - 'min fidelity': evolves the mixture of states, minimizes the fidelity between with/without photon
+                Takes no parameter, detection_param default None
 
-            - 'min fidelity': doesn't detect and evolves the mixture of states, minimizes the fidelity
-                detection_param: None
-
-            - 'max trace distance': doesn't detect and evolves the mixture of states, maximizes the trace distance
-                detection_param: None
+            - 'max trace distance': evolves the mixture of states, maximizes the trace distance between with/without photon
+                Takes no parameter, detection_param default None
             
-            - 'max computational distance': maximizes the metric between measurements (on the computational basis) for all the states.
-            Default metric is weighted squared distance.
-                detection_param: None
+            - 'max computational distance': maximizes the orthogonality between interaction and 
+                non-interaction measurements (on the computational basis) for all states
+                Takes optional Tuple[float, float] (inverse_pow_coefficient, pow_exp), default (4, 2)
             
-            - 'custom matrix distance': maximizes a custom metric between matrices.
-                detection_param: Callable[[Array, Array], float], a function that takes as input the two density matrices and outputs a distance measure to be maximized.
-        
+            - 'custom matrix distance': maximizes a custom metric between the with/without photon density matrices.
+                Takes Callable[[Array, Array], float] a function that takes as input the two density matrices 
+                and outputs a distance measure to be maximized.
+                detection_param default None
         """
-        state_detection = ['any excited', 'min excited', 'control qubits', 'excited qubits', 'custom states']
+        state_detection = ['any excited', 'num excited', 'control qubits', 'custom states']
         matrix_distance = ['min fidelity', 'max trace distance', 'max computational distance', 'custom matrix distance']
 
         number = (int, float, jax.Array)
@@ -252,6 +277,8 @@ class DetectionMetric:
                 custom_meas_aggr = True
 
         if criterion in state_detection:
+
+            detection_states = {}
             
             if multi_measurement_logic is None:
                 aggregate_init = jnp.array(1)
@@ -280,18 +307,23 @@ class DetectionMetric:
 
             if criterion == 'any excited':
 
-                detection_states = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
+                if len(self.config_names) != 2:
+                    raise ValueError(f"'any excited' detection criterion only works for 2-configuration systems. Value given: {len(self.config_names)} configurations.")
+                
+                if not parameter:
+                    detection_states[self.config_names[0]] = [format(0, f'0{self.n_qubits}b')]
+                    detection_states[self.config_names[1]] = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
+                else:
+                    detection_states[self.config_names[1]] = [format(0, f'0{self.n_qubits}b')]
+                    detection_states[self.config_names[0]] = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
                 detection_name = "at least 1 excitation"
 
-                if parameter is not None:
-                    warnings.warn(f"'any excited' detection criterion does not take any parameter. Value given: {parameter}. The parameter will be ignored.")
-            
-            elif criterion == 'min excited':
+            elif criterion == 'num excited':
 
                 if parameter is None:
-                    raise ValueError("'min excited' detection expects detection_param to be a number of excitation, int between 1 and n_qubits-1. Value given: None")
-                elif not isinstance(parameter, int) or not (0 < parameter < self.n_qubits):
-                    raise ValueError(f"'min excited' detection expects detection_param to be a number of excitations, int between 1 and {self.n_qubits-1}. Value given: {parameter}")
+                    parameter = {config_name: i for i, config_name in enumerate(self.config_names)}
+                elif not isinstance(parameter, Dict[str, int]):
+                    raise ValueError(f"'num excited' detection expects detection_param to be a dictionary mapping configuration names to numbers of excitations, int between 0 and {self.n_qubits-1}. Value given: {parameter}")
                 
                 detection_states = [format(i, f'0{self.n_qubits}b') \
                     for i in range(2**self.n_qubits) \
@@ -347,22 +379,24 @@ class DetectionMetric:
                 def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
                      -> Tuple[float, Tuple[float, float]]:
                     
+                    metric_tot = aggregate_init
                     detection1_tot = aggregate_init
                     detection2_tot = aggregate_init
 
                     for rho_1, rho_2 in zip(list_rho_1, list_rho_2):
                         p1 = sum([jnp.real((projector * rho_1 * projector).tr()) for projector in detection_projectors])
                         p2 = sum([jnp.real((projector * rho_2 * projector).tr()) for projector in detection_projectors])
+                        temp_metric = metric(p1, p2)
 
+                        metric_tot = measurement_aggregation(metric_tot, temp_metric)
                         detection1_tot = measurement_aggregation(detection1_tot, p1)
                         detection2_tot = measurement_aggregation(detection2_tot, p2)
 
+                    metric_tot = post_aggregation(metric_tot)
                     detection1_tot = post_aggregation(detection1_tot)
                     detection2_tot = post_aggregation(detection2_tot)
 
-                    metric_value = metric(detection1_tot, detection2_tot)
-
-                    return metric_value, (detection1_tot, detection2_tot, metric_value)
+                    return metric_tot, (detection1_tot, detection2_tot, metric_tot)
 
                 self.callable_detection = jax.jit(callable_detection)
 
