@@ -17,6 +17,7 @@ from jax import Array, jit
 import qutip_jax
 import random
 import warnings
+import copy
 
 T = TypeVar("T")
 Aggregator: TypeAlias = Tuple[
@@ -129,6 +130,7 @@ class DetectionMetric:
             detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]]] = None, \
             metric: Optional[Callable[[float,float], float]] = None, \
             multiple_measurement_logic: Optional[Union[Aggregator[Array], Aggregator[list]]] = None, \
+            config_aggregation_strength: float = -1.0, \
             name: Optional[str] = None, \
     ):
         """Initialize the detection metric."""
@@ -137,6 +139,16 @@ class DetectionMetric:
         self.n_subsystems = n_cavities + n_fields + n_qubits
         self.config_names = config_names
         self.detection_criterion = detection_criterion
+
+        if not isinstance(config_aggregation_strength, (int, float)):
+            raise TypeError(f"config_aggregation_strength must be a float, usually non zero values between -2 and 1. Value given: {config_aggregation_strength}")
+        if config_aggregation_strength >= 1.0:
+            warnings.warn(f"config_aggregation_strength should be less than 1, otherwise the solutions will be clustered togheter.\
+                           Value given: {config_aggregation_strength}.")
+        elif config_aggregation_strength == 0.0:
+            raise ValueError("config_aggregation_strength cannot be 0, if zero is desired, use a small value instead.")
+        
+        self.config_aggregation_strength = config_aggregation_strength
 
         # create the detection metric initializer:
         # we need the projectors which are built in the experiment, so the callable 
@@ -180,7 +192,7 @@ class DetectionMetric:
         for i, key1 in enumerate(self.config_names):
 
             for key2 in self.config_names[i+1:]:
-                temp_metric, (detection1, detection2, temp_validation) = self.callable_detection(rho_lists[key1], rho_lists[key2], epoch_fraction)
+                temp_metric, (detection1, detection2, temp_validation) = self.callable_detection(rho_lists[key1], rho_lists[key2], key1=key1, key2=key2, epoch_fraction=epoch_fraction)
                 metric += temp_metric
                 validation += temp_validation
                 detection_dict[key1] = detection1
@@ -401,33 +413,42 @@ class DetectionMetric:
                 This function is returned by the outer `build_detection` factory so
                 the experiment can call it when projectors are available.
                 """
-
-                detection_projectors = [p_all[i] for i in range(2**self.n_qubits)
-                                        if format(i, f'0{self.n_qubits}b') in detection_states]
+                detection_projectors = {config_name: [p_all[i] for i in range(2**self.n_qubits)\
+                                                        if format(i, f'0{self.n_qubits}b') in states]
+                                        for config_name, states in detection_states.items()}
+                configs_pairs = len(self.config_names)*
+                
                 
                 print(f"DEBUG loss_functions:\n\nDetection projectors built for states: {detection_states}\nProjectors: {detection_projectors}")
 
-                def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
-                     -> Tuple[float, Tuple[float, float]]:
+                def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[Dict[str, float], float]]:
                     
+                    detection_tot = {config_name: aggregate_init for config_name in self.config_names}
+                    detection_temp = {}
                     metric_tot = aggregate_init
-                    detection1_tot = aggregate_init
-                    detection2_tot = aggregate_init
+                    
 
-                    for rho_1, rho_2 in zip(list_rho_1, list_rho_2):
-                        p1 = sum([jnp.real((projector * rho_1 * projector).tr()) for projector in detection_projectors])
-                        p2 = sum([jnp.real((projector * rho_2 * projector).tr()) for projector in detection_projectors])
-                        temp_metric = metric(p1, p2)
+                    for meas in range(len(rho_dict[self.config_names[0]])):
+
+                        temp_metric = 0
+
+                        for i, config1 in enumerate(self.config_names[:-1]):
+                            for config2 in self.config_names[i+1:]:
+                                    
+                                detection_temp[config1] = sum([jnp.real((projector * rho_dict[config1][meas] * projector).tr()) for projector in detection_projectors[config1]])
+                                detection_temp[config2] = sum([jnp.real((projector * rho_dict[config2][meas] * projector).tr()) for projector in detection_projectors[config2]])
+                                temp_metric += pow(metric(detection_temp[config1], detection_temp[config2]), self.config_aggregation_strength)
+                        
+                        temp_metric = (temp_metric/n_configs) ** (1/self.config_aggregation_strength)   
 
                         metric_tot = measurement_aggregation(metric_tot, temp_metric)
-                        detection1_tot = measurement_aggregation(detection1_tot, p1)
-                        detection2_tot = measurement_aggregation(detection2_tot, p2)
+                        detection_tot = {config_name: measurement_aggregation(detection_tot[config_name], detection_temp[config_name]) for config_name in self.config_names}
 
                     metric_tot = post_aggregation(metric_tot)
-                    detection1_tot = post_aggregation(detection1_tot)
-                    detection2_tot = post_aggregation(detection2_tot)
+                    detection_tot = {config_name: post_aggregation(detection_tot[config_name]) for config_name in self.config_names}
 
-                    return metric_tot, (detection1_tot, detection2_tot, metric_tot)
+                    return metric_tot, (detection_tot, metric_tot)
 
                 self.callable_detection = jax.jit(callable_detection)
 
@@ -756,3 +777,4 @@ def is_valid_density_matrix(rho):
     positive = jnp.all(eigvals >= -1e-10)  # tolerance
     trace_one = jnp.isclose(jnp.trace(rho), 1.0)
     return hermitian, positive, trace_one
+
