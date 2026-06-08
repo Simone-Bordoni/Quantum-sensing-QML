@@ -227,7 +227,7 @@ class DetectionMetric:
 
             - 'custom states': different configurations are assigned to specific lists of states.
                 Takes Dict[str, List[str]] dictionary mapping configuration names to List[str] list of state keys (e.g., ['00', '11']) as parameter.
-                detection_param default None (each state counting up in binary is assigned to a configuration cardinally)
+                detection_param default None (each configuration is assigned an equal number of states counting up in binary following configuration cardinality)
 
             - 'min fidelity': evolves the mixture of states, minimizes the fidelity between with/without photon
                 Takes no parameter, detection_param default None
@@ -244,7 +244,7 @@ class DetectionMetric:
                 and outputs a distance measure to be maximized.
                 detection_param default None
         """
-        state_detection = ['any excited', 'num excited', 'control qubits', 'custom states']
+        state_detection = ['any excited', 'num excited', 'control qubits', 'control states', 'custom states']
         matrix_distance = ['min fidelity', 'max trace distance', 'max computational distance', 'custom matrix distance']
 
         number = (int, float, jax.Array)
@@ -322,45 +322,76 @@ class DetectionMetric:
 
                 if parameter is None:
                     parameter = {config_name: i for i, config_name in enumerate(self.config_names)}
-                elif not isinstance(parameter, Dict[str, int]):
-                    raise ValueError(f"'num excited' detection expects detection_param to be a dictionary mapping configuration names to numbers of excitations, int between 0 and {self.n_qubits-1}. Value given: {parameter}")
+                elif not isinstance(parameter, Dict[str, int])\
+                     or not all(isinstance(v, int) for v in parameter.values())\
+                     or not all(k in self.config_names for k in parameter.keys())\
+                     or not all([0 <= v < self.n_qubits for v in parameter.values()])\
+                     or len(parameter) == 0:
+                    raise ValueError(f"'num excited' detection expects detection_param to be a non empty dictionary mapping configuration names to numbers of excitations,\
+                                     with int values between 0 and {self.n_qubits-1}. Value given: {parameter}")
                 
-                detection_states = [format(i, f'0{self.n_qubits}b') \
+                if parameter.keys() != self.config_names:
+                    raise ValueError(f"'num excited' detection expects detection_param to be a dictionary mapping ALL configuration names to numbers of excitations,\
+                                     with int values between 0 and {self.n_qubits-1}. Value given: {parameter}")
+
+                detection_states = {config_name: [format(i, f'0{self.n_qubits}b') \
                     for i in range(2**self.n_qubits) \
-                    if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) >= parameter]
-                detection_name = f'at least {parameter} excitation'
+                    if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) == parameter[config_name]] \
+                    for config_name in self.config_names}
+                
+                detection_name = f'excitation number'
 
-            elif criterion in ['control qubits', 'excited qubits']:
+            elif criterion in ['control qubits', 'qubit indexes']:
 
                 if parameter is None:
-                    raise ValueError(f"'control qubits' detection expects detection_param to be an List of unique qubit indexes, ints between 0 and n_qubits-1.\nValue given: None")
-                elif not isinstance(parameter, list) or not all(isinstance(i, int) for i in parameter) or not all([0 <= i < self.n_qubits for i in parameter]):
-                    raise ValueError(f"'control qubits' detection expects detection_param to be an List of unique qubit indexes, ints between 0 and n_qubits-1.\nValue given: {parameter}")
-                elif parameter != list(set(parameter)):
+                    parameter = {config_name: [i] for i, config_name in enumerate(self.config_names)}
+                    
+                if not isinstance(parameter, Dict[str, List[int]])\
+                     or not all(isinstance(v, List[int]) for v in parameter.values())\
+                     or not all(isinstance(i, int) for v in parameter.values() for i in v)\
+                     or not all([0 <= i < self.n_qubits for v in parameter.values() for i in v])\
+                     or not all(k in self.config_names for k in parameter.keys())\
+                     or len(parameter) == 0:
+                    raise ValueError(f"'control qubits' detection expects detection_param to be a non empty dictionary mapping\
+                                     configuration names to lists of qubit indexes, with ints between 0 and n_qubits-1.\n\
+                                     Value given: {parameter}")
+                
+                if any(parameter[config_name] != list(set(parameter[config_name])) for config_name in parameter):
                     warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
-                    parameter = set(parameter)
+                    parameter = {config_name: list(set(states)) for config_name, states in parameter.items()}
 
-                detection_states = [format(i, f'0{self.n_qubits}b') \
-                    for i in range(2**self.n_qubits) if any([format(i, f'0{self.n_qubits}b')[j] == '1' for j in parameter])]
-                detection_name = f"control qubits ({','.join(map(str, parameter))})"
+                for i in range(2**self.n_qubits):
+                    state = format(i, f'0{self.n_qubits}b')
+                    state_as_list = list(map(int, state))
+                    config_votes = {config_name: sum(state_as_list[j] for j in parameter[config_name]) for config_name in self.config_names}
+                    config_max_vote = max(config_votes, key=config_votes.get)
+                    detection_states[config_max_vote] = detection_states.get(config_max_vote, []) + [state]
+                    
+                detection_name = f"control qubits"
 
-            elif criterion == 'custom states':
+            elif criterion in ['custom states', 'control states']:
                 if parameter is None:
-                    raise ValueError("custom states detection expects detection_param to be a list of str states to detect. Value given: None")
-                elif not isinstance(parameter, list) or not all(isinstance(state, str) for state in parameter):
-                    raise ValueError(f"custom states detection expects detection_param to be a list of str states to detect. Value given: {parameter}")
-                elif not all(len(state) == self.n_qubits for state in parameter):
-                    raise ValueError(f"custom states detection expects detection_param to be a list of str states of length equal to n_qubits={self.n_qubits}. Value given: {parameter}")
-                elif not all(set(state) <= {'0','1'} for state in parameter):
-                    raise ValueError(f"custom states detection expects detection_param to be a list of str states containing only '0' and '1' characters. Value given: {parameter}")
-                elif len(parameter) == 0:
-                    raise ValueError("custom states detection expects detection_param to be a non-empty list of str states to detect. Value given: empty list")
-                elif parameter != list(set(parameter)):
-                    warnings.warn("detection_param for 'custom states' detection has non unique elements. The additional elements will be ignored.")
-                    parameter = set(parameter)
+                    states_per_config = 2**self.n_qubits // len(self.config_names)
+                    parameter = {name: [format(j, f'0{self.n_qubits}b') for j in range(i * states_per_config, (i + 1) * states_per_config)] for i, name in enumerate(self.config_names)} 
 
-                detection_states = parameter
-                detection_name = f"custom states: {parameter}"
+                all_states = [format(i, f'0{self.n_qubits}b') for i in range(2**self.n_qubits)]
+
+                if not isinstance(parameter, Dict[str, List[str]])\
+                     or not all(isinstance(v, List[str]) for v in parameter.values())\
+                     or not all(isinstance(i, str) for v in parameter.values() for i in v)\
+                     or not all([state in all_states for v in parameter.values() for state in v])\
+                     or not all(k in self.config_names for k in parameter.keys())\
+                     or len(parameter) == 0:
+                    raise ValueError(f"'custom states' detection expects detection_param to be a non empty dictionary mapping\
+                                     configuration names to lists of valid qubit states, e.g. '000' or '101' for 3 qubits.\n\
+                                     Value given: {parameter}")
+                
+                if any(parameter[config_name] != list(set(parameter[config_name])) for config_name in parameter):
+                    warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
+                    parameter = {config_name: list(set(states)) for config_name, states in parameter.items()}
+
+                detection_states = {config_name: parameter[config_name] for config_name in self.config_names}
+                detection_name = f"control states"
             
             
             def build_detection(self, p_all):
