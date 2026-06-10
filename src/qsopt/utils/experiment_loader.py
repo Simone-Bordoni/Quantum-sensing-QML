@@ -17,12 +17,11 @@ from typing import Any, Dict, Tuple
 from ..core.callback import OptimizationCallback
 from ..core.experimental_parameters import (
     ExperimentalParameters,
-    InitialStateConfig,
+    InitialState,
     InitialStateType,
     MeasurementProtocol,
-    NoiseConfiguration,
-    PhysicalConstants,
-    SystemDimensions,
+    NoiseModel,
+    PhysicalModel,
 )
 # TODO: Remove TrainableParameters dependency - refactor to use circuits
 # from ..core.trainable_parameters import ParameterType, TrainableParameters

@@ -23,7 +23,6 @@ from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
     InteractionType,
-    QubitInteraction,
     MeasurementProtocol,
     Interaction,
     SystemConfiguration,
@@ -112,9 +111,12 @@ class Experiment:
 
         # Set detection metric, checks number of qubits given to the detection metric
         if detection_metric is None:
-            self.detection_metric = DetectionMetric(n_qubits=experimental_params.n_qubits)
+            self.detection_metric = DetectionMetric(n_qubits=experimental_params.n_qubits,\
+                                                    n_cavities=experimental_params.n_cavities,\
+                                                    n_fields=experimental_params.n_fields)
         else:
-            if detection_metric.n_qubits != experimental_params.n_qubits:
+            if detection_metric.n_qubits != experimental_params.n_qubits or\
+                detection_metric.n_subsystems != (experimental_params.n_cavities + experimental_params.n_fields + experimental_params.n_qubits):
                 raise ValueError(
                     f"Detection metric n_qubits ({detection_metric.n_qubits}) must match experimental_params n_qubits ({experimental_params.n_qubits})"
                 )
@@ -186,25 +188,26 @@ class Experiment:
         """Get the number of qubit levels in the experiment."""
         return self.experimental_params.qubit_levels
 
-    def _save_sweep_state(self) -> Dict[str, Any]:
-        """
-        Save current state for parameter sweeps.
 
-        Returns:
-            Dictionary with current chi, gamma, interactions, and cached objects
-        """
-        return {
-            "chi": self.experimental_params.chi.copy() if isinstance(self.experimental_params.chi, list) else self.experimental_params.chi,
-            "gamma": self.experimental_params.photon_cavity_coupling,
-            "qubit_interactions": [
-                QubitInteraction(
-                    qubit_indices=interaction.qubit_indices,
-                    chi=interaction.chi,
-                    interaction_type=interaction.interaction_type
-                )
-                for interaction in self.experimental_params.physical_constants.qubit_interactions
-            ] if self.experimental_params.physical_constants.qubit_interactions else []
-        }
+    # def _save_sweep_state(self) -> Dict[str, Any]:
+    #     """
+    #     Save current state for parameter sweeps.
+
+    #     Returns:
+    #         Dictionary with current chi, gamma, interactions, and cached objects
+    #     """
+    #     return {
+    #         "chi": self.experimental_params.chi.copy() if isinstance(self.experimental_params.chi, list) else self.experimental_params.chi,
+    #         "gamma": self.experimental_params.photon_cavity_coupling,
+    #         "qubit_interactions": [
+    #             QubitInteraction(
+    #                 qubit_indices=interaction.qubit_indices,
+    #                 chi=interaction.chi,
+    #                 interaction_type=interaction.interaction_type
+    #             )
+    #             for interaction in self.experimental_params.physical_constants.qubit_interactions
+    #         ] if self.experimental_params.physical_constants.qubit_interactions else []
+    #     }
 
     def _restore_sweep_state(self, state: Dict[str, Any]) -> None:
         """
@@ -222,29 +225,29 @@ class Experiment:
         self._generate_hamiltonian()
         self._cached_solvers.clear()
 
-    def _update_chi_gamma(self, chi: Union[float, list], gamma: float, qubit_interactions: Optional[List] = None) -> None:
-        """
-        Temporarily update chi, gamma, and optionally qubit interactions for parameter sweeps.
+    # def _update_chi_gamma(self, chi: Union[float, list], gamma: float, qubit_interactions: Optional[List] = None) -> None:
+    #     """
+    #     Temporarily update chi, gamma, and optionally qubit interactions for parameter sweeps.
 
-        This method efficiently updates dispersive coupling, cavity decay, and qubit-qubit interactions
-        without regenerating operators or initial state.
+    #     This method efficiently updates dispersive coupling, cavity decay, and qubit-qubit interactions
+    #     without regenerating operators or initial state.
 
-        Args:
-            chi: Dispersive coupling constant(s)
-            gamma: Photon-cavity coupling (cavity decay rate)
-            qubit_interactions: Optional list of QubitInteraction objects
-        """
-        # Update parameters
-        self.experimental_params.physical_constants.chi = chi
-        self.experimental_params.physical_constants.photon_cavity_coupling = gamma
-        if qubit_interactions is not None:
-            self.experimental_params.physical_constants.qubit_interactions = qubit_interactions
+    #     Args:
+    #         chi: Dispersive coupling constant(s)
+    #         gamma: Photon-cavity coupling (cavity decay rate)
+    #         qubit_interactions: Optional list of QubitInteraction objects
+    #     """
+    #     # Update parameters
+    #     self.experimental_params.physical_constants.chi = chi
+    #     self.experimental_params.physical_constants.photon_cavity_coupling = gamma
+    #     if qubit_interactions is not None:
+    #         self.experimental_params.physical_constants.qubit_interactions = qubit_interactions
 
-        # Regenerate Hamiltonian with new parameters
-        self._generate_hamiltonian()
+    #     # Regenerate Hamiltonian with new parameters
+    #     self._generate_hamiltonian()
 
-        # Clear solver caches (they depend on Hamiltonian)
-        self._cached_solvers.clear()
+    #     # Clear solver caches (they depend on Hamiltonian)
+    #     self._cached_solvers.clear()
 
     def _generate_operators(self) -> None:
         """
@@ -1171,9 +1174,9 @@ class Experiment:
         elif isinstance(partial_configs, list):
             config_names = [name for name in self.config_names if name in partial_configs]
             if len(config_names) == 0:
-                raise ValueError("No valid configuration names found in partial_configs." \
-                " Available configuration names: " + ", ".join(self.config_names)\
-                "\n Got partial_configs: " + ", ".join(partial_configs))
+                raise ValueError("No valid configuration names found in partial_configs. \
+                 Available configuration names: " + ", ".join(self.config_names) + \
+                f"\nGot partial_configs: " + ", ".join(partial_configs))
             elif len(config_names) < len(partial_configs):
                 missing = set(partial_configs) - set(config_names)
                 print(f"Warning: The following names in partial_configs were not found and will be ignored: {missing}")
@@ -1195,6 +1198,8 @@ class Experiment:
         measure_reset_dag = self.operators["measure_reset_dag"]
 
         args = self.global_args
+        args["n_qubits"] = n_qubits
+        args["detection_metric"] = self.detection_metric.name
 
         # Generate all possible qubit's computational states
         n_qubits = self.n_qubits 
@@ -1238,7 +1243,7 @@ class Experiment:
                 
                 metric_value, (detect_dict, _) = self.detection_metric(rho_meas, epoch_fraction)
 
-                detection_lists.update((name, list + [float(detect_dict[x])]) for name, list in detection_lists.items())
+                detection_lists.update((name, list + [float(detect_dict[name])]) for name, list in detection_lists.items())
 
                 all_times.append(seg_times[i])
 
@@ -1254,28 +1259,22 @@ class Experiment:
         # Compute pulse shape using the same u0 function as visualization
         pulse_shape = np.array([float(u0(t, sigma=args["sigma"])) for t in times])
 
-        # Build probabilities dictionary
-        probabilities = {"detection_measure": np.array(detection_list)}
-        if detection_probability_list:
-            probabilities["detection_probability"] = np.array(detection_probability_list)
+        # Turn lists into arrays
+        detection_lists.update((name, np.array(list)) for name, list in detection_lists.items())
+        cavities_populations.update((name, [np.array(list) for list in list_of_lists]) for name, list_of_lists in cavities_populations.items())
+        fields_populations.update((name, [np.array(list) for list in list_of_lists]) for name, list_of_lists in fields_populations.items())
 
         # Import at runtime to avoid circular dependency
         from qsopt.utils.results import TimeEvolutionResults
 
         return TimeEvolutionResults(
             times=times,
-            probabilities=probabilities,
+            probabilities=detection_lists,
             pulse_shape=pulse_shape,
             measurement_times=measurement_times,
-            cavity_population=np.array(cavity_population_list),
-            field_population=np.array(field_population_list),
-            metadata={
-                "chi": self.experimental_params.chi,
-                "gamma": self.experimental_params.photon_cavity_coupling,
-                "with_interaction": with_interaction,
-                "n_qubits": n_qubits,
-                "detection_metric" : self.detection_metric.name,
-            },
+            cavity_population=cavities_populations,
+            field_population=fields_populations,
+            metadata=args,
         )
 
     def optimize_rotations(
@@ -1438,38 +1437,30 @@ class Experiment:
                 opt_state = optimizer.init(params)
 
         # Get initial state, solvers and detection metric
-        rho0 = self._cached_initial_state
+        rho0 = self._cached_initial_states
         if rho0 is None:
-            raise RuntimeError("Initial state cache is not initialized.")
+            raise RuntimeError("Initial states cache is not initialized.")
 
-        solver_with = self.get_solver_with_interaction()
-        solver_without = self.get_solver_no_interaction()
+        solvers = self.get_solvers()
         detection_metric = self.detection_metric
 
         # Define objective function with explicit uncertainty input.
         # Signature order is kept future-proof for optional optimization over times.
-        def coupled_simulation(circuit_unitaries, measurement_times, measurement_noise, epoch_fraction: float):
+        def parallel_simulations(circuit_unitaries, measurement_times, measurement_noise, epoch_fraction: float):
             """Single-realization of the two simulations with the same parameters and noise."""
 
             noisy_measurement_times = measurement_times + measurement_noise
 
-            rho_with_list = self.simulation(
-                solver_with,
-                rho0,
+            rho_dict = {config: self.simulation(
+                solvers[config],
+                rho0[config],
                 noisy_measurement_times,
                 precomputed_unitaries=circuit_unitaries,
-            )
+            ) for config in self.config_names}
 
-            rho_without_list = self.simulation(
-                solver_without,
-                rho0,
-                noisy_measurement_times,
-                precomputed_unitaries=circuit_unitaries,
-            )
+            metric_value, (detection_dict, validation_value) = self.detection_metric(rho_dict, epoch_fraction)
 
-            metric_value, (detection_with, detection_without, validation_value) = self.detection_metric(rho_with_list, rho_without_list, epoch_fraction)
-
-            return metric_value, detection_with , detection_without, validation_value
+            return metric_value, detection_dict, validation_value
 
 
         static_args = []  # initialize objective_function static args list
@@ -1506,9 +1497,9 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                metric, detect_with, detect_without, validation = coupled_simulation(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
+                metric, detect_dict, validation = parallel_simulations(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
 
-                return -metric, (detect_with, detect_without, metric, validation)
+                return -metric, (detect_dict, metric, validation)
 
         else:
             
@@ -1532,17 +1523,16 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                batch_metric, batch_detect_with, batch_detect_without, batch_validation = jax.vmap(
-                    coupled_simulation,
+                batch_metric, batch_detect_dict, batch_validation = jax.vmap(
+                    parallel_simulations,
                     in_axes=(None, None, 0, None),
                 )(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
 
                 mean_metric = jnp.mean(batch_metric)
-                mean_detect_with = jnp.mean(batch_detect_with)
-                mean_detect_without = jnp.mean(batch_detect_without)
+                mean_detect_dict = {name: jnp.mean(batch) for name, batch in batch_detect_dict.items()}
                 mean_validation = jnp.mean(batch_validation)
 
-                return -mean_metric, (mean_detect_with, mean_detect_without, mean_metric, mean_validation)
+                return -mean_metric, (mean_detect_dict, mean_metric, mean_validation)
 
         jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
 
@@ -1604,9 +1594,9 @@ class Experiment:
             measurement_uncertainty_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
-            grads, (detection_with, detection_without, step_metric, step_validation) = jax.grad(
+            grads, (detection_dict, step_metric, step_validation) = jax.grad(
                 jitted_objective, has_aux=True, argnums=0 #(0,1)
-            )(params, base_measurement_times, measurement_uncertainty_batch,epoch_fraction=step/tot_steps)
+            )(params, base_measurement_times, measurement_uncertainty_batch, epoch_fraction=step/tot_steps)
 
             step_metric_value = float(step_metric)
             step_validation_value = float(step_validation)
@@ -1628,8 +1618,7 @@ class Experiment:
             callback(
                 trainable_params_initial=params[:n_initial], 
                 trainable_params_final=params[n_initial:],
-                detection_with=float(detection_with),
-                detection_without=float(detection_without),
+                detection_dict=detection_dict.update((name, float(detection)) for name, detection in detection_dict.items()),
                 metric=step_metric_value,
                 validation=step_validation_value,
                 optimizer_state=opt_state,
@@ -1684,10 +1673,9 @@ class Experiment:
                                             debug=False
                                             )
 
-        state_probs_with = final_results_callback.state_probabilities_with
-        state_probs_without = final_results_callback.state_probabilities_without
+        state_probs_dict = final_results_callback.state_probabilities_dict
             
-        callback.set_measurement_protocol(state_probs_with, state_probs_without)
+        callback.set_measurement_protocol(state_probs_dict)
 
         if verbose:
             print("=" * (5+len(header)))
