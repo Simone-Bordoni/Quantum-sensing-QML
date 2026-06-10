@@ -150,6 +150,13 @@ class DetectionMetric:
         
         self.config_aggregation_strength = config_aggregation_strength
 
+        if len(set(self.config_names)) != len(self.config_names):
+            raise ValueError(f"config_names must have unique values. Value given: {self.config_names}")
+        self.config_pairs = [
+                    (config1, config2)
+                    for i, config1 in enumerate(self.config_names[:-1])
+                    for config2 in self.config_names[i + 1 :]]
+
         # create the detection metric initializer:
         # we need the projectors which are built in the experiment, so the callable 
         # is built in the experiment initialization and not here.
@@ -166,7 +173,8 @@ class DetectionMetric:
             self.name = name        
 
 
-    def __call__(self, rho_lists: Dict[str, List[qt.Qobj]], epoch_fraction: float = 1) -> Tuple[float, Tuple[Dict[str, float], float]]:
+    def __call__(self, rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[Dict[str, float], float]]:
         """
         Compute loss from detection probability.
 
@@ -185,19 +193,8 @@ class DetectionMetric:
             detection measures for different simulations if applicable (dict), and validation metric (float).
         """
 
-        metric = 0
-        validation = 0
-        detection_dict = {}
-
-        for i, key1 in enumerate(self.config_names):
-
-            for key2 in self.config_names[i+1:]:
-                temp_metric, (detection1, detection2, temp_validation) = self.callable_detection(rho_lists[key1], rho_lists[key2], key1=key1, key2=key2, epoch_fraction=epoch_fraction)
-                metric += temp_metric
-                validation += temp_validation
-                detection_dict[key1] = detection1
-                detection_dict[key2] = detection2
-
+        metric, (detection_dict, validation) = self.callable_detection(rho_dict, epoch_fraction)
+                
         return metric, (detection_dict, validation)
     
     def init_detection(self, criterion, parameter, metric, multi_measurement_logic \
@@ -322,7 +319,7 @@ class DetectionMetric:
                 if len(self.config_names) != 2:
                     raise ValueError(f"'any excited' detection criterion only works for 2-configuration systems. Value given: {len(self.config_names)} configurations.")
                 
-                if not parameter:
+                if parameter is False or parameter is None:
                     detection_states[self.config_names[0]] = [format(0, f'0{self.n_qubits}b')]
                     detection_states[self.config_names[1]] = [format(i, f'0{self.n_qubits}b') for i in range(1,2**self.n_qubits)]
                 else:
@@ -334,18 +331,19 @@ class DetectionMetric:
 
                 if parameter is None:
                     parameter = {config_name: i for i, config_name in enumerate(self.config_names)}
-                elif not isinstance(parameter, Dict[str, int])\
+                elif not isinstance(parameter, dict)\
                      or not all(isinstance(v, int) for v in parameter.values())\
                      or not all(k in self.config_names for k in parameter.keys())\
-                     or not all([0 <= v < self.n_qubits for v in parameter.values()])\
+                     or not all([0 <= v <= self.n_qubits for v in parameter.values()])\
                      or len(parameter) == 0:
                     raise ValueError(f"'num excited' detection expects detection_param to be a non empty dictionary mapping configuration names to numbers of excitations,\
                                      with int values between 0 and {self.n_qubits-1}. Value given: {parameter}")
                 
-                if parameter.keys() != self.config_names:
+                if set(parameter.keys()) != set(self.config_names):
                     raise ValueError(f"'num excited' detection expects detection_param to be a dictionary mapping ALL configuration names to numbers of excitations,\
                                      with int values between 0 and {self.n_qubits-1}. Value given: {parameter}")
 
+                
                 detection_states = {config_name: [format(i, f'0{self.n_qubits}b') \
                     for i in range(2**self.n_qubits) \
                     if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) == parameter[config_name]] \
@@ -354,12 +352,12 @@ class DetectionMetric:
                 detection_name = f'excitation number'
 
             elif criterion in ['control qubits', 'qubit indexes']:
-
+                
                 if parameter is None:
                     parameter = {config_name: [i] for i, config_name in enumerate(self.config_names)}
                     
-                if not isinstance(parameter, Dict[str, List[int]])\
-                     or not all(isinstance(v, List[int]) for v in parameter.values())\
+                if not isinstance(parameter, dict)\
+                     or not all(isinstance(v, list) for v in parameter.values())\
                      or not all(isinstance(i, int) for v in parameter.values() for i in v)\
                      or not all([0 <= i < self.n_qubits for v in parameter.values() for i in v])\
                      or not all(k in self.config_names for k in parameter.keys())\
@@ -368,7 +366,7 @@ class DetectionMetric:
                                      configuration names to lists of qubit indexes, with ints between 0 and n_qubits-1.\n\
                                      Value given: {parameter}")
                 
-                if any(parameter[config_name] != list(set(parameter[config_name])) for config_name in parameter):
+                if any(sorted(parameter[config_name]) != sorted(set(parameter[config_name])) for config_name in parameter):
                     warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
                     parameter = {config_name: list(set(states)) for config_name, states in parameter.items()}
 
@@ -388,9 +386,9 @@ class DetectionMetric:
 
                 all_states = [format(i, f'0{self.n_qubits}b') for i in range(2**self.n_qubits)]
 
-                if not isinstance(parameter, Dict[str, List[str]])\
-                     or not all(isinstance(v, List[str]) for v in parameter.values())\
-                     or not all(isinstance(i, str) for v in parameter.values() for i in v)\
+                if not isinstance(parameter, dict)\
+                     or not all(isinstance(v, list) for v in parameter.values())\
+                     or not all(isinstance(state, str) for v in parameter.values() for state in v)\
                      or not all([state in all_states for v in parameter.values() for state in v])\
                      or not all(k in self.config_names for k in parameter.keys())\
                      or len(parameter) == 0:
@@ -398,8 +396,8 @@ class DetectionMetric:
                                      configuration names to lists of valid qubit states, e.g. '000' or '101' for 3 qubits.\n\
                                      Value given: {parameter}")
                 
-                if any(parameter[config_name] != list(set(parameter[config_name])) for config_name in parameter):
-                    warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
+                if any(sorted(parameter[config_name]) != sorted(set(parameter[config_name])) for config_name in parameter):
+                    warnings.warn("detection_param for 'custom states' detection has non unique elements. The additional elements will be ignored.")
                     parameter = {config_name: list(set(states)) for config_name, states in parameter.items()}
 
                 detection_states = {config_name: parameter[config_name] for config_name in self.config_names}
@@ -413,34 +411,28 @@ class DetectionMetric:
                 This function is returned by the outer `build_detection` factory so
                 the experiment can call it when projectors are available.
                 """
-                detection_projectors = {config_name: [p_all[i] for i in range(2**self.n_qubits)\
-                                                        if format(i, f'0{self.n_qubits}b') in states]
+                projectors = {config_name: sum([p_all[i] for i in range(2**self.n_qubits)\
+                                                        if format(i, f'0{self.n_qubits}b') in states])
                                         for config_name, states in detection_states.items()}
-                configs_pairs = len(self.config_names)*
-                
-                
-                print(f"DEBUG loss_functions:\n\nDetection projectors built for states: {detection_states}\nProjectors: {detection_projectors}")
+                n_config_pairs = len(self.config_pairs)
+
+                print(f"DEBUG loss_functions:\n\nDetection projectors built for states: {detection_states}\nProjectors: {projectors}")
 
                 def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
                      -> Tuple[float, Tuple[Dict[str, float], float]]:
                     
-                    detection_tot = {config_name: aggregate_init for config_name in self.config_names}
-                    detection_temp = {}
                     metric_tot = aggregate_init
-                    
+                    detection_tot = {config_name: aggregate_init for config_name in self.config_names}
 
                     for meas in range(len(rho_dict[self.config_names[0]])):
 
                         temp_metric = 0
+                        detection_temp = {config_name: jnp.real((projector * rho_dict[config_name][meas] * projector).tr()) for config_name, projector in projectors.items()}
 
-                        for i, config1 in enumerate(self.config_names[:-1]):
-                            for config2 in self.config_names[i+1:]:
-                                    
-                                detection_temp[config1] = sum([jnp.real((projector * rho_dict[config1][meas] * projector).tr()) for projector in detection_projectors[config1]])
-                                detection_temp[config2] = sum([jnp.real((projector * rho_dict[config2][meas] * projector).tr()) for projector in detection_projectors[config2]])
-                                temp_metric += pow(metric(detection_temp[config1], detection_temp[config2]), self.config_aggregation_strength)
+                        for config1, config2 in self.config_pairs:
+                            temp_metric += pow(metric(detection_temp[config1], detection_temp[config2]), self.config_aggregation_strength)
                         
-                        temp_metric = (temp_metric/n_configs) ** (1/self.config_aggregation_strength)   
+                        temp_metric = (temp_metric/n_config_pairs) ** (1/self.config_aggregation_strength)   
 
                         metric_tot = measurement_aggregation(metric_tot, temp_metric)
                         detection_tot = {config_name: measurement_aggregation(detection_tot[config_name], detection_temp[config_name]) for config_name in self.config_names}
@@ -506,18 +498,31 @@ class DetectionMetric:
                     the experiment can call it when projectors are available.
                     """
 
-                    def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
-                         -> Tuple[float, Tuple[float, float]]:
-                        # Implementation for fidelity and trace distance
+                    
+                    n_config_pairs = len(self.config_pairs)
+                    detection_tot = {config_name: 0 for config_name in self.config_names}
 
+                    def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[Dict[str, float], float]]:
+                        # Implementation for fidelity and trace distance
+                        
                         metric_tot = aggregate_init
 
-                        for rho1,rho2 in zip(list_rho_1, list_rho_2):
-                            metric_tot = measurement_aggregation(metric_tot, matrix_distance(rho1, rho2))
+                        for meas in range(len(rho_dict[self.config_names[0]])):
+
+                            temp_metric = 0
+
+                            for config1, config2 in self.config_pairs:
+
+                                temp_metric += pow(matrix_distance(rho_dict[config1][meas], rho_dict[config2][meas]), self.config_aggregation_strength)
+
+                            temp_metric = (temp_metric/n_config_pairs) ** (1/self.config_aggregation_strength)   
+
+                            metric_tot = measurement_aggregation(metric_tot, temp_metric)
                         
                         metric_tot = post_aggregation(metric_tot)
                         
-                        return metric_tot, (0,0, metric_value)
+                        return metric_tot, (detection_tot, metric_tot)
 
                     self.callable_detection = jax.jit(callable_detection)
 
@@ -548,7 +553,7 @@ class DetectionMetric:
 
                 if parameter is None:
                     parameter = lambda x,y: metric(x,y,1)
-                elif not callable(metric):
+                elif not callable(parameter):
                     raise ValueError(f"max computational distance detection expects detection_param to be a callable (x,y)->z (validation metric). Value given: {parameter}")
                 else:
                     error_msg = f"max computational distance detection expects detection_param to be a callable (x,y)->z (validation metric).\n\
@@ -572,24 +577,37 @@ class DetectionMetric:
                     This function is returned by the outer `build_detection` factory so
                     the experiment can call it when projectors are available.
                     """
+                    
+                    n_config_pairs = len(self.config_pairs)
+                    detection_tot = {config_name: 0 for config_name in self.config_names}
 
-                    def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
-                     -> Tuple[float, Tuple[float, float]]:
+                    def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[Dict[str, float], float]]:
                         # Implementation for computational distance
                         
                         metric_tot = aggregate_init
                         validation_tot = aggregate_init
 
-                        for rho1,rho2 in zip(list_rho_1, list_rho_2):
-                            p_with = jnp.array([jnp.real((projector * rho1 * projector).tr()) for projector in p_all])
-                            p_without = jnp.array([jnp.real((projector * rho2 * projector).tr()) for projector in p_all])
-                            metric_tot = measurement_aggregation(metric_tot, jnp.sum(metric(p_with, p_without, epoch_fraction)))
-                            validation_tot = measurement_aggregation(validation_tot, jnp.sum(validation(p_with, p_without)))
+                        for meas in range(len(rho_dict[self.config_names[0]])):
+
+                            temp_metric = 0
+                            temp_validation = 0
+                            p = {config_name: jnp.array([jnp.real((projector * rho_dict[config_name][meas] * projector).tr()) for projector in p_all]) for config_name in self.config_names}
+    
+                            for config1, config2 in self.config_pairs:
+                                temp_metric += pow(jnp.sum(metric(p[config1], p[config2], epoch_fraction)), self.config_aggregation_strength)
+                                temp_validation += pow(jnp.sum(validation(p[config1], p[config2])), self.config_aggregation_strength)
+                                
+                            temp_metric = (temp_metric/n_config_pairs) ** (1/self.config_aggregation_strength)
+                            temp_validation = (temp_validation/n_config_pairs) ** (1/self.config_aggregation_strength)
+
+                            metric_tot = measurement_aggregation(metric_tot, temp_metric)
+                            validation_tot = measurement_aggregation(validation_tot, temp_validation)
                             
                         metric_tot = post_aggregation(metric_tot)
                         validation_tot = post_aggregation(validation_tot)
 
-                        return metric_tot, (0,0, validation_tot)
+                        return metric_tot, (detection_tot, validation_tot)
 
                     self.callable_detection = jax.jit(callable_detection)
 
@@ -624,7 +642,7 @@ class DetectionMetric:
 
                 if parameter is None:
                     parameter = lambda x,y: metric(x,y,1)
-                elif not callable(metric):
+                elif not callable(parameter):
                     raise ValueError(f"custom matrix distance detection expects detection_param to be a callable validation metric\n\
                                      that takes as input two density matrices then outputs a distance measure to be maximized.\n\
                                      Value given: {metric}")
@@ -651,21 +669,35 @@ class DetectionMetric:
                     the experiment can call it when projectors are available.
                     """
 
-                    def callable_detection(list_rho_1: List[qt.Qobj], list_rho_2: List[qt.Qobj], epoch_fraction: float)\
-                     -> Tuple[float, Tuple[float, float]]:
+                    n_config_pairs = len(self.config_pairs)
+                    detection_tot = {config_name: 0 for config_name in self.config_names}
+
+                    def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
+                     -> Tuple[float, Tuple[Dict[str, float], float]]:
                         # Implementation for custom matrix distance
 
                         metric_tot = aggregate_init
                         validation_tot = aggregate_init
 
-                        for rho1,rho2 in zip(list_rho_1, list_rho_2):
-                            metric_tot = measurement_aggregation(metric_tot, metric(rho1, rho2, epoch_fraction))
-                            validation_tot = measurement_aggregation(validation_tot, validation(rho1, rho2))
+                        for meas in range(len(rho_dict[self.config_names[0]])):
+
+                            temp_metric = 0
+                            temp_validation = 0
+
+                            for config1, config2 in self.config_pairs:
+                                temp_metric += pow(metric(rho_dict[config1][meas], rho_dict[config2][meas], epoch_fraction), self.config_aggregation_strength)
+                                temp_validation += pow(validation(rho_dict[config1][meas], rho_dict[config2][meas]), self.config_aggregation_strength)
+                                
+                            temp_metric = (temp_metric/n_config_pairs) ** (1/self.config_aggregation_strength)
+                            temp_validation = (temp_validation/n_config_pairs) ** (1/self.config_aggregation_strength)
+
+                            metric_tot = measurement_aggregation(metric_tot, temp_metric)
+                            validation_tot = measurement_aggregation(validation_tot, temp_validation)
 
                         metric_tot = post_aggregation(metric_tot)
                         validation_tot = post_aggregation(validation_tot)
 
-                        return metric_tot, (0,0, validation_tot)
+                        return metric_tot, (detection_tot, validation_tot)
 
                     self.callable_detection = jax.jit(callable_detection)
 
@@ -712,7 +744,7 @@ class DetectionMetric:
 
 @jit
 def std_states_metric(p1: float, p2: float)-> float:
-    distance = p1 - p2
+    distance = abs(p1 - p2)
     return distance
 
 @jit
