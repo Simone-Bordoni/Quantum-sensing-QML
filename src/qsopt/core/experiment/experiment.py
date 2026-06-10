@@ -16,6 +16,7 @@ import time as t
 import jax.numpy as jnp
 import equinox
 from jax import jit, lax
+import copy
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
@@ -105,6 +106,9 @@ class Experiment:
         self.experimental_params = experimental_params
         self.initial_circuit = initial_circuit
         self.final_circuit = final_circuit
+
+        # Save locally config names for easy access
+        self.config_names = [config.name for config in self.experimental_params.configuration_set]
 
         # Set detection metric, checks number of qubits given to the detection metric
         if detection_metric is None:
@@ -1079,9 +1083,9 @@ class Experiment:
     def time_evolution(
         self,
         n_points: int = 200,
-        with_interaction: bool = True,
         measurement_protocol: Optional[MeasurementProtocol] = None,
         callback: Optional[OptimizationCallback] = None,
+        partial_configs: Optional[List[str]] = None
     ) -> "TimeEvolutionResults":
         """
         Compute time evolution of n-qubit probabilities.
@@ -1093,10 +1097,12 @@ class Experiment:
 
         Args:
             n_points: Number of time points to sample (default: 200)
-            with_interaction: If True, use Hamiltonian with chi coupling.
-                             If False, use Hamiltonian without chi (default: True)
             measurement_protocol: Optional custom measurement protocol to use instead of
-                                 the experiment's default protocol (default: None)
+                    the experiment's default protocol (default: None)
+            callback: Optional OptimizationCallback to determine detection states
+                    If None, a new one will be created with detection_states=True (default: None)
+            partial_configs: Optional list of configuration names to include in the evolution.
+                    If None, all configurations will be included (default: None)
 
         Returns:
             TimeEvolutionResults object containing:
@@ -1160,10 +1166,25 @@ class Experiment:
         n_fields = self.n_fields
         n_qubits = self.n_qubits
 
+        if partial_configs is None:
+            config_names = self.config_names
+        elif isinstance(partial_configs, list):
+            config_names = [name for name in self.config_names if name in partial_configs]
+            if len(config_names) == 0:
+                raise ValueError("No valid configuration names found in partial_configs." \
+                " Available configuration names: " + ", ".join(self.config_names)\
+                "\n Got partial_configs: " + ", ".join(partial_configs))
+            elif len(config_names) < len(partial_configs):
+                missing = set(partial_configs) - set(config_names)
+                print(f"Warning: The following names in partial_configs were not found and will be ignored: {missing}")
+        else:
+            raise TypeError("partial_configs must be a list of strings or None.")
+
         if callback is None or callback.detection_states is None:
             if callback is not None and callback.detection_states is None:
                 print("Warning: Callback provided without detection states. Creating new one.")
             callback = self.run_simulation(measurement_times=(t_start, t_end), detection_states=True)
+
         
         # Get number operators for population calculation
         op_n_cavity = [self.operators["a_c_dag"][i] * self.operators["a_c"][i] for i in range(len(n_cavities))]
@@ -1193,8 +1214,7 @@ class Experiment:
         segment_ends = list(intermediate_meas_times) + [t_end]
 
         # Evolution
-        rho_with = rho0
-        rho_without = rho0
+        rho0 = init_states
 
         for seg_start, seg_end in zip(segment_starts, segment_ends):
             # Number of points for this segment
@@ -1202,17 +1222,11 @@ class Experiment:
             seg_n_points = max(2, int(n_points * seg_fraction))
 
             # Apply initial circuit for measurement
-            rho_with = initial_unitary * rho_with * initial_unitary_dag
-            if requires_pair or not with_interaction:
-                rho_without = initial_unitary * rho_without * initial_unitary_dag
+            rho_circuit = {name: initial_unitary * rho0[name] * initial_unitary_dag for name in self.config_names}
 
             # Evolve segment
             seg_times = np.linspace(seg_start, seg_end, seg_n_points)
-            primary_solver = solver_with if (with_interaction or requires_pair) else solver_without
-            result_with = primary_solver.run(rho_with, tlist=seg_times, args=args)
-            result_without = None
-            if requires_pair:
-                result_without = solver_without.run(rho_without, tlist=seg_times, args=args)
+            result = {name: solvers_dict[name].run(rho_circuit[name], tlist=seg_times, args=args) for name in self.config_names }
 
             # Extract data for this segment
             for i, rho_t in enumerate(result_with.states):
