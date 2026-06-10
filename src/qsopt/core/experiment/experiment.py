@@ -1203,10 +1203,9 @@ class Experiment:
 
         # Storage for results
         all_times = []
-        detection_list = []
-        detection_probability_list = []
-        cavities_population_lists = []
-        fields_population_lists = []
+        detection_lists = {name: [] for name in config_names}
+        cavities_populations = {name: [[]]*n_cavities for name in config_names}
+        fields_populations = {name: [[]]*n_fields for name in config_names}
 
         # Set up measurements
         intermediate_meas_times = measurement_times[(measurement_times > t_start) & (measurement_times < t_end)]
@@ -1226,55 +1225,30 @@ class Experiment:
 
             # Evolve segment
             seg_times = np.linspace(seg_start, seg_end, seg_n_points)
-            result = {name: solvers_dict[name].run(rho_circuit[name], tlist=seg_times, args=args) for name in self.config_names }
+            results_dict = {name: solvers_dict[name].run(rho_circuit[name], tlist=seg_times, args=args) for name in self.config_names }
 
             # Extract data for this segment
-            for i, rho_t in enumerate(result_with.states):
+            for i, rho_t in enumerate(results_dict[config_names[0]].states):
 
                 # Apply final circuit for measurement
-                rho_meas_with = final_unitary * rho_t * final_unitary_dag  # type: ignore
-                rho_meas_without = None
-                if result_without is not None:
-                    rho_without_t = result_without.states[i]
-                    rho_meas_without = final_unitary * rho_without_t * final_unitary_dag  # type: ignore
-                elif not with_interaction:
-                    rho_meas_without = rho_meas_with
+                rho_meas = {name: [final_unitary * results_dict[name].states[i] * final_unitary_dag] for name in self.config_names}
 
                 # Measure detection with the configured metric
                 epoch_fraction = (seg_times[i] - t_start) / (t_end - t_start)
-                if requires_pair:
-                    metric_value, _ = self.detection_metric(
-                        [rho_meas_with],
-                        [rho_meas_without],
-                        epoch_fraction,
-                    )
-                    detection_value = metric_value
-                else:
-                    metric_value, (detect_value, _, _) = self.detection_metric(
-                        [rho_meas_with],
-                        [rho_meas_with],
-                        epoch_fraction,
-                    )
-                    detection_value = detect_value
-                    detection_probability_list.append(detect_value)
+                
+                metric_value, (detect_dict, _) = self.detection_metric(rho_meas, epoch_fraction)
 
-                detection_list.append(detection_value)
+                detection_lists.update((name, list + [float(detect_dict[x])]) for name, list in detection_lists.items())
 
                 all_times.append(seg_times[i])
 
                 # Calculate populations (take real part since expectation values should be real)
-                population_rho = rho_t if with_interaction else (rho_without_t if rho_meas_without is not None else rho_t)
-                cavity_pop = float(np.real(qt.expect(n_cavity, population_rho)))
-                field_pop = float(np.real(qt.expect(n_field, population_rho)))
-                cavity_population_list.append(cavity_pop)
-                field_population_list.append(field_pop)
+                cavities_populations.update((name, [list_of_lists[j] + [float(np.real(qt.expect(op_n_cavity[j], results_dict[name].states[i])))] for j in range(n_cavities)]) for name, list_of_lists in cavities_populations.items())
+                fields_populations.update((name, [list_of_lists[j] + [float(np.real(qt.expect(op_n_field[j], results_dict[name].states[i])))] for j in range(n_fields)]) for name, list_of_lists in fields_populations.items())
 
             # Update system after actual measurement
             #reset_with = [op * rho_meas_with * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
-            rho_with = rho_meas_with  # sum(reset_with)
-            if rho_meas_without is not None:
-                reset_without = [op * rho_meas_without * op_dag for op, op_dag in zip(measure_reset, measure_reset_dag)]
-                rho_without = rho_meas_without # sum(reset_without)
+            rho0 = rho_meas
 
         times = np.array(all_times)
         # Compute pulse shape using the same u0 function as visualization
