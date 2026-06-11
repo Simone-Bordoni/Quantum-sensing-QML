@@ -67,7 +67,11 @@ class Interaction:
         subsystem2: Optional[Tuple[str,int]] of type (string) and index (int) of the second subsystem involved in the interaction (e.g., ('cavity', 1))
         parameters: Dict[str, Any] of interaction parameters or a numeric value (int, float, complex)
         time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] function of time that modulates the interaction strength (e.g., for time-dependent interactions). Must return a non-negative value.
-        custom_matrix: Optional[qt.Qobj] = None
+        custom_matrix: Optional[qt.Qobj] operator for CUSTOM_HAMILTONIAN/CUSTOM_LINDBLAD interactions,
+            acting only on the involved subsystem(s). For a two-subsystem custom interaction the
+            matrix legs are given in the (subsystem1, subsystem2) order you pass; if the subsystems
+            are reordered into canonical order the legs are permuted automatically (which requires
+            the matrix to carry structured per-subsystem dims [[d1, d2], [d1, d2]]).
     """
 
     def __init__(
@@ -140,7 +144,30 @@ class Interaction:
         # Ensure canonical ordering (sort by type and then index)
         if self.subsystem2 is not None and (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
             self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
-        
+            # The matrix of a two-subsystem custom interaction is given with its tensor
+            # legs in the user's (subsystem1, subsystem2) order. Now that the subsystems
+            # have been swapped into canonical order, permute the matrix legs to match so
+            # the stored (subsystem1, subsystem2) order and the matrix stay aligned. This
+            # needs structured per-subsystem dims [[d1, d2], [d1, d2]]; a flat matrix
+            # cannot be split into its two legs, so it must be supplied with structured dims.
+            if isinstance(self.custom_matrix, qt.Qobj) and self.interaction_type in (
+                InteractionType.CUSTOM_HAMILTONIAN,
+                InteractionType.CUSTOM_LINDBLAD,
+            ):
+                if len(self.custom_matrix.dims[0]) == 2:
+                    self.custom_matrix = self.custom_matrix.permute([1, 0])
+                else:
+                    raise ValueError(
+                        self._with_context(
+                            "The interaction's subsystems were reordered into canonical order "
+                            "(cavity < field < qubit, then by index), so the custom_matrix tensor "
+                            "legs must be permuted to match. This requires the matrix to carry "
+                            "structured per-subsystem dims [[d1, d2], [d1, d2]] (in your original "
+                            "subsystem1, subsystem2 order). Provide it with structured dims, or pass "
+                            "the subsystems already in canonical order."
+                        )
+                    )
+
         # Validate time modulation function
         if self.time_modulation is not None and not callable(self.time_modulation):
             raise TypeError(
@@ -745,76 +772,28 @@ class PhysicalModel:
                         f"Interaction involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
                     )
 
-            if interaction.interaction_type == InteractionType.CUSTOM_HAMILTONIAN:
-                # A custom operator must be supplied on the full system Hilbert space:
-                # `total_dims` is the flat list of every subsystem truncation (cavities,
-                # then fields, then qubits), so [total_dims, total_dims] is the expected
-                # qutip dims of an operator acting on the whole system. Per-subsystem
-                # embedding (below) is still unfinished — see the `banana` markers.
-                
-                
+            if interaction.interaction_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
+                # The custom operator acts only on the involved subsystem(s). We validate
+                # its overall matrix size against the product of those subsystem
+                # dimensions; the per-subsystem dims metadata and the embedding into the
+                # full composite space are (re)assigned later by quantum_utils.embed_operator.
+                #
+                # Interaction.__post_init__ has already permuted the matrix legs into the
+                # stored (canonical) (subsystem1, subsystem2) order, so embed_operator can
+                # place them at ascending composite positions.
+                subsystem_dims = [self._subsystem_dimension(interaction.subsystem1)]
+                if interaction.subsystem2 is not None:
+                    subsystem_dims.append(self._subsystem_dimension(interaction.subsystem2))
+                expected_size = math.prod(subsystem_dims)
 
-                total_dims = self.cavity_levels + self.field_levels + self.qubit_levels
-
-                if interaction.custom_matrix.dims != [total_dims, total_dims]:
+                kind = "Hamiltonian" if interaction.interaction_type == InteractionType.CUSTOM_HAMILTONIAN else "Lindblad"
+                shape = tuple(interaction.custom_matrix.shape)
+                if shape != (expected_size, expected_size):
                     raise ValueError(
-                        f"Custom Hamiltonian interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [{total_dims}, {total_dims}]"
-                        )                        
-                else:   
-                    if interaction.subsystem1[0] == 'cavity':
-                        dim1 = self.cavity_levels[interaction.subsystem1[1]]
-                    elif interaction.subsystem1[0] == 'field':
-                        dim1 = self.field_levels[interaction.subsystem1[1]]
-                    elif interaction.subsystem1[0] == 'qubit':
-                        dim1 = self.qubit_levels[interaction.subsystem1[1]]
-                    if interaction.subsystem2 is not None:
-                        if interaction.subsystem2[0] == 'cavity':
-                            dim2 = self.cavity_levels[interaction.subsystem2[1]]
-                        elif interaction.subsystem2[0] == 'field':
-                            dim2 = self.field_levels[interaction.subsystem2[1]]
-                        elif interaction.subsystem2[0] == 'qubit':
-                            dim2 = self.qubit_levels[interaction.subsystem2[1]]
-                        if  interaction.custom_matrix.dims != [[dim1, dim2], [dim1, dim2]]:
-                            raise ValueError(
-                                f"Custom Hamiltonian interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}, {dim2}], [{dim1}, {dim2}]]"
-                            )   
-                        else:
-                            banana = 1 #figure out how to embed it for 2 subsystems
-                    else:
-                        banana = 1 #figure out how to embed it for single subsystem
-            elif interaction.interaction_type == InteractionType.CUSTOM_LINDBLAD:
-                # Same full-system dims requirement as the custom Hamiltonian branch above.
-                total_dims = self.cavity_levels + self.field_levels + self.qubit_levels
-
-                if interaction.custom_matrix.dims != [total_dims, total_dims]:
-                    raise ValueError(
-                        f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [{total_dims}, {total_dims}]"
-                        )
-                else:
-                    if interaction.subsystem1[0] == 'cavity':
-                        dim1 = self.cavity_levels[interaction.subsystem1[1]]
-                    elif interaction.subsystem1[0] == 'field':
-                        dim1 = self.field_levels[interaction.subsystem1[1]]
-                    elif interaction.subsystem1[0] == 'qubit':
-                        dim1 = self.qubit_levels[interaction.subsystem1[1]]
-                    if interaction.subsystem2 is None:
-                        if interaction.custom_matrix.dims != [[dim1], [dim1]]:
-                            raise ValueError(
-                                f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}], [{dim1}]]"
-                            )
-                        banana = 1 #figure out how to embed it for single subsystem (simple)
-                    else:
-                        if interaction.subsystem2[0] == 'cavity':
-                            dim2 = self.cavity_levels[interaction.subsystem2[1]]
-                        elif interaction.subsystem2[0] == 'field':
-                            dim2 = self.field_levels[interaction.subsystem2[1]]
-                        elif interaction.subsystem2[0] == 'qubit':
-                            dim2 = self.qubit_levels[interaction.subsystem2[1]]
-                        if  interaction.custom_matrix.dims != [[dim1, dim2], [dim1, dim2]]:
-                            raise ValueError(
-                                f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}, {dim2}], [{dim1}, {dim2}]]"
-                            )
-                        banana = 1 #figure out how to embed it for 2 subsystems (hard because of possible mixed terms)
+                        f"Custom {kind} matrix for {interaction._interaction_context()} has size {shape}, "
+                        f"but the involved subsystem(s) require a ({expected_size}, {expected_size}) operator "
+                        f"(per-subsystem dimensions {subsystem_dims})."
+                    )
                     
 
         
@@ -854,6 +833,17 @@ class PhysicalModel:
             return levels
         else:
             raise TypeError(f"{label.capitalize()} levels must be an integer or a list of integers")
+
+    def _subsystem_dimension(self, subsystem: Tuple[str, int]) -> int:
+        """Return the Hilbert-space dimension (truncation level) of a subsystem."""
+        stype, idx = subsystem
+        if stype == 'cavity':
+            return self.cavity_levels[idx]
+        if stype == 'field':
+            return self.field_levels[idx]
+        if stype == 'qubit':
+            return self.qubit_levels[idx]
+        raise ValueError(f"Unknown subsystem type: {stype}")
 
 
     def copy(self, **updates) -> "PhysicalModel":
@@ -1016,20 +1006,21 @@ class SubsystemState:
             self.parameters["n_avg"] = float(n_avg)  # Ensure n_avg is stored as a float
 
         elif self.state_type == InitialStateType.CUSTOM:
-            raise NotImplementedError(
-                "CUSTOM state type is not implemented yet for SubsystemState. Use supported states or a density matrix."
-            )
-            if self.parameters is None or "custom_amplitudes" not in self.parameters:
-                raise ValueError("CUSTOM state requires 'custom_amplitudes' parameter for state specification")
-            custom_amplitudes = self.parameters["custom_amplitudes"]
-            if not isinstance(custom_amplitudes, dict):
-                raise ValueError("CUSTOM state 'custom_amplitudes' parameter must be a dictionary")
-            for key, value in custom_amplitudes.items():
-                if not (isinstance(key, tuple) and len(key) == 3 and all(isinstance(i, int) for i in key)):
-                    raise ValueError("CUSTOM state 'custom_amplitudes' keys must be tuples of three integers (cavity_level, field_level, qubit_level)")
-                if not isinstance(value, (int, float, complex)):
-                    raise ValueError("CUSTOM state 'custom_amplitudes' values must be numeric (real or complex)")
-                custom_amplitudes[key] = complex(value)  # Ensure amplitudes are stored as complex numbers
+            # A custom single-mode state is a pure state given by its Fock-basis amplitudes:
+            # |ψ⟩ = Σ aₙ|n⟩, with parameters={'amplitudes': [a0, a1, ...]}.
+            if self.parameters is None or "amplitudes" not in self.parameters:
+                raise ValueError(
+                    "CUSTOM state requires an 'amplitudes' parameter: a 1D sequence of Fock-basis "
+                    "amplitudes [a0, a1, ...] defining the pure state |psi> = sum_n a_n |n>"
+                )
+            amplitudes = np.asarray(self.parameters["amplitudes"], dtype=complex).reshape(-1)
+            if amplitudes.size == 0:
+                raise ValueError("CUSTOM state 'amplitudes' must be a non-empty 1D sequence")
+            norm = np.linalg.norm(amplitudes)
+            if norm < 1e-12:
+                raise ValueError("CUSTOM state 'amplitudes' must have non-zero norm")
+            # Store the normalized amplitudes as a plain list of complex numbers.
+            self.parameters["amplitudes"] = (amplitudes / norm).tolist()
 
     def copy(self) -> "SubsystemState":
         """Return a copy with independent parameter storage."""
@@ -1486,6 +1477,15 @@ class ExperimentalParameters:
                                     Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
                                     UserWarning,
                                 )
+                        if state.state_type == InitialStateType.CUSTOM:
+                            n_amplitudes = len(state.parameters["amplitudes"])
+                            if self.cavity_levels[index] < n_amplitudes:
+                                raise ValueError(
+                                    f"Initial state of {config.name} specifies a CUSTOM state with {n_amplitudes} "
+                                    f"Fock amplitudes for cavity {index}, but the cavity truncation level is "
+                                    f"{self.cavity_levels[index]}. Provide at most {self.cavity_levels[index]} "
+                                    f"amplitudes or raise the cavity_levels truncation parameter."
+                                )
 
                 if config.initial_state.field_states is not None:
                     for (index, state) in config.initial_state.field_states.items():
@@ -1521,7 +1521,16 @@ class ExperimentalParameters:
                                     Consider increasing field_levels or reducing n_avg for more accurate simulations.",
                                     UserWarning,
                                 )
-                                
+                        if state.state_type == InitialStateType.CUSTOM:
+                            n_amplitudes = len(state.parameters["amplitudes"])
+                            if self.field_levels[index] < n_amplitudes:
+                                raise ValueError(
+                                    f"Initial state of {config.name} specifies a CUSTOM state with {n_amplitudes} "
+                                    f"Fock amplitudes for field mode {index}, but the field truncation level is "
+                                    f"{self.field_levels[index]}. Provide at most {self.field_levels[index]} "
+                                    f"amplitudes or raise the field_levels truncation parameter."
+                                )
+
                 if config.initial_state.density_matrix is not None:
                     dim = math.prod(self.cavity_levels) * math.prod(self.field_levels)
                     if config.initial_state.density_matrix.shape != (dim, dim):
@@ -1731,11 +1740,6 @@ class ExperimentalParameters:
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
 
-    @property
-    def interactions(self) -> List[Interaction]:
-        """Direct access to interactions from the physical model."""
-        return self.physical_model.interactions
-    
     def add_interaction(self, interaction: Interaction) -> None:
         """
         Add a new interaction to the physical model.

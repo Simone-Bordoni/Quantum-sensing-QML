@@ -10,6 +10,7 @@ This module provides reusable components that can be composed for different expe
 
 from typing import Dict, List, Optional, Tuple, Union
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -104,7 +105,7 @@ def generate_system_operators(
         - Rotation operators:
             * roty_q: List of Y-rotation gates on individual qubits
             * roty: Simultaneous Y-rotation on all qubits
-        - Identity operators: I_field, I_cavity, I_q (for composite space construction)
+        - Identity operators: I_c, I_f, I_q (per-mode identity lists for composite space construction)
     """
     # Handle levels as list or int
     # Cavities
@@ -336,9 +337,14 @@ def generate_initial_state(
         ValueError: If required parameters are missing or invalid
 
     Example:
-        >>> from qsopt.core.experimental_parameters import InitialStateConfig, InitialStateType
-        >>> config = InitialStateConfig(state_type=InitialStateType.SINGLE_PHOTON)
-        >>> rho0 = generate_initial_state(config, 2, 2, 2, n_qubits=1)
+        >>> from qsopt.core.experimental_parameters import InitialState, SubsystemState, InitialStateType
+        >>> config = InitialState(
+        ...     field_states={0: SubsystemState(state_type=InitialStateType.FOCK, parameters={"n": 1})}
+        ... )
+        >>> rho0 = generate_initial_state(
+        ...     config, cavity_levels=2, field_levels=2, qubit_levels=2,
+        ...     n_cavities=1, n_fields=1, n_qubits=1,
+        ... )
     """
 
     cavity_states = initial_state.cavity_states
@@ -394,7 +400,7 @@ def generate_initial_state(
                     alpha = state.parameters["alpha"]
                     state_matrix = _create_coherent(c_levels[i], alpha)
                 elif state.state_type == InitialStateType.CUSTOM:
-                    raise NotImplementedError("Custom cavity states not yet implemented")
+                    state_matrix = _create_custom_state(c_levels[i], state.parameters["amplitudes"])
                 else:
                     state_matrix = _create_vacuum(c_levels[i])
                 state_matrix_list.append(state_matrix)
@@ -415,7 +421,7 @@ def generate_initial_state(
                     alpha = state.parameters["alpha"]
                     state_matrix = _create_coherent(f_levels[i], alpha)
                 elif state.state_type == InitialStateType.CUSTOM:
-                    raise NotImplementedError("Custom field states not yet implemented")
+                    state_matrix = _create_custom_state(f_levels[i], state.parameters["amplitudes"])
                 else:
                     state_matrix = _create_vacuum(f_levels[i])
                 state_matrix_list.append(state_matrix)
@@ -423,8 +429,9 @@ def generate_initial_state(
                 vacuum = _create_vacuum(f_levels[i])
                 state_matrix_list.append(vacuum)
 
-        # Combine field state with ground state base (field ⊗ cavity ⊗ qubits)
-        return qt.tensor(*state_matrix_list, qubits_ground)  
+        # Combine subsystem states with the qubit ground state base.
+        # Ordering matches generate_system_operators: cavities ⊗ fields ⊗ qubits.
+        return qt.tensor(*state_matrix_list, qubits_ground)
 
 
 # ==================== Private Helper Functions ====================
@@ -482,76 +489,30 @@ def _create_thermal(levels: int, n_bar: float) -> qt.Qobj:
     return qt.thermal_dm(levels, n_bar)
 
 
-def _create_custom_state(
-    custom_amplitudes: Dict[Tuple[int, int, Union[int, Tuple[int]]], complex],
-    field_levels: int,
-    cavity_levels: int,
-    qubit_levels: Union[int, List[int]],
-    n_qubits: int,
-) -> qt.Qobj:
+def _create_custom_state(levels: int, amplitudes: Union[List[complex], np.ndarray]) -> qt.Qobj:
     """
-    Create custom state from user-provided amplitudes.
+    Create a pure single-mode custom state from Fock-basis amplitudes: |ψ⟩ = Σ aₙ|n⟩.
 
-    For custom states, we need to support arbitrary configurations,
-    so we maintain the full flexibility of the original implementation.
+    Args:
+        levels: Fock truncation of the mode.
+        amplitudes: 1D sequence of complex amplitudes (length <= levels). High Fock
+            components beyond ``len(amplitudes)`` are padded with zeros and the state
+            is renormalized.
+
+    Returns:
+        Density matrix |ψ⟩⟨ψ| for the single mode.
     """
-    # Handle qubit_levels
-    if isinstance(qubit_levels, int):
-        q_levels = [qubit_levels] * n_qubits
-    else:
-        q_levels = qubit_levels[:n_qubits]
-
-    # For now, only support single qubit custom states
-    #if n_qubits != 1:
-    #    raise NotImplementedError("Custom states only supported for single qubit systems")
-
-    # Initialize zero state vector
-    total_dim = field_levels * cavity_levels * math.prod(q_levels)
-    psi_array = np.zeros((total_dim,), dtype=complex)
-
-    # Fill in amplitudes from dictionary
-    # Dictionary keys are tuples (field, cavity, qubit)
-
-    if all(isinstance(z, int) for (x,y,z),e in custom_amplitudes.items()):
-        for (field, cavity, qubit), amplitude in custom_amplitudes.items():
-
-            # Validate indices
-            if not (0 <= field < field_levels):
-                raise ValueError(f"Field index {field} out of range [0, {field_levels})")
-            if not (0 <= cavity < cavity_levels):
-                raise ValueError(f"Cavity index {cavity} out of range [0, {cavity_levels})")
-            qubit = [qubit]*len(q_levels)
-            if not all(0 <= x < y for x,y in zip(qubit,q_levels)):
-                raise ValueError(f"Qubit index {qubit[0]} is out of range [0, {min(q_levels)})")
-
-            # Compute flat index: field ⊗ cavity ⊗ qubit1 ⊗ ... ⊗ qubitn ordering
-            idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
-            psi_array[idx] = amplitude
-
-    elif all(isinstance(z, tuple) for (x,y,z),e in custom_amplitudes.items()):
-        for (field, cavity, qubit), amplitude in custom_amplitudes.items():
-
-            # Validate indices
-            if not (0 <= field < field_levels):
-                raise ValueError(f"Field index {field} out of range [0, {field_levels})")
-            if not (0 <= cavity < cavity_levels):
-                raise ValueError(f"Cavity index {cavity} out of range [0, {cavity_levels})")
-            if not all(0 <= x < y for x,y in zip(list(qubit),q_levels)):
-                raise ValueError("At least one of the qubit indexes is out of range [0, qubit levels)")
-
-            # Compute flat index: field ⊗ cavity ⊗ qubit ordering
-            idx = [field * (cavity_levels * math.prod(q_levels)) + cavity * math.prod(q_levels) + qubit[i]*math.prod(q_levels[i+1:]) for i in range(len(qubit))]
-            psi_array[idx] = amplitude
-
-
-    # Normalize the state
-    norm = np.linalg.norm(psi_array)
-    if norm < 1e-10:
-        raise ValueError("Custom state has zero norm (<1e-10)")
-    psi_array = psi_array / norm
-
-    # Create QuTiP state
-    psi = qt.Qobj(psi_array, dims=[[field_levels, cavity_levels] + q_levels, [1, 1] + [1]*len(q_levels)])
+    amp = np.asarray(amplitudes, dtype=complex).reshape(-1)
+    if amp.size > levels:
+        raise ValueError(
+            f"Custom state has {amp.size} amplitudes but the mode only has {levels} levels"
+        )
+    vec = np.zeros(levels, dtype=complex)
+    vec[: amp.size] = amp
+    norm = np.linalg.norm(vec)
+    if norm < 1e-12:
+        raise ValueError("Custom state has zero norm (<1e-12)")
+    psi = qt.Qobj(vec / norm)
     return psi * psi.dag()  # type: ignore
 
 
@@ -712,30 +673,35 @@ def apply_qubit_rotation(
     rho: qt.Qobj, theta: float, qubit_index: int, operators: Dict[str, qt.Qobj], axis: str = "y"
 ) -> qt.Qobj:
     """
-    Apply rotation to a specific qubit in multi-qubit system.
+    Apply a rotation to a specific qubit in a multi-qubit composite system.
 
-    Generic function for rotating individual qubits in composite Hilbert space.
-    Works for both single and multi-qubit systems.
+    Generic function for rotating individual qubits in the composite Hilbert space
+    (cavity ⊗ field ⊗ qubits). Works for any number of cavities, fields and qubits.
 
     Args:
         rho: Density matrix in composite space
         theta: Rotation angle in radians
         qubit_index: Index of qubit to rotate (0-based)
-        operators: Dictionary of operators from generate_*_operators()
+        operators: Dictionary of operators from generate_system_operators()
         axis: Rotation axis ('x', 'y', or 'z')
 
     Returns:
         Rotated density matrix
 
     Example:
-        >>> # For two-qubit system
-        >>> ops = generate_two_qubit_operators(2, 2, [2, 2])
+        >>> # For a two-qubit system (1 cavity, 1 field)
+        >>> ops = generate_system_operators(1, 1, 2, 2, 2, 2)
         >>> rho_rotated = apply_qubit_rotation(rho, np.pi/4, qubit_index=0, operators=ops, axis='y')
-        >>> # Rotates first qubit by π/4 around Y-axis
+        >>> # Rotates the first qubit by π/4 around the Y-axis
     """
-    # Get identity operators
-    I_field = operators["I_field"]
-    I_cavity = operators["I_cavity"]
+    # Per-mode identities ordered as in generate_system_operators: cavity ⊗ field ⊗ qubits
+    I_c = operators["I_c"]
+    I_f = operators["I_f"]
+    I_q = operators["I_q"]
+    n_qubits = len(I_q)
+
+    if not (0 <= qubit_index < n_qubits):
+        raise ValueError(f"qubit_index must be in [0, {n_qubits}), got {qubit_index}")
 
     # Build single-qubit rotation matrix
     with qt.CoreOptions(default_dtype="jax"):
@@ -750,33 +716,11 @@ def apply_qubit_rotation(
 
         rotation_single = (-1j * pauli * theta / 2).expm()
 
-    # Determine number of qubits from operators
-    # Check if we have multi-qubit operators (e.g., 'I_q1', 'I_q2')
-    if "I_q1" in operators:
-        # Multi-qubit system
-        n_qubits = 0
-        i = 1
-        while f"I_q{i}" in operators:
-            n_qubits += 1
-            i += 1
-
-        # Build list of identity operators for each qubit
-        qubit_identities = [operators[f"I_q{i+1}"] for i in range(n_qubits)]
-
-        # Replace identity at qubit_index with rotation
-        qubit_ops = qubit_identities.copy()
+        # Replace the identity acting on the target qubit with the rotation,
+        # then embed in the full composite space.
+        qubit_ops = list(I_q)
         qubit_ops[qubit_index] = rotation_single
-
-        # Tensor product: field ⊗ cavity ⊗ q1 ⊗ q2 ⊗ ...
-        rotation_gate = qt.tensor(I_field, I_cavity, *qubit_ops)
-    else:
-        # Single qubit system
-        if qubit_index != 0:
-            raise ValueError(f"qubit_index must be 0 for single-qubit system, got {qubit_index}")
-
-        I_qubit = operators["I_qubit"]
-        # For single qubit, just embed rotation
-        rotation_gate = qt.tensor(I_field, I_cavity, rotation_single)
+        rotation_gate = qt.tensor(list(I_c) + list(I_f) + qubit_ops)
 
     return rotation_gate * rho * rotation_gate.dag()  # type: ignore
 
@@ -826,11 +770,10 @@ def measure_qubits_probability(
             # All qubits in ground state
             P = operators['P_all0']
         else:
-            # For other states, need to construct projector manually
-            if (field_levels is None) or (cavity_levels is None):
-                raise ValueError("Measurement of arbitrary joint states requires field_levels and cavity_levels")
-            I_field = qt.identity(field_levels)
-            I_cavity = qt.identity(cavity_levels)
+            # For other states, construct the joint projector from the cached
+            # per-mode identities (cavity ⊗ field ⊗ qubits ordering).
+            I_c = operators["I_c"]
+            I_f = operators["I_f"]
             if q_levels is None:
                 q_levels = [2]*n_qubits
             elif isinstance(q_levels, int):
@@ -839,14 +782,15 @@ def measure_qubits_probability(
             # Build projector for each qubit based on state string
             qubit_projectors = []
             for i, s in enumerate(state):
+                l = q_levels[i]
                 if s == '0':
-                    qubit_projectors.append(qt.Qobj([[1, 0] + [0]*(q_levels[i]-2)] + [[0]*q_levels[i]]*(q_levels[i]-1)))
+                    qubit_projectors.append(qt.Qobj([[1, 0] + [0]*(l-2)] + [[0]*l]*(l-1)))
                 elif s == '1':
-                    qubit_projectors.append(qt.Qobj([[0]*q_levels[i]] + [[0, 1] + [0]*(q_levels[i]-2)] + [[0]*q_levels[i]]*(q_levels[i]-2)))
+                    qubit_projectors.append(qt.Qobj([[0]*l] + [[0, 1] + [0]*(l-2)] + [[0]*l]*(l-2)))
                 else:
                     raise ValueError(f"Invalid state character '{s}', must be '0' or '1'")
 
-            P = qt.tensor([I_field, I_cavity] + qubit_projectors)
+            P = qt.tensor(list(I_c) + list(I_f) + qubit_projectors)
 
     elif (isinstance(qubit_indices, list) and len(qubit_indices) == 1) or (isinstance(qubit_indices, int) and qubit_indices < n_qubits):
         # Single qubit measurement
@@ -861,12 +805,10 @@ def measure_qubits_probability(
 
     elif (len(qubit_indices) <= n_qubits):
         # Joint measurement
-        if (field_levels is None) or (cavity_levels is None):
-            raise ValueError("Non cached measurement of non fixed number of qubits require both the field_levels and cavity_levels")
         if len(state) != len(qubit_indices):
             raise ValueError(f"Lenght of state string ({len(state)}) must match lenght of qubit_indices ({len(qubit_indices)})")
-        I_field = qt.identity(field_levels)
-        I_cavity = qt.identity(cavity_levels)
+        I_c = operators["I_c"]
+        I_f = operators["I_f"]
         if q_levels is None:
             q_levels = [2]*n_qubits
         elif isinstance(q_levels, int):
@@ -874,9 +816,9 @@ def measure_qubits_probability(
         elif len(q_levels) != n_qubits:
             raise ValueError(f"q_levels were passed, but the lenght is different than the number of qubits ({n_qubits})")
 
-            #Generate the projector: (l is the number of qubit levels of a qubit)
-            # IF qubit is in the indices -> generates the matrix lxl that projects on the state at the same index
-            # ELSE -> generates the identity lxl
+        #Generate the projector: (l is the number of qubit levels of a qubit)
+        # IF qubit is in the indices -> generates the matrix lxl that projects on the state at the same index
+        # ELSE -> generates the identity lxl
         qubit_projector = [ \
             qt.Qobj([[1 - int(state[qubit_indices.index(i)]), 0] + [0]*(l-2)] +\
                 [[0, 0 + int(state[qubit_indices.index(i)])] + [0]*(l-2)] +\
@@ -885,7 +827,7 @@ def measure_qubits_probability(
             else qt.identity(l) \
             for i,l in enumerate(q_levels) \
                 ]
-        P = qt.tensor([I_field, I_cavity] + qubit_projector)
+        P = qt.tensor(list(I_c) + list(I_f) + qubit_projector)
 
     else:
         raise ValueError(f'qubit indices must either be:\n \
@@ -931,3 +873,91 @@ def embed_circuit_unitary(
     U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), circuit_unitary)
 
     return U_full_jax
+
+
+def embed_operator(
+    operator: qt.Qobj,
+    positions: List[int],
+    identities: List[qt.Qobj],
+) -> qt.Qobj:
+    """
+    Embed an operator acting on one or two subsystems into the full composite space.
+
+    The composite Hilbert space is described by ``identities``: one identity operator
+    per subsystem, given in the canonical tensor order (cavity ⊗ field ⊗ qubits, as
+    produced by :func:`generate_system_operators`). The ``operator`` acts jointly on
+    the subsystems located at ``positions``; its tensor legs are assumed to be in the
+    same order as ``positions`` (which must be ascending, matching the canonical order).
+
+    The operator is tensored with identities on every other subsystem and then permuted
+    back into the canonical order, so the returned qutip ``Qobj`` keeps the correct
+    per-subsystem ``dims`` (and therefore composes cleanly with the system operators
+    and states).
+
+    Args:
+        operator: Operator acting on the subsystems at ``positions``. Only its overall
+            matrix size must equal ``prod(d_p for p in positions)``; the correct
+            per-subsystem ``dims`` are (re)assigned here from ``positions`` and
+            ``identities``. If the operator is supplied with flat or otherwise incorrect
+            subsystem ``dims`` metadata (but the right size) the dims are reassigned and
+            a warning is emitted.
+        positions: Composite indices (0-based, ascending) of the subsystems the operator
+            acts on. Length 1 (single subsystem) or 2 (two subsystems). The operator's
+            tensor legs are assumed to follow this order.
+        identities: Identity operators for every subsystem in canonical order
+            (e.g. ``operators["I_c"] + operators["I_f"] + operators["I_q"]``).
+
+    Returns:
+        The operator embedded in the full composite Hilbert space.
+
+    Example:
+        >>> ops = generate_system_operators(1, 1, 2, 2, 2, 2)
+        >>> identities = list(ops["I_c"]) + list(ops["I_f"]) + list(ops["I_q"])
+        >>> # Embed a custom cavity(0)-qubit(0) operator: composite positions 0 and 2
+        >>> H_full = embed_operator(custom_matrix, [0, 2], identities)
+    """
+    n_subsystems = len(identities)
+
+    if any(not (0 <= p < n_subsystems) for p in positions):
+        raise ValueError(f"positions {positions} out of range [0, {n_subsystems})")
+    if len(set(positions)) != len(positions):
+        raise ValueError(f"positions must be distinct, got {positions}")
+
+    # Expected per-subsystem leg dimensions, taken from the target subsystems. We only
+    # require the overall matrix size to match; the correct per-subsystem dims are
+    # (re)assigned below so an operator carrying flat/absent/incorrect subsystem dims is
+    # still embedded correctly.
+    expected_legs = [identities[p].dims[0][0] for p in positions]
+    expected_dims = [expected_legs, list(expected_legs)]
+    expected_size = int(np.prod(expected_legs))
+
+    mat = np.asarray(operator.full())
+    if mat.shape != (expected_size, expected_size):
+        raise ValueError(
+            f"operator has matrix size {mat.shape} but the subsystems at positions {positions} "
+            f"require a ({expected_size}, {expected_size}) operator (per-subsystem dims {expected_legs})"
+        )
+
+    # Warn if the supplied dims metadata had to be reinterpreted.
+    given_dims = [list(operator.dims[0]), list(operator.dims[1])]
+    if given_dims != expected_dims:
+        warnings.warn(
+            f"embed_operator: operator dims {given_dims} do not match the expected per-subsystem "
+            f"dims {expected_dims} for positions {positions}. The matrix size is correct, so the "
+            f"dims are being reassigned to {expected_dims} (legs assumed in the order of positions).",
+            UserWarning,
+        )
+
+    others = [p for p in range(n_subsystems) if p not in positions]
+
+    with qt.CoreOptions(default_dtype="jax"):
+        # Attach the correct per-subsystem dims as metadata, under the JAX backend so the
+        # operator tensors cleanly with the JAX-backed identities.
+        op = qt.Qobj(mat, dims=[expected_legs, list(expected_legs)])
+        combined = qt.tensor([op] + [identities[p] for p in others])
+
+        # `combined`'s tensor factors are ordered as (positions + others); permute so
+        # that factor k of the result is the subsystem at composite position k.
+        source_order = list(positions) + others
+        permutation = [source_order.index(k) for k in range(n_subsystems)]
+        return combined.permute(permutation)

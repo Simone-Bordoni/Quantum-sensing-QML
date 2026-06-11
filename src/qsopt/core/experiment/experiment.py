@@ -38,6 +38,7 @@ from .quantum_utils import (
     apply_qubit_rotation,
     build_qubit_noise_operators,
     embed_circuit_unitary,
+    embed_operator,
     generate_initial_state,
     generate_system_operators,
     gu,
@@ -111,9 +112,10 @@ class Experiment:
 
         # Set detection metric, checks number of qubits given to the detection metric
         if detection_metric is None:
-            self.detection_metric = DetectionMetric(n_qubits=experimental_params.n_qubits,\
-                                                    n_cavities=experimental_params.n_cavities,\
-                                                    n_fields=experimental_params.n_fields)
+            self.detection_metric = DetectionMetric(n_cavities=experimental_params.n_cavities,\
+                                                    n_qubits=experimental_params.n_qubits,\
+                                                    n_fields=experimental_params.n_fields,\
+                                                    config_names=self.config_names)
         else:
             if detection_metric.n_qubits != experimental_params.n_qubits or\
                 detection_metric.n_subsystems != (experimental_params.n_cavities + experimental_params.n_fields + experimental_params.n_qubits):
@@ -424,6 +426,31 @@ class Experiment:
 
                 H_term = qt.Qobj(chi/2 * op1 * op2)
 
+            if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
+
+                # Composite tensor positions of the involved subsystem(s), in the
+                # canonical (cavity ⊗ field ⊗ qubits) ordering used for the operators.
+                offsets = {'cavity': 0, 'field': self.n_cavities, 'qubit': self.n_cavities + self.n_fields}
+                positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
+                if interaction.subsystem2 is not None:
+                    positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
+
+                # Per-subsystem identities in canonical order, then embed the custom matrix.
+                identities = (
+                    list(self.operators["I_c"])
+                    + list(self.operators["I_f"])
+                    + list(self.operators["I_q"])
+                )
+                embedded = embed_operator(interaction.custom_matrix, positions, identities)
+
+                if int_type == InteractionType.CUSTOM_HAMILTONIAN:
+                    H_term = embedded
+                else:  # CUSTOM_LINDBLAD
+                    if t_func is not None:
+                        L_term = qt.QobjEvo([embedded, t_func], args=args)
+                    else:
+                        L_term = embedded
+
             return H_term, L_term, t_func, args
 
         def _wrap_time_modulation(func, key_map):
@@ -583,11 +610,13 @@ class Experiment:
         Generate and cache the initial state of the system.
         """
         return generate_initial_state(
-            initial_config=initial_state,
+            initial_state=initial_state,
             field_levels=self.field_levels,
             cavity_levels=self.cavity_levels,
             qubit_levels=self.qubit_levels,
-            n_qubits=self.n_qubits
+            n_cavities=self.n_cavities,
+            n_fields=self.n_fields,
+            n_qubits=self.n_qubits,
         )
 
     def get_solvers(self) -> qt.MESolver:
@@ -1183,8 +1212,8 @@ class Experiment:
         else:
             raise TypeError("partial_configs must be a list of strings or None.")
 
-        if callback is None or callback.detection_states is None:
-            if callback is not None and callback.detection_states is None:
+        if callback is None or not callback.detection_states:
+            if callback is not None and not callback.detection_states:
                 print("Warning: Callback provided without detection states. Creating new one.")
             callback = self.run_simulation(measurement_times=(t_start, t_end), detection_states=True)
 
@@ -1673,7 +1702,7 @@ class Experiment:
                                             debug=False
                                             )
 
-        state_probs_dict = final_results_callback.state_probabilities_dict
+        state_probs_dict = final_results_callback.state_probabilities
             
         callback.set_measurement_protocol(state_probs_dict)
 

@@ -17,28 +17,32 @@ class OptimizationCallback:
     Callback for tracking optimization progress with detailed metrics.
 
     This callback tracks:
-    - Detection measures (with and without photon)
-    - Metric (optimization objective)
+    - Detection measures for each configuration (detection_dict)
+    - Metric (optimization objective) and validation value
     - Trainable parameters (initial and final circuit trainable parameters)
     - Gradients and optimizer state
-    - Best parameters found (maximizing the metric)
-    - Detection state classification and confusion matrix metrics
+    - Best parameters found (maximizing the validation value)
+    - Detection state classification and confusion matrix across configurations
 
     Attributes:
         save_every (int): Save history every N epochs
-        save_best (bool): Track best parameters based on the metric
+        save_best (bool): Track best parameters based on the validation value
         epoch (int): Current epoch number
         history (Dict): Complete optimization history
         best_trainable_params (Optional): Best trainable parameters found
-        best_metrics (Optional[Dict]): Metrics at best parameters
-        interaction_detection_states (List[str]): Binary strings representing quantum states 
-            where photon interaction is detected (e.g., '001', '010')
-        noninteraction_detection_states (List[str]): Binary strings representing quantum states
-            where no photon interaction is detected (e.g., '000', '100')
-        true_positive (float): Sum of probabilities for interaction detection states with photons
-        true_negative (float): Sum of probabilities for non-interaction states without photons
-        false_positive (float): Sum of probabilities for interaction detection states without photons
-        false_negative (float): Sum of probabilities for non-interaction states with photons
+        best_validation (float): Best validation value observed so far
+        best_metrics (Optional[Dict]): Metrics at best parameters (epoch, metric,
+            validation and per-configuration detection_dict)
+        state_probabilities (Optional[Dict[str, Dict[str, float]]]): Per-configuration
+            measurement-state probabilities, mapping configuration name to a dict of
+            binary state strings (e.g. '001', '010') to probabilities.
+        detection_states (Dict[str, List[str]]): Mapping of configuration name to the
+            list of binary state strings that are classified as that configuration
+            (i.e. the configuration that maximises the probability of the state).
+        confusion_matrix (Dict[Tuple[str, str], float]): Soft confusion matrix mapping
+            (true_configuration, predicted_configuration) to the accumulated probability
+            mass. Each true-configuration row sums to 1 when the input probabilities are
+            normalised.
     """
 
     def __init__(self, save_every: int = 1, save_best: bool = True):
@@ -47,8 +51,7 @@ class OptimizationCallback:
 
         Args:
             save_every: Save metrics every N epochs (default: 1 = every epoch)
-            save_best: Whether to track best parameters based on the metric (default: True)
-            configuration_names: Names of the configurations being optimized (optional, for preprocessing purposes)
+            save_best: Whether to track best parameters based on the validation value (default: True)
         """
         self.save_every = save_every
         self.save_best = save_best
@@ -168,20 +171,30 @@ class OptimizationCallback:
         """
         Set state probabilities for the current optimization step and classify detection states.
 
-        Classifies quantum states based on measurement outcomes:
-        - Interaction detection states: where P(with_photon) > P(without_photon)
-        - Non-interaction states: where P(without_photon) >= P(with_photon)
-        
+        Classifies each measurement state to the configuration that maximises its
+        probability, building:
+        - detection_states: mapping each configuration name to the list of states it "wins".
+        - confusion_matrix: soft confusion matrix mapping (true, predicted) configuration
+          pairs to the accumulated probability mass.
+
         States are represented as binary strings, e.g., for 3 qubits: '000', '001', ..., '111'
         formatted as format(i, f"0{n_qubits}b") for i in range(2**n_qubits).
 
         This can be used to update the state probabilities at any point during optimization,
-        such as after a final evaluation run.
+        such as after a final evaluation run. Passing ``None`` or an empty mapping clears the
+        currently stored protocol.
 
         Args:
-            state_probabilities: Dict of dicts mapping binary state strings to probabilities with photon interaction
+            state_probabilities: Dict mapping each configuration name to a dict of binary
+                state strings to the probability of measuring that state for the configuration.
         """
-    
+
+        if not state_probabilities:
+            self.state_probabilities = None
+            self.detection_states = {}
+            self.confusion_matrix = {}
+            return
+
         self.state_probabilities = copy.deepcopy(state_probabilities)
         config_names = list(state_probabilities.keys())
         
@@ -196,8 +209,8 @@ class OptimizationCallback:
             max_config = max(prob_state, key=prob_state.get)
             self.detection_states[max_config].append(state)
             # Update confusion matrix counts for this state based on the predicted max_config
-            for name1 in config_names:
-                self.confusion_matrix[(name1, max_config)] += prob_state.get(name1, 0.0)
+            for name in config_names:
+                self.confusion_matrix[(name, max_config)] += prob_state.get(name, 0.0)
             
     def get_best_trainable_params(self) -> Optional[tuple[list, list]]:
         """
@@ -522,11 +535,8 @@ class OptimizationCallback:
         self.converged = False
         self.final_grad_norm = None
         self.state_probabilities = None
-        self.detection_states = []
-        self.true_positive = 0.0
-        self.true_negative = 0.0
-        self.false_positive = 0.0
-        self.false_negative = 0.0
+        self.detection_states = {}
+        self.confusion_matrix = {}
 
     def __repr__(self) -> str:
         """
@@ -563,50 +573,63 @@ class OptimizationCallback:
             # Show initial circuit parameters
             lines.append("     Initial circuit:")
             for i, value in enumerate(initial_params):
-                # Convert to numpy to handle both regular floats and JAX arrays
-                val_float = float(np.asarray(value))
+                # Route through numpy then extract a native scalar to handle
+                # plain floats, numpy values and JAX arrays uniformly.
+                val_float = np.asarray(value, dtype=float).item()
                 lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
 
             # Show final circuit parameters
             lines.append("     Final circuit:")
             for i, value in enumerate(final_params):
-                # Convert to numpy to handle both regular floats and JAX arrays
-                val_float = np.asarray(value)
+                val_float = np.asarray(value, dtype=float).item()
                 lines.append(f"        param_{i}: {val_float:.6f} rad ({np.rad2deg(val_float):.2f}°)")
 
         # Show metrics (best for optimization, current for simulation)
         if self.best_metrics is not None:
-            lines.append("  Detection Measures:")
-            lines.append(f"     With photon:    {self.best_metrics['detection_with']:.6f}")
-            lines.append(f"     Without photon: {self.best_metrics['detection_without']:.6f}")
-            lines.append(f"     Metric:            {self.best_metrics['metric']:.6f}")
+            detection_dict = self.best_metrics.get("detection_dict") or {}
+            if detection_dict:
+                lines.append("  Detection Measures:")
+                label_width = max(len(str(name)) for name in detection_dict)
+                for name, value in detection_dict.items():
+                    lines.append(f"     {str(name):<{label_width}} : {float(value):.6f}")
+            lines.append("  Objective:")
+            lines.append(f"     Metric:     {self.best_metrics['metric']:.6f}")
+            if self.best_metrics.get("validation") is not None:
+                lines.append(f"     Validation: {self.best_metrics['validation']:.6f}")
 
-        if self.state_probabilities_with is not None and self.state_probabilities_without is not None:
+        # Show per-configuration measurement-state probabilities
+        if self.state_probabilities:
             lines.append("  State Probabilities:")
-            lines.append("     With photon:")
-            for state, prob in self.state_probabilities_with.items():
-                lines.append(f"        {state}: {prob:.6f}")
-            lines.append("     Without photon:")
-            for state, prob in self.state_probabilities_without.items():
-                lines.append(f"        {state}: {prob:.6f}")
+            for config_name, probs in self.state_probabilities.items():
+                lines.append(f"     {config_name}:")
+                for state, prob in probs.items():
+                    lines.append(f"        {state}: {float(prob):.6f}")
 
-        # Show detection protocol and confusion matrix
-        if self.interaction_detection_states or self.noninteraction_detection_states:
-            lines.append("  Detection Protocol:")
-            if self.interaction_detection_states:
-                lines.append(f"     Interaction states: {self.interaction_detection_states}")
-            if self.noninteraction_detection_states:
-                lines.append(f"     Non-interaction states: {self.noninteraction_detection_states}")
+        # Show detection protocol: which states are classified as which configuration
+        if self.detection_states:
+            lines.append("  Detection Protocol (states classified per configuration):")
+            for config_name, states in self.detection_states.items():
+                lines.append(f"     {config_name}: {list(states)}")
 
-        if self.true_positive > 0 or self.true_negative > 0 or self.false_positive > 0 or self.false_negative > 0:
-            lines.append("  Confusion Matrix:")
-            lines.append(f"     " + "-"*20)
-            lines.append(f"     True Positive:  {self.true_positive:.6f}")
-            lines.append(f"     False Negative: {self.false_negative:.6f}")
-            lines.append(f"     " + "-"*20)
-            lines.append(f"     True Negative:  {self.true_negative:.6f}")
-            lines.append(f"     False Positive: {self.false_positive:.6f}")
-            lines.append(f"     " + "-"*20)
+        # Show confusion matrix (rows: true configuration, cols: predicted configuration)
+        if self.confusion_matrix:
+            # Preserve first-seen ordering of configuration names
+            config_names: List[str] = []
+            for true_name, pred_name in self.confusion_matrix:
+                for name in (true_name, pred_name):
+                    if name not in config_names:
+                        config_names.append(name)
+
+            col_width = max(10, max(len(str(name)) for name in config_names) + 2)
+            lines.append("  Confusion Matrix (rows: true, cols: predicted):")
+            header = " " * col_width + "".join(f"{str(name):>{col_width}}" for name in config_names)
+            lines.append("     " + header)
+            for true_name in config_names:
+                row = f"{str(true_name):>{col_width}}"
+                for pred_name in config_names:
+                    val = float(self.confusion_matrix.get((true_name, pred_name), 0.0))
+                    row += f"{val:>{col_width}.4f}"
+                lines.append("     " + row)
 
         return "\n".join(lines)
 
