@@ -364,6 +364,7 @@ class Interaction:
             )
 
     def _validate_coupling(self):
+        """Validate parameters for coupling interactions (cavity-cavity)."""
 
         if self.subsystem1 is None or self.subsystem2 is None:
             raise ValueError(
@@ -409,6 +410,7 @@ class Interaction:
             )
 
     def _validate_input_output(self):
+        """Validate parameters for input-output interactions (cavity-field)."""
 
         if self.subsystem1 is None or self.subsystem2 is None:
             raise ValueError(
@@ -490,6 +492,7 @@ class Interaction:
             )
 
     def _validate_dispersive(self):
+        """Validate parameters for dispersive interactions (qubit-cavity)."""
         
         if self.subsystem1 is None or self.subsystem2 is None:
             raise ValueError(
@@ -743,6 +746,11 @@ class PhysicalModel:
                     )
 
             if interaction.interaction_type == InteractionType.CUSTOM_HAMILTONIAN:
+                # A custom operator must be supplied on the full system Hilbert space:
+                # `total_dims` is the flat list of every subsystem truncation (cavities,
+                # then fields, then qubits), so [total_dims, total_dims] is the expected
+                # qutip dims of an operator acting on the whole system. Per-subsystem
+                # embedding (below) is still unfinished — see the `banana` markers.
                 
                 
 
@@ -775,6 +783,7 @@ class PhysicalModel:
                     else:
                         banana = 1 #figure out how to embed it for single subsystem
             elif interaction.interaction_type == InteractionType.CUSTOM_LINDBLAD:
+                # Same full-system dims requirement as the custom Hamiltonian branch above.
                 total_dims = self.cavity_levels + self.field_levels + self.qubit_levels
 
                 if interaction.custom_matrix.dims != [total_dims, total_dims]:
@@ -783,11 +792,11 @@ class PhysicalModel:
                         )
                 else:
                     if interaction.subsystem1[0] == 'cavity':
-                        dim1 = cavity_levels[interaction.subsystem1[1]]
+                        dim1 = self.cavity_levels[interaction.subsystem1[1]]
                     elif interaction.subsystem1[0] == 'field':
-                        dim1 = field_levels[interaction.subsystem1[1]]
+                        dim1 = self.field_levels[interaction.subsystem1[1]]
                     elif interaction.subsystem1[0] == 'qubit':
-                        dim1 = qubit_levels[interaction.subsystem1[1]]
+                        dim1 = self.qubit_levels[interaction.subsystem1[1]]
                     if interaction.subsystem2 is None:
                         if interaction.custom_matrix.dims != [[dim1], [dim1]]:
                             raise ValueError(
@@ -796,11 +805,11 @@ class PhysicalModel:
                         banana = 1 #figure out how to embed it for single subsystem (simple)
                     else:
                         if interaction.subsystem2[0] == 'cavity':
-                            dim2 = cavity_levels[interaction.subsystem2[1]]
+                            dim2 = self.cavity_levels[interaction.subsystem2[1]]
                         elif interaction.subsystem2[0] == 'field':
-                            dim2 = field_levels[interaction.subsystem2[1]]
+                            dim2 = self.field_levels[interaction.subsystem2[1]]
                         elif interaction.subsystem2[0] == 'qubit':
-                            dim2 = qubit_levels[interaction.subsystem2[1]]
+                            dim2 = self.qubit_levels[interaction.subsystem2[1]]
                         if  interaction.custom_matrix.dims != [[dim1, dim2], [dim1, dim2]]:
                             raise ValueError(
                                 f"Custom Lindblad interaction matrix dimensions {interaction.custom_matrix.dims} do not match expected dimensions based on subsystem levels: [[{dim1}, {dim2}], [{dim1}, {dim2}]]"
@@ -809,6 +818,9 @@ class PhysicalModel:
                     
 
         
+        # Forbid duplicate interactions: two non-custom interactions with the same type
+        # and the same (subsystem1, subsystem2) pair are rejected even if their parameters
+        # differ. Custom Hamiltonian/Lindblad terms are exempt (they may legitimately repeat).
         duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
                             (int1.subsystem1 == int2.subsystem1) and \
                             (int1.subsystem2 == int2.subsystem2)) \
@@ -930,6 +942,7 @@ class MeasurementProtocol:
     single_measurement_uncertainty: Callable[[float], float] = lambda t: 0.0
 
     def __post_init__(self):
+        """Validate the measurement-time specification and uncertainty settings."""
         if self.measurement_times is not None:
             if len(self.measurement_times) < 2:
                 raise ValueError("At least two measurement times must be specified in measurement_times list")
@@ -978,7 +991,7 @@ class SubsystemState:
     parameters: Dict[str, Any] = None  # Parameters depend on state_type, e.g., {'n': 1} for Fock state
 
     def __post_init__(self):
-
+        """Validate and normalize the parameters required by the chosen state_type."""
         if self.state_type == InitialStateType.FOCK:
             if self.parameters is None or "n" not in self.parameters:
                 raise ValueError("FOCK state requires 'n' parameter for photon number")
@@ -1041,7 +1054,7 @@ class InitialState:
     density_matrix: Optional[qt.Qobj] = None  # Overrides cavity_states and field_states when provided
 
     def __post_init__(self):
-    
+        """Validate the per-subsystem states and the optional density matrix."""
         if self.cavity_states is not None:
             if len(list(self.cavity_states.keys())) != len(set(self.cavity_states.keys())):
                 raise ValueError("Cavity states got duplicate indices. Each cavity accepts only a single state.")
@@ -1065,7 +1078,7 @@ class InitialState:
                 )
             if not isinstance(self.density_matrix, qt.Qobj):
                 raise ValueError("density_matrix must be a Qobj representing the density matrix")
-            if not self.density_matrix.isherm or not self.density_matrix.ispositive or not np.isclose(self.density_matrix.tr(), 1.0):
+            if not self.density_matrix.isherm or (self.density_matrix.eigenenergies().min() < 0) or not np.isclose(self.density_matrix.tr(), 1.0):
                 raise ValueError("density_matrix must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
         if self.cavity_states == {} and self.field_states == {} and self.density_matrix is None:
             warnings.warn("No subsystem state was initialized nor a density_matrix was provided. The initial state will be the vacuum state.", UserWarning)
@@ -1170,6 +1183,8 @@ class SystemConfiguration:
                     raise TypeError("All interactions must be Interaction instances")
                 
             
+            # Forbid duplicate interactions within this configuration (same rule as the
+            # physical model): identical type and (subsystem1, subsystem2) pair, parameters aside.
             duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
                                 (int1.subsystem1 == int2.subsystem1) and \
                                 (int1.subsystem2 == int2.subsystem2)) \
@@ -1404,20 +1419,22 @@ class ExperimentalParameters:
             if config.interactions:
                 for interaction in config.interactions:
                     for subsystem in [interaction.subsystem1, interaction.subsystem2]:
-                        if subsystem[0] == 'cavity' and subsystem[1] >= self.n_cavities:
+                        if subsystem is not None and subsystem[0] == 'cavity' and subsystem[1] >= self.n_cavities:
                             raise ValueError(
                                 f"Custom interaction of {config.name} involves cavity {subsystem[1]}, but only {self.n_cavities} cavities in system"
                             )
-                        if subsystem[0] == 'field' and subsystem[1] >= self.n_fields:
+                        if subsystem is not None and subsystem[0] == 'field' and subsystem[1] >= self.n_fields:
                             raise ValueError(
                                 f"Custom interaction of {config.name} involves field mode {subsystem[1]}, but only {self.n_fields} field modes in system"
                             )
-                        if subsystem[0] == 'qubit' and subsystem[1] >= self.n_qubits:
+                        if subsystem is not None and subsystem[0] == 'qubit' and subsystem[1] >= self.n_qubits:
                             raise ValueError(
                                 f"Custom interaction of {config.name} involves qubit {subsystem[1]}, but only {self.n_qubits} qubits in system"
                             )
                         
                 
+                # A configuration may not re-declare an interaction already present in the
+                # shared physical model (matched by type and subsystem pair, parameters aside).
                 duplicate_check = [((int1.interaction_type == int2.interaction_type) and \
                                     (int1.subsystem1 == int2.subsystem1) and \
                                     (int1.subsystem2 == int2.subsystem2)) \
@@ -1428,7 +1445,7 @@ class ExperimentalParameters:
 
                 if any(duplicate_check):
                     duplicates = [int_summary for int_summary, check in zip(interaction_list, duplicate_check) if check]
-                    raise ValueError(f"PhysicalModel interactions cannot be used inside systemconfigurations (even if with different parameters), found duplicates in {configuration.name} configuration.\n\
+                    raise ValueError(f"PhysicalModel interactions cannot be used inside systemconfigurations (even if with different parameters), found duplicates in {config.name} configuration.\n\
                                     Found interactions: {duplicates}")
 
             if config.initial_state is not None:
@@ -1448,6 +1465,8 @@ class ExperimentalParameters:
                                 )
                             
                         if state.state_type == InitialStateType.COHERENT:
+                            # Warn when the truncation is below mean + 6 std dev of the photon
+                            # number (a coherent state has mean and variance both |alpha|^2).
                             n_avg = pow(abs(state.parameters["alpha"]), 2)
                             if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
                                 warnings.warn(
@@ -1457,6 +1476,8 @@ class ExperimentalParameters:
                                     UserWarning,
                                 )
                         if state.state_type == InitialStateType.THERMAL:
+                            # Same mean + 6 std dev check; a thermal state has variance
+                            # n_avg*(n_avg + 1), hence the different square-root term.
                             n_avg = state.parameters["n_avg"]
                             if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
                                 warnings.warn(
@@ -1481,6 +1502,7 @@ class ExperimentalParameters:
                                     Valid n values are 0 to {self.field_levels[index]-1}, or raise the field_levels truncation parameter."
                                 )
                         if state.state_type == InitialStateType.COHERENT:
+                            # Mean + 6 std dev truncation heuristic (see cavity states above).
                             n_avg = pow(abs(state.parameters["alpha"]), 2)
                             if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
                                 warnings.warn(
@@ -1490,6 +1512,7 @@ class ExperimentalParameters:
                                     UserWarning,
                                 )
                         if state.state_type == InitialStateType.THERMAL:
+                            # Mean + 6 std dev truncation heuristic (see cavity states above).
                             n_avg = state.parameters["n_avg"]
                             if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
                                 warnings.warn(
@@ -1506,6 +1529,8 @@ class ExperimentalParameters:
                             f"Initial state of {config.name} specifies a density matrix with shape {config.initial_state.density_matrix.shape}, but expected shape is ({dim}, {dim}) based on the physical model dimensions (only considers cavity and field modes)."
                         )
                 else:
+                    # No density matrix: fill every cavity/field left unspecified with the
+                    # vacuum state, so all subsystems have an explicit initial state downstream.
                     if config.initial_state.cavity_states is not None:
                         vacuum_cavity_idx = list(
                             set(range(self.n_cavities))
@@ -1908,11 +1933,10 @@ class ExperimentalParameters:
             return f"value={parameters}"
 
         def format_interaction_name(interaction: Interaction) -> str:
-            return (
-                f"{interaction.interaction_type.value} "
-                f"{format_subsystem(interaction.subsystem1)}-"
-                f"{format_subsystem(interaction.subsystem2)}"
-            )
+            name = f"{interaction.interaction_type.value} {format_subsystem(interaction.subsystem1)}"
+            if interaction.subsystem2 is not None:
+                name += f"-{format_subsystem(interaction.subsystem2)}"
+            return name
 
         def format_interaction(interaction: Interaction) -> str:
             return f"{format_interaction_name(interaction)}: {format_params(interaction.parameters)}"
@@ -1925,6 +1949,8 @@ class ExperimentalParameters:
             params = "no parameters" if state.parameters is None else format_params(state.parameters)
             return f"{state.state_type.value}: {params}"
 
+        # Identity of an interaction (type + subsystems, ignoring parameters); lets the
+        # repr recognize the same interaction across different configurations.
         def interaction_key(interaction: Interaction) -> Tuple[str, Tuple[str, int], Tuple[str, int]]:
             return (
                 interaction.interaction_type.value,
@@ -1932,6 +1958,8 @@ class ExperimentalParameters:
                 interaction.subsystem2,
             )
 
+        # Hashable snapshot of an interaction's parameters, so the repr can tell when the
+        # same interaction carries different parameters in different configurations.
         def parameter_signature(parameters: Any) -> Tuple[Any, ...]:
             if isinstance(parameters, dict):
                 items = sorted(parameters.items(), key=lambda item: str(item[0]))
@@ -1939,6 +1967,10 @@ class ExperimentalParameters:
             return ("value", repr(parameters))
 
         def append_grouped_interactions(grouped_interactions: List[Interaction], base_indent: str) -> None:
+            # Display interactions grouped under a single subsystem, with priority
+            # cavity > qubit > field: an interaction touching a cavity is shown under that
+            # cavity, else under a qubit, else under a field. Ties between subsystems of the
+            # same type are broken by the lowest index.
             by_cavity: Dict[int, List[Tuple[int, Interaction]]] = {}
             by_qubit: Dict[int, List[Tuple[int, Interaction]]] = {}
             by_field: Dict[int, List[Tuple[int, Interaction]]] = {}
@@ -1946,12 +1978,14 @@ class ExperimentalParameters:
             indexed_interactions = list(enumerate(grouped_interactions))
             assigned: Set[int] = set()
 
+            # First pass: assign every cavity-touching interaction to a cavity bucket.
             for index, interaction in indexed_interactions:
-                types = {interaction.subsystem1[0], interaction.subsystem2[0]}
+                subsystems = [s for s in (interaction.subsystem1, interaction.subsystem2) if s is not None]
+                types = {subsystem_type for subsystem_type, _ in subsystems}
                 if "cavity" in types:
                     cavity_indices = [
                         idx
-                        for subsystem_type, idx in [interaction.subsystem1, interaction.subsystem2]
+                        for subsystem_type, idx in subsystems
                         if subsystem_type == "cavity"
                     ]
                     cavity_index = min(cavity_indices)
@@ -1960,14 +1994,16 @@ class ExperimentalParameters:
                 else:
                     no_cavity.append((index, interaction))
 
+            # Second pass: assign the rest to a qubit bucket, otherwise a field bucket.
             for index, interaction in no_cavity:
                 if index in assigned:
                     continue
-                types = {interaction.subsystem1[0], interaction.subsystem2[0]}
+                subsystems = [s for s in (interaction.subsystem1, interaction.subsystem2) if s is not None]
+                types = {subsystem_type for subsystem_type, _ in subsystems}
                 if "qubit" in types:
                     qubit_indices = [
                         idx
-                        for subsystem_type, idx in [interaction.subsystem1, interaction.subsystem2]
+                        for subsystem_type, idx in subsystems
                         if subsystem_type == "qubit"
                     ]
                     qubit_index = min(qubit_indices)
@@ -1976,7 +2012,7 @@ class ExperimentalParameters:
                 else:
                     field_indices = [
                         idx
-                        for subsystem_type, idx in [interaction.subsystem1, interaction.subsystem2]
+                        for subsystem_type, idx in subsystems
                         if subsystem_type == "field"
                     ]
                     if field_indices:
