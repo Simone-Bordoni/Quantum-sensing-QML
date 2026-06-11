@@ -140,6 +140,11 @@ class DetectionMetric:
         self.config_names = config_names
         self.detection_criterion = detection_criterion
 
+        # Exponent p of the power mean used to combine the per-pair metrics into a single
+        # objective (see callable_detection): mean = ((1/N) * sum_i m_i^p)^(1/p). p < 0 weights
+        # the worst-separated configuration pair most heavily (a soft minimum, the default),
+        # which pushes the optimizer to separate every pair rather than only the easy ones.
+        # p == 0 is degenerate (forbidden) and p >= 1 rewards already-good pairs (discouraged).
         if not isinstance(config_aggregation_strength, (int, float)):
             raise TypeError(f"config_aggregation_strength must be a float, usually non zero values between -2 and 1. Value given: {config_aggregation_strength}")
         if config_aggregation_strength >= 1.0:
@@ -147,19 +152,24 @@ class DetectionMetric:
                            Value given: {config_aggregation_strength}.")
         elif config_aggregation_strength == 0.0:
             raise ValueError("config_aggregation_strength cannot be 0, if zero is desired, use a small value instead.")
-        
+
         self.config_aggregation_strength = config_aggregation_strength
 
         if len(set(self.config_names)) != len(self.config_names):
             raise ValueError(f"config_names must have unique values. Value given: {self.config_names}")
+        # All unordered pairs of configurations. Discrimination is scored pairwise (how well
+        # each pair of configurations can be told apart) and then aggregated, so the general
+        # multi-configuration problem reduces to a set of two-configuration comparisons.
         self.config_pairs = [
                     (config1, config2)
                     for i, config1 in enumerate(self.config_names[:-1])
                     for config2 in self.config_names[i + 1 :]]
 
-        # create the detection metric initializer:
-        # we need the projectors which are built in the experiment, so the callable 
-        # is built in the experiment initialization and not here.
+        # Build the detection metric in two stages. `init_detection` resolves the criterion
+        # and validation/aggregation logic now, but the actual jitted callable needs the
+        # measurement projectors P_all, which only exist once the experiment has built its
+        # operators. So `init_detection` returns a *builder* (`initialize`) that the
+        # experiment calls later (via `self.initialize(P_all)`) to assign `callable_detection`.
         initialize, self.name = self.init_detection(detection_criterion, \
                                                         detection_param, \
                                                         metric, \
@@ -287,8 +297,14 @@ class DetectionMetric:
 
         if criterion in state_detection:
 
+            # detection_states maps each configuration name to the list of computational-basis
+            # states (binary strings) assigned to it by the chosen criterion below.
             detection_states = {}
-            
+
+            # Default multi-measurement aggregation for the probability-based criteria: treat
+            # each measurement's value y as a per-shot "miss" probability (1 - y) and accumulate
+            # the running product, so the final post-aggregation 1 - prod_i(1 - y_i) is the
+            # probability of detecting in at least one of the sequential measurements.
             if multi_measurement_logic is None:
                 aggregate_init = jnp.array(1)
                 measurement_aggregation = lambda x,y: x*(1-y)
@@ -329,6 +345,8 @@ class DetectionMetric:
 
             elif criterion == 'num excited':
 
+                # Assign to each configuration the states with a given total number of excited
+                # qubits (Hamming weight). Default: configuration i <- states with i excitations.
                 if parameter is None:
                     parameter = {config_name: i for i, config_name in enumerate(self.config_names)}
                 elif not isinstance(parameter, dict)\
@@ -344,6 +362,8 @@ class DetectionMetric:
                                      with int values between 0 and {self.n_qubits-1}. Value given: {parameter}")
 
                 
+                # For each configuration, collect every basis state whose bit-sum (number of
+                # excited qubits) equals that configuration's target excitation count.
                 detection_states = {config_name: [format(i, f'0{self.n_qubits}b') \
                     for i in range(2**self.n_qubits) \
                     if sum(list(map(int,format(i, f'0{self.n_qubits}b')))) == parameter[config_name]] \
@@ -370,6 +390,9 @@ class DetectionMetric:
                     warnings.warn("detection_param for 'control qubits' detection has non unique elements. The additional elements will be ignored.")
                     parameter = {config_name: list(set(states)) for config_name, states in parameter.items()}
 
+                # Each configuration "owns" a set of control qubits. For every basis state, the
+                # configuration whose control qubits are most excited (majority vote) claims it,
+                # so intermediate states are routed to the closest configuration.
                 for i in range(2**self.n_qubits):
                     state = format(i, f'0{self.n_qubits}b')
                     state_as_list = list(map(int, state))
@@ -411,6 +434,8 @@ class DetectionMetric:
                 This function is returned by the outer `build_detection` factory so
                 the experiment can call it when projectors are available.
                 """
+                # For each configuration, sum the computational-basis projectors of the states
+                # assigned to it -> one projector onto that configuration's measurement subspace.
                 projectors = {config_name: sum([p_all[i] for i in range(2**self.n_qubits)\
                                                         if format(i, f'0{self.n_qubits}b') in states])
                                         for config_name, states in detection_states.items()}
@@ -424,16 +449,22 @@ class DetectionMetric:
                     metric_tot = aggregate_init
                     detection_tot = {config_name: aggregate_init for config_name in self.config_names}
 
+                    # Loop over the sequential measurements in the protocol, aggregating as we go.
                     for meas in range(len(rho_dict[self.config_names[0]])):
 
                         temp_metric = 0
+                        # Probability that each configuration's own evolved state lands in its
+                        # assigned subspace: P = Tr(Pi * rho * Pi).
                         detection_temp = {config_name: jnp.real((projector * rho_dict[config_name][meas] * projector).tr()) for config_name, projector in projectors.items()}
 
+                        # Score each configuration pair, then combine via the power mean of
+                        # exponent config_aggregation_strength (negative -> emphasise worst pair).
                         for config1, config2 in self.config_pairs:
                             temp_metric += pow(metric(detection_temp[config1], detection_temp[config2]), self.config_aggregation_strength)
-                        
-                        temp_metric = (temp_metric/n_config_pairs) ** (1/self.config_aggregation_strength)   
 
+                        temp_metric = (temp_metric/n_config_pairs) ** (1/self.config_aggregation_strength)
+
+                        # Fold this measurement into the running aggregates.
                         metric_tot = measurement_aggregation(metric_tot, temp_metric)
                         detection_tot = {config_name: measurement_aggregation(detection_tot[config_name], detection_temp[config_name]) for config_name in self.config_names}
 
@@ -457,6 +488,10 @@ class DetectionMetric:
                 
         elif criterion in matrix_distance:
 
+            # Default multi-measurement aggregation for the matrix-distance criteria: a
+            # log-sum-exp over measurements (accumulate sum_i exp(y_i), then take the log). This
+            # is a smooth maximum that rewards the single best-separating measurement while
+            # remaining differentiable.
             if multi_measurement_logic is None:
                 aggregate_init = 0
                 measurement_aggregation = lambda x,y:  x + jnp.exp(y)
@@ -472,6 +507,8 @@ class DetectionMetric:
                     warnings.warn(f"'{criterion}' detection criterion doesn't take a detection_param.\n\
                                    The detection_param will be ignored. Value given: {parameter}")
                 
+                # These criteria compare the reduced qubit states directly, so we trace out the
+                # cavity and field modes (the qubits occupy the last n_qubits subsystems).
                 trace_subsys = range(self.n_subsystems - self.n_qubits, self.n_subsystems)
 
                 if criterion == 'min fidelity':
