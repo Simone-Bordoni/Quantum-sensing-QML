@@ -208,7 +208,8 @@ class OptimizationCallback:
             prob_state = {name: probs.get(state, 0.0) for name, probs in state_probabilities.items()}
             max_config = max(prob_state, key=prob_state.get)
             self.detection_states[max_config].append(state)
-            # Update confusion matrix counts for this state based on the predicted max_config
+            # Confusion matrix: add each config's probability for this state to the
+            # (config, argmax_config) cell, so entry (A,B) = P(classified as B | config A).
             for name in config_names:
                 self.confusion_matrix[(name, max_config)] += prob_state.get(name, 0.0)
             

@@ -144,6 +144,7 @@ class Interaction:
         # Ensure canonical ordering (sort by type and then index)
         if self.subsystem2 is not None and (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
             self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
+            
             # The matrix of a two-subsystem custom interaction is given with its tensor
             # legs in the user's (subsystem1, subsystem2) order. Now that the subsystems
             # have been swapped into canonical order, permute the matrix legs to match so
@@ -2110,6 +2111,9 @@ class ExperimentalParameters:
         # Configuration Set Group
         lines.append("CONFIGURATIONS")
         lines.append(f"  Count:                {len(self.configuration_set)}")
+        # Collect the set of distinct parameter signatures for each interaction type
+        # across all configurations. Used below to show parameters only when different
+        # configurations parameterize the same interaction type differently.
         interaction_param_variants: Dict[Tuple[str, Tuple[str, int], Tuple[str, int]], Set[Tuple[Any, ...]]] = {}
         for config in self.configuration_set:
             for interaction in config.interactions or []:

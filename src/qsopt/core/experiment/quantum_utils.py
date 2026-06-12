@@ -174,9 +174,13 @@ def generate_system_operators(
         all_states = [format(i, f'0{n_qubits}b') for i in range(2**n_qubits)]            
         P_all = [qt.tensor(I_c + I_f + [Ptemp[q_state][qb] for qb,q_state in enumerate(list(map(int,state)))]) for state in all_states]
             
-        # Reset operators, individual qubits and global reset
+        # Reset operators, individual qubits and global reset.
+        # The l×l matrix [[1,...,1],[0,...,0],...] equals Σ_k |0⟩⟨k|: it maps every
+        # Fock level to the ground state, so L ρ L† unconditionally resets the qubit to |0⟩.
         reset_q = [qt.Qobj([[1]*l] + [[0]*l]*(l-1)) for l in q_levels]
         reset_all = qt.tensor(I_c + I_f + reset_q)
+        # measure_reset[k] = reset_all * P_all[k]: Kraus operator that first projects
+        # the register onto computational basis state k, then resets all qubits to |0⟩.
         measure_reset = [reset_all*p for p in P_all]
         measure_reset_dag = [x.dag() for x in measure_reset]
 
@@ -803,7 +807,7 @@ def measure_qubits_probability(
             raise ValueError(f"In single qubit projections the state {state} must be either 0 or 1")
         P = operators[projector_key][qubit_indices]
 
-    elif (len(qubit_indices) <= n_qubits):
+    elif isinstance(qubit_indices, list) and (len(qubit_indices) <= n_qubits):
         # Joint measurement
         if len(state) != len(qubit_indices):
             raise ValueError(f"Lenght of state string ({len(state)}) must match lenght of qubit_indices ({len(qubit_indices)})")
