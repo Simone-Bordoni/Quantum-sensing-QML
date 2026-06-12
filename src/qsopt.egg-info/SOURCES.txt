@@ -10,6 +10,7 @@ src/qsopt.egg-info/top_level.txt
 src/qsopt/core/__init__.py
 src/qsopt/core/callback.py
 src/qsopt/core/circuit.py
+src/qsopt/core/copia_loss_function.py
 src/qsopt/core/experimental_parameters.py
 src/qsopt/core/gates.py
 src/qsopt/core/loss_functions.py
