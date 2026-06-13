@@ -391,8 +391,9 @@ class DetectionMetric:
                 # diagonals into one (n_outcomes, D) matrix so the whole probability vector is a single
                 # matrix-vector product against diag(rho) (no partial trace, computed once per config).
                 def make_prepare(p_all):
-                    proj_diag_matrix = jnp.stack([jnp.real(jnp.diag(extract(projector.data, "JaxArray")))
-                                                  for projector in p_all])
+                    # .diag() returns the real diagonal directly and is format-agnostic (P_all is
+                    # stored as qutip's Dia format, which extract(..., "JaxArray") cannot handle).
+                    proj_diag_matrix = jnp.stack([jnp.asarray(projector.diag()) for projector in p_all])
                     return lambda rho: proj_diag_matrix @ jnp.real(jnp.diag(extract(rho.data, "JaxArray")))
 
                 pair_metric = lambda pa, pb, f: jnp.sum(metric(pa, pb, f))
@@ -681,7 +682,9 @@ def _make_state_detection_builder(detection_states, metric, agg):
         projectors = {name: sum([p_all[i] for i in range(2**self.n_qubits)
                                  if format(i, f'0{self.n_qubits}b') in states])
                       for name, states in detection_states.items()}
-        proj_diags = {name: jnp.real(jnp.diag(extract(projector.data, "JaxArray")))
+        # .diag() returns the real diagonal directly and is format-agnostic (P_all is stored as
+        # qutip's Dia format, which extract(..., "JaxArray") cannot handle).
+        proj_diags = {name: jnp.asarray(projector.diag())
                       for name, projector in projectors.items()}
 
         # Call-invariant values, hoisted out of the jitted callable_detection (run once here).
