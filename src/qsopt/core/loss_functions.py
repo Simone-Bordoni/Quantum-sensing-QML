@@ -135,7 +135,7 @@ class DetectionMetric:
             config_names: List[str], \
             detection_criterion: str = "num excited", \
             detection_param: Optional[Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]]] = None, \
-            metric: Optional[Callable[[float,float], float]] = None, \
+            metric: Optional[Callable[Union[[float,float],[float,float,float]], float]] = None, \
             multiple_measurement_logic: Optional[Aggregator] = None, \
             config_aggregation_strength: float = 0.3, \
             name: Optional[str] = None, \
@@ -354,12 +354,13 @@ class DetectionMetric:
             elif criterion == 'max computational distance':
 
                 if metric is None:
-                    # tan_h smoothly decays from ~1 (epoch_fraction=0) to ~0 (epoch_fraction=1).
-                    # Early on the metric is x²+y²-4xy (keeps the self-overlap term weighted by
-                    # tan_h); as training progresses it anneals toward -4xy, rewarding pure
-                    # anti-correlation (orthogonality) between the two configurations.
-                    tan_h = lambda f: 1-(jnp.tanh(7*(f-0.5))+1)/2
-                    metric = lambda x,y,f: -4*x*y + tan_h(f)*(x**2 + y**2)
+                    # decay goes from exactly 1 (f=0) to exactly 0 (f=1), annealing the metric
+                    # from x²+y²-4xy toward pure anti-correlation -4xy. Logit-based: flat shoulders
+                    # with a fast middle handoff. `v` sets the plateau width (keep in 0.4..0.98).
+                    v = 0.6
+                    k = float(jnp.log(100.0) / jnp.log((1.0 + v) / (1.0 - v)))
+                    decay = lambda f: 0.5 * (jnp.tanh(-0.5 * k * jnp.log(f / (1.0 - f))) + 1.0)
+                    metric = lambda x,y,f: -4*x*y + decay(f)*(x**2 + y**2)
                     custom_metric = False
                 elif not callable(metric):
                     raise ValueError(f"metric expects a callable (x,y,f)->z. Where f is the epoch fraction.\n\
@@ -391,9 +392,12 @@ class DetectionMetric:
                 # diagonals into one (n_outcomes, D) matrix so the whole probability vector is a single
                 # matrix-vector product against diag(rho) (no partial trace, computed once per config).
                 def make_prepare(p_all):
-                    # .diag() returns the real diagonal directly and is format-agnostic (P_all is
+                    # .diag() returns the diagonal directly and is format-agnostic (P_all is
                     # stored as qutip's Dia format, which extract(..., "JaxArray") cannot handle).
-                    proj_diag_matrix = jnp.stack([jnp.asarray(projector.diag()) for projector in p_all])
+                    # The projectors are Hermitian so their diagonals are real-valued, but qutip
+                    # returns them as complex128; cast to real here, otherwise the probability
+                    # vector (and hence the whole metric) is silently promoted to complex.
+                    proj_diag_matrix = jnp.real(jnp.stack([jnp.asarray(projector.diag()) for projector in p_all]))
                     return lambda rho: proj_diag_matrix @ jnp.real(jnp.diag(extract(rho.data, "JaxArray")))
 
                 pair_metric = lambda pa, pb, f: jnp.sum(metric(pa, pb, f))
@@ -556,7 +560,7 @@ class DetectionMetric:
 
             if sorted(detection_states.keys()) != sorted(self.config_names):
                 raise ValueError(f"'control qubits' detection got detection_param: {parameter}\n\
-                    The following configurations weren't assigned any states because their reference qubits were all included in another configuration's reference qubits:\n\
+                    The following configurations weren't assigned any states because their reference qubits were all included in at least another configuration's reference qubits:\n\
                     {set(self.config_names)-set(detection_states.keys())}")
 
             detection_name = f"control qubits"
@@ -607,6 +611,8 @@ class DetectionMetric:
 
 
 # Detection-builder helpers (all run once at setup; nothing here is inside the jitted hot path)
+number = (int, float, jax.Array)
+
 
 def _validate_callable(fn, args_factory, error_msg):
     """Sanity-check a user-supplied callable on random inputs (runs once, at setup).
@@ -615,7 +621,6 @@ def _validate_callable(fn, args_factory, error_msg):
     raising a descriptive ValueError otherwise. ``args_factory`` returns a fresh argument
     tuple on each call.
     """
-    number = (int, float, jax.Array)
     for _ in range(100):
         try:
             out = fn(*args_factory())
@@ -632,7 +637,6 @@ def _resolve_measurement_aggregation(multi_measurement_logic, default):
     is_custom is True iff a user-supplied tuple was used. The aggregation folds each
     measurement's value into a running accumulator, then post-processes it (see DetectionMetric).
     """
-    number = (int, float, jax.Array)
     if multi_measurement_logic is None:
         init, agg, post = default
         return init, agg, post, False
@@ -682,9 +686,12 @@ def _make_state_detection_builder(detection_states, metric, agg):
         projectors = {name: sum([p_all[i] for i in range(2**self.n_qubits)
                                  if format(i, f'0{self.n_qubits}b') in states])
                       for name, states in detection_states.items()}
-        # .diag() returns the real diagonal directly and is format-agnostic (P_all is stored as
-        # qutip's Dia format, which extract(..., "JaxArray") cannot handle).
-        proj_diags = {name: jnp.asarray(projector.diag())
+        # .diag() returns the diagonal directly and is format-agnostic (P_all is stored as
+        # qutip's Dia format, which extract(..., "JaxArray") cannot handle). The projectors are
+        # Hermitian so their diagonals are real-valued, but qutip returns them as complex128;
+        # cast to real here, otherwise the detection probability (jnp.dot below) and hence the
+        # whole metric is silently promoted to complex (float() on the result then raises).
+        proj_diags = {name: jnp.real(jnp.asarray(projector.diag()))
                       for name, projector in projectors.items()}
 
         # Call-invariant values, hoisted out of the jitted callable_detection (run once here).

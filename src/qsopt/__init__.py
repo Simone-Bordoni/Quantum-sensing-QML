@@ -19,13 +19,14 @@ from .core.loss_functions import DetectionMetric
 # Core experimental framework
 from .core.experimental_parameters import (
     ExperimentalParameters,
-    InitialState,
-    InitialStateType,
+    State,
     InteractionType,
     MeasurementProtocol,
     NoiseModel,
     PhysicalModel,
     Interaction,
+    SystemConfiguration,
+    SubsystemState,
 )
 # TrainableParameters has been removed in favor of circuit-based parameter management
 

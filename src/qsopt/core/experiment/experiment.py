@@ -26,7 +26,6 @@ from qsopt.core.experimental_parameters import (
     MeasurementProtocol,
     Interaction,
     SystemConfiguration,
-    InitialState
 )
 from qsopt.core.loss_functions import DetectionMetric
 from qsopt.utils.results import SweepResults
@@ -122,6 +121,15 @@ class Experiment:
                 raise ValueError(
                     f"Detection metric n_qubits ({detection_metric.n_qubits}) must match experimental_params n_qubits ({experimental_params.n_qubits})"
                 )
+            # The detection metric uses config_names as keys to look up each configuration's
+            # density matrices (keyed by the experiment's configuration names). A mismatch would
+            # silently drop configurations or raise a KeyError at evaluation time, so require the
+            # exact same set of names.
+            if set(detection_metric.config_names) != set(self.config_names):
+                raise ValueError(
+                    f"Detection metric config_names ({detection_metric.config_names}) must match "
+                    f"the experiment's configuration names ({self.config_names})"
+                )
             self.detection_metric = detection_metric
 
         # Precompute total dimensions for QuTiP Qobj creation
@@ -155,7 +163,7 @@ class Experiment:
         self._generate_operators()
         self._generate_hamiltonian()
         self._cached_initial_states = {
-            config.name: self._initialize_initial_state(initial_state=config.initial_state) \
+            config.name: self._initialize_initial_state(system_configuration=config) \
                 for config in self.experimental_params.configuration_set
         }
 
@@ -310,7 +318,11 @@ class Experiment:
             int_type = interaction.interaction_type
             system1 = interaction.subsystem1[0]
             index1 = interaction.subsystem1[1]
-            t_func = interaction.time_modulation
+            # qutip-jax only accepts JAX-valued coefficients when the callable is a
+            # jitted PjitFunction (routed to JaxJitCoeff); a plain Python function is
+            # rejected by QuTiP's numbers.Number check. Jit here so user pulses can be
+            # written as ordinary (t, **kwargs) functions.
+            t_func = jit(interaction.time_modulation) if interaction.time_modulation is not None else None
             args = interaction.parameters
 
             if args is None:
@@ -454,10 +466,13 @@ class Experiment:
             return H_term, L_term, t_func, args
 
         def _wrap_time_modulation(func, key_map):
-            def wrapped(t, all_args):
+            # qutip-jax routes the coefficient to JaxJitCoeff only for jitted
+            # PjitFunctions, and JaxJitCoeff calls it as func(t, **args). So the
+            # wrapper must take keyword args (the global QobjEvo args) and be jitted.
+            def wrapped(t, **all_args):
                 local = {k: all_args[v] for k, v in key_map.items()}
-                return func(t, local)
-            return wrapped
+                return func(t, **local)
+            return jit(wrapped)
 
         H_const = []
         H_time_dependent = []
@@ -605,12 +620,12 @@ class Experiment:
             self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=self.global_args)
             self.lindblad_operators[configuration.name] = conf_L_tot
 
-    def _initialize_initial_state(self, initial_state: InitialState) -> qt.Qobj:
+    def _initialize_initial_state(self, system_configuration: SystemConfiguration) -> qt.Qobj:
         """
         Generate and cache the initial state of the system.
         """
         return generate_initial_state(
-            initial_state=initial_state,
+            system_configuration=system_configuration,
             field_levels=self.field_levels,
             cavity_levels=self.cavity_levels,
             qubit_levels=self.qubit_levels,
@@ -692,7 +707,7 @@ class Experiment:
         """
 
         if args is None:
-            args = {"sigma": self.experimental_params.inverse_pulse_width}
+            args = self.global_args
 
         # Get detection metric
         detection_metric = self.detection_metric
@@ -759,7 +774,7 @@ class Experiment:
         self.debug_times.append({ f'load_cached_parameters{self.step}' : t.time()})   ################################
 
         if args is None:
-            args = {"sigma": self.experimental_params.inverse_pulse_width}
+            args = self.global_args
 
         # Get detection metric
         detection_metric = self.detection_metric

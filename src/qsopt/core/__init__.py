@@ -18,10 +18,12 @@ from .experiment.quantum_utils import (
 )
 from .experimental_parameters import (
     ExperimentalParameters,
-    InitialState,
     MeasurementProtocol,
     NoiseModel,
     PhysicalModel,
+    SystemConfiguration,
+    SubsystemState,
+    State,
 )
 # TODO: TrainableParameters has been removed in favor of circuit-based parameter management
 # from .trainable_parameters import (

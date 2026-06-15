@@ -21,8 +21,16 @@ import math
 import qutip_jax  # pylint: disable=unused-import
 
 
-class InitialStateType(Enum):
-    """Enumeration of supported initial state configurations (for input field)."""
+class State(Enum):
+    """Enumeration of supported initial state configurations (for input field).
+    
+    Possible values:
+    - VACUUM
+    - FOCK
+    - COHERENT
+    - THERMAL
+    - CUSTOM
+    """
 
     VACUUM = "vacuum"
     FOCK = "fock"
@@ -32,7 +40,22 @@ class InitialStateType(Enum):
 
 
 class InteractionType(Enum):
-    """Enumeration of supported interaction types."""
+    """Enumeration of supported interaction types.
+    
+    Possible values:
+    - DETUNING
+    - DRIVE
+    - DISSIPATION
+    - COUPLING
+    - INPUT_OUTPUT
+    - DISPERSIVE
+    - JAYNES_CUMMINGS
+    - ZZ
+    - XX
+    - YY
+    - CUSTOM_HAMILTONIAN
+    - CUSTOM_LINDBLAD
+    """
 
     # single subsystem interactions
     DETUNING = "detuning" # detuning of cavity, input field or qubit frequencies from reference frequency
@@ -72,6 +95,57 @@ class Interaction:
             matrix legs are given in the (subsystem1, subsystem2) order you pass; if the subsystems
             are reordered into canonical order the legs are permuted automatically (which requires
             the matrix to carry structured per-subsystem dims [[d1, d2], [d1, d2]]).
+
+    Note:
+        Subsystems are given as (type, index) tuples, where type is 'qubit', 'cavity' or
+        'field' and index is a non-negative int. Two-subsystem interactions are stored in
+        canonical order (sorted by type then index: cavity < field < qubit); pass them
+        already ordered to avoid surprises with custom_matrix leg ordering.
+
+        For numeric-keyed types, parameters may be a dict with the named key OR a bare
+        numeric value wrapped into that key automatically (parameters=0.5 == {'delta': 0.5}
+        for DETUNING). After construction, parameters is always a dict. A zero value for any
+        strength/rate parameter is allowed but emits a warning.
+
+        Interaction types and their parameters:
+
+    ```
+    abbrev.: cav=cavity, fld=field, qb=qubit
+    +-------------------+---------------+------------------------+
+    | type              | subsystem(s)  | parameter(s)           |
+    +-------------------+---------------+------------------------+
+    | Single-subsystem  (subsystem2 = None)                      |
+    +-------------------+---------------+------------------------+
+    | detuning          | cav/fld/qb    | delta : float          |
+    | drive             | cav / fld     | amplitude : complex    |
+    | dissipation       | cav           | kappa : float >= 0     |
+    +-------------------+---------------+------------------------+
+    | Two-subsystem  (subsystem2 required)                       |
+    +-------------------+---------------+------------------------+
+    | coupling          | cav + cav     | gamma : complex        |
+    | input_output      | cav + fld     | kappa : float >= 0     |
+    |                   |               | gamma : float >= 0 (*1)|
+    | dispersive        | qb + cav      | chi : float            |
+    | jaynes-cummings   | qb + cav/fld  | (not implemented)      |
+    +-------------------+---------------+------------------------+
+    | Qubit-qubit  (both qubit)                                  |
+    +-------------------+---------------+------------------------+
+    | sz-sz/sx-sx/sy-sy | qb + qb       | chi : float >= 0 (*2)  |
+    +-------------------+---------------+------------------------+
+    | Custom  (subsystem2 optional, any types)                   |
+    +-------------------+---------------+------------------------+
+    | custom_hamiltonian| 1 or 2 subsys | custom_matrix (*3)     |
+    | custom_lindblad   | 1 or 2 subsys | custom_matrix (*4)     |
+    +-------------------+---------------+------------------------+
+    (*1) gamma defaults to 1.0 if time_modulation is set
+    (*2) 'strength' is a deprecated alias for chi
+    (*3) Qobj, square, Hermitian
+    (*4) Qobj, square (need not be Hermitian)
+    ```
+
+        For non-custom types a supplied custom_matrix is ignored (with a warning). A
+        custom_matrix must be square with equal-axis dims, and its overall size must match
+        the product of the involved subsystem truncation levels (checked by PhysicalModel).
     """
 
     def __init__(
@@ -173,24 +247,27 @@ class Interaction:
         if self.time_modulation is not None and not callable(self.time_modulation):
             raise TypeError(
                 self._with_context(
-                    "time_modulation must be callable as time_modulation(time, parameters_dict)"
+                    "time_modulation must be callable as time_modulation(time, **parameters)"
                     f". Got type: {type(self.time_modulation)}"
                 )
             )
         elif self.time_modulation is not None:
             # Test the modulation function to catch signature/return-type issues early.
             try:
+                params = self.parameters if isinstance(self.parameters, dict) else {}
                 for _ in range(100):
                     random_time = np.random.uniform(-10, 10)
-                    test_value = self.time_modulation(random_time, self.parameters if isinstance(self.parameters, dict) else {})
-                    if not isinstance(test_value, (int, float)):
+                    test_value = self.time_modulation(random_time, **params)
+                    # Accept Python/NumPy/JAX scalars (0-d arrays); reject non-scalars.
+                    if np.ndim(test_value) != 0:
                         raise ValueError(
                             self._with_context(
-                                "time_modulation must return a numeric value"
-                                f". Got type: {type(test_value)}"
+                                "time_modulation must return a scalar numeric value"
+                                f". Got type: {type(test_value)} with ndim {np.ndim(test_value)}"
                             )
                         )
-                    elif test_value < 0:
+                    test_value = float(test_value)
+                    if test_value < 0:
                         raise ValueError(
                             self._with_context(
                                 "time_modulation must return a non-negative value, "
@@ -200,7 +277,7 @@ class Interaction:
             except Exception as e:
                 raise ValueError(
                     self._with_context(
-                        "time_modulation must be callable with (time, parameters_dict) and return a non-negative numeric value. "
+                        "time_modulation must be callable as time_modulation(time, **parameters) and return a non-negative scalar numeric value. "
                     )
                 ) from e
              
@@ -978,19 +1055,19 @@ class SubsystemState:
         parameters: Dictionary of parameters for the initial state
     """
 
-    state_type: InitialStateType = InitialStateType.VACUUM
+    state_type: State = State.VACUUM
     parameters: Dict[str, Any] = None  # Parameters depend on state_type, e.g., {'n': 1} for Fock state
 
     def __post_init__(self):
         """Validate and normalize the parameters required by the chosen state_type."""
-        if self.state_type == InitialStateType.FOCK:
+        if self.state_type == State.FOCK:
             if self.parameters is None or "n" not in self.parameters:
                 raise ValueError("FOCK state requires 'n' parameter for photon number")
             n = self.parameters["n"]
             if not isinstance(n, int) or n < 0:
                 raise ValueError("FOCK state 'n' parameter must be a non-negative integer")
             
-        elif self.state_type == InitialStateType.COHERENT:
+        elif self.state_type == State.COHERENT:
             if self.parameters is None or "alpha" not in self.parameters:
                 raise ValueError("COHERENT state requires 'alpha' parameter for coherent amplitude")
             alpha = self.parameters["alpha"]
@@ -998,7 +1075,7 @@ class SubsystemState:
                 raise ValueError("COHERENT state 'alpha' parameter must be a numeric value (real or complex)")
             self.parameters["alpha"] = complex(alpha)  # Ensure alpha is stored as a complex number
 
-        elif self.state_type == InitialStateType.THERMAL:
+        elif self.state_type == State.THERMAL:
             if self.parameters is None or "n_avg" not in self.parameters:
                 raise ValueError("THERMAL state requires 'n_avg' parameter for mean photon number")
             n_avg = self.parameters["n_avg"]
@@ -1006,7 +1083,7 @@ class SubsystemState:
                 raise ValueError("THERMAL state 'n_avg' parameter must be a non-negative number")
             self.parameters["n_avg"] = float(n_avg)  # Ensure n_avg is stored as a float
 
-        elif self.state_type == InitialStateType.CUSTOM:
+        elif self.state_type == State.CUSTOM:
             # A custom single-mode state is a pure state given by its Fock-basis amplitudes:
             # |ψ⟩ = Σ aₙ|n⟩, with parameters={'amplitudes': [a0, a1, ...]}.
             if self.parameters is None or "amplitudes" not in self.parameters:
@@ -1029,68 +1106,6 @@ class SubsystemState:
         return SubsystemState(state_type=self.state_type, parameters=parameters)
 
     # custom_amplitudes: Optional[Dict[Tuple[int, int, int], complex]] = None
-
-@dataclass 
-class InitialState:
-    """
-    Initial state configuration for the entire system. Any non explicited subsystem will be initialized in the vacuum state.
-    
-    Attributes:
-        cavity_states: Dict of cavity states, keyed by cavity index (0-based)
-        field_states: Dict of input field states, keyed by field mode index (0-based)
-        density_matrix: Optional density matrix state for the {cavities} ⊗ {fields} subsystem
-    """
-
-    cavity_states: Optional[Dict[int, SubsystemState]] = field(default_factory=dict)
-    field_states: Optional[Dict[int, SubsystemState]] = field(default_factory=dict)
-    density_matrix: Optional[qt.Qobj] = None  # Overrides cavity_states and field_states when provided
-
-    def __post_init__(self):
-        """Validate the per-subsystem states and the optional density matrix."""
-        if self.cavity_states is not None:
-            if len(list(self.cavity_states.keys())) != len(set(self.cavity_states.keys())):
-                raise ValueError("Cavity states got duplicate indices. Each cavity accepts only a single state.")
-            for index, state in self.cavity_states.items():
-                if not isinstance(state, SubsystemState):
-                    raise TypeError(f"Cavity state for cavity {index} must be a SubsystemState instance")
-        if self.field_states is not None:
-            if len(list(self.field_states.keys())) != len(set(self.field_states.keys())):
-                raise ValueError("Field states got duplicate indices. Each field mode accepts only a single state.")
-            for index, state in self.field_states.items():
-                if not isinstance(state, SubsystemState):
-                    raise TypeError(f"Field state for field mode {index} must be a SubsystemState instance")
-
-        if self.density_matrix is not None:
-            if (self.cavity_states and len(self.cavity_states) > 0) or (
-                self.field_states and len(self.field_states) > 0
-            ):
-                warnings.warn(
-                    "density_matrix is provided; cavity_states and field_states will be ignored.",
-                    UserWarning,
-                )
-            if not isinstance(self.density_matrix, qt.Qobj):
-                raise ValueError("density_matrix must be a Qobj representing the density matrix")
-            if not self.density_matrix.isherm or (self.density_matrix.eigenenergies().min() < 0) or not np.isclose(self.density_matrix.tr(), 1.0):
-                raise ValueError("density_matrix must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
-        if self.cavity_states == {} and self.field_states == {} and self.density_matrix is None:
-            warnings.warn("No subsystem state was initialized nor a density_matrix was provided. The initial state will be the vacuum state.", UserWarning)
-
-    def copy(self) -> "InitialState":
-        """Return a copy with independent subsystem state storage."""
-        cavity_states = None
-        if self.cavity_states is not None:
-            cavity_states = {idx: state.copy() for idx, state in self.cavity_states.items()}
-        field_states = None
-        if self.field_states is not None:
-            field_states = {idx: state.copy() for idx, state in self.field_states.items()}
-        density_matrix = self.density_matrix.copy() if self.density_matrix is not None else None
-        return InitialState(
-            cavity_states=cavity_states,
-            field_states=field_states,
-            density_matrix=density_matrix,
-        )
-
-
 
 @dataclass
 class NoiseModel:
@@ -1151,24 +1166,69 @@ class NoiseModel:
 @dataclass
 class SystemConfiguration:
     """
-    System configuration composed of initial state, noise model and configuration-specific interactions."""
+    System configuration composed of the initial state specification, noise model
+    and configuration-specific interactions.
+
+    The initial state of the {cavities} ⊗ {fields} subsystem is specified directly
+    through this configuration. Any non explicited subsystem will be initialized in
+    the vacuum state.
+
+    Attributes:
+        name: Unique name identifying this configuration
+        init_cavity_states: Dict of cavity states, keyed by cavity index (0-based)
+        init_field_states: Dict of input field states, keyed by field mode index (0-based)
+        density_matrix: Optional density matrix for the {cavities} ⊗ {fields} subsystem.
+            Overrides init_cavity_states and init_field_states when provided.
+        noise_model: Optional configuration-specific noise model
+        interactions: Optional configuration-specific interactions
+    """
 
     name: str
-    initial_state: InitialState = field(default_factory=InitialState)
+    init_cavity_states: Optional[Dict[int, SubsystemState]] = field(default_factory=dict)
+    init_field_states: Optional[Dict[int, SubsystemState]] = field(default_factory=dict)
+    density_matrix: Optional[qt.Qobj] = None  # Overrides cavity/field states when provided
     noise_model: Optional[NoiseModel] = None
     interactions: Optional[List[Interaction]] = None
 
     def __post_init__(self):
-        """Validate configuration data."""
+        """Validate configuration data, including the initial-state specification."""
         if not self.name:
             raise ValueError("System configuration must have a non-empty name")
-        
-        if not isinstance(self.initial_state, InitialState):
-            raise TypeError("initial_state must be an InitialState instance")
-        
+
+        # ---- Initial state specification ----
+        if self.init_cavity_states is not None:
+            if len(list(self.init_cavity_states.keys())) != len(set(self.init_cavity_states.keys())):
+                raise ValueError("Cavity states got duplicate indices. Each cavity accepts only a single state.")
+            for index, state in self.init_cavity_states.items():
+                if not isinstance(state, SubsystemState):
+                    raise TypeError(f"Cavity state for cavity {index} must be a SubsystemState instance")
+        if self.init_field_states is not None:
+            if len(list(self.init_field_states.keys())) != len(set(self.init_field_states.keys())):
+                raise ValueError("Field states got duplicate indices. Each field mode accepts only a single state.")
+            for index, state in self.init_field_states.items():
+                if not isinstance(state, SubsystemState):
+                    raise TypeError(f"Field state for field mode {index} must be a SubsystemState instance")
+
+        if self.density_matrix is not None:
+            if (self.init_cavity_states and len(self.init_cavity_states) > 0) or (
+                self.init_field_states and len(self.init_field_states) > 0
+            ):
+                warnings.warn(
+                    "density_matrix is provided; init_cavity_states and init_field_states will be ignored.",
+                    UserWarning,
+                )
+            if not isinstance(self.density_matrix, qt.Qobj):
+                raise ValueError("density_matrix must be a Qobj representing the density matrix")
+            if not self.density_matrix.isherm or (self.density_matrix.eigenenergies().min() < 0) or not np.isclose(self.density_matrix.tr(), 1.0):
+                raise ValueError("density_matrix must be a valid density matrix (Hermitian, positive semidefinite, trace 1)")
+        if self.init_cavity_states == {} and self.init_field_states == {} and self.density_matrix is None:
+            warnings.warn("No subsystem state was initialized nor a density_matrix was provided. The initial state will be the vacuum state.", UserWarning)
+
+        # ---- Noise model ----
         if self.noise_model is not None and not isinstance(self.noise_model, NoiseModel):
             raise TypeError("noise_model must be a NoiseModel instance or None")
-        
+
+        # ---- Configuration-specific interactions ----
         if self.interactions is not None:
             for interaction in self.interactions:
                 if not isinstance(interaction, Interaction):
@@ -1194,9 +1254,17 @@ class SystemConfiguration:
 
     def copy(self) -> "SystemConfiguration":
         """Return a copy with independent nested state."""
+        init_cavity_states = None
+        if self.init_cavity_states is not None:
+            init_cavity_states = {idx: state.copy() for idx, state in self.init_cavity_states.items()}
+        init_field_states = None
+        if self.init_field_states is not None:
+            init_field_states = {idx: state.copy() for idx, state in self.init_field_states.items()}
         return SystemConfiguration(
             name=self.name,
-            initial_state=self.initial_state.copy(),
+            init_cavity_states=init_cavity_states,
+            init_field_states=init_field_states,
+            density_matrix=self.density_matrix.copy() if self.density_matrix is not None else None,
             noise_model=self.noise_model.copy() if self.noise_model is not None else None,
             interactions=[interaction.copy() for interaction in (self.interactions or [])],
         )
@@ -1440,132 +1508,131 @@ class ExperimentalParameters:
                     raise ValueError(f"PhysicalModel interactions cannot be used inside systemconfigurations (even if with different parameters), found duplicates in {config.name} configuration.\n\
                                     Found interactions: {duplicates}")
 
-            if config.initial_state is not None:
-                if config.initial_state.cavity_states is not None:
-                    for (index, state) in config.initial_state.cavity_states.items():
-                        if not 0 <= index < self.n_cavities:
-                            raise ValueError(
-                                f"Initial state of {config.name} specifies cavity state for cavity {index}, but only {self.n_cavities} cavities in system. Indexing starts from 0."
-                            )
-                        if state.state_type == InitialStateType.FOCK:
-                            n = state.parameters["n"]
-                            if self.cavity_levels[index] < n:
-                                raise ValueError(
-                                    f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for cavity {index},\n\
-                                    but cavity truncation level is {self.cavity_levels[index]}.\n\
-                                    Valid n values are 0 to {self.cavity_levels[index]-1}, or raise the cavity_levels truncation parameter."
-                                )
-                            
-                        if state.state_type == InitialStateType.COHERENT:
-                            # Warn when the truncation is below mean + 6 std dev of the photon
-                            # number (a coherent state has mean and variance both |alpha|^2).
-                            n_avg = pow(abs(state.parameters["alpha"]), 2)
-                            if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
-                                warnings.warn(
-                                    f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for cavity {index},\n\
-                                    which may lead to significant population in levels above the cavity truncation level {self.cavity_levels[index]}.\n\
-                                    Consider increasing cavity_levels or reducing alpha for more accurate simulations.",
-                                    UserWarning,
-                                )
-                        if state.state_type == InitialStateType.THERMAL:
-                            # Same mean + 6 std dev check; a thermal state has variance
-                            # n_avg*(n_avg + 1), hence the different square-root term.
-                            n_avg = state.parameters["n_avg"]
-                            if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
-                                warnings.warn(
-                                    f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for cavity {index},\n\
-                                    which may lead to significant population in levels above the cavity truncation level {self.cavity_levels[index]}.\n\
-                                    Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
-                                    UserWarning,
-                                )
-                        if state.state_type == InitialStateType.CUSTOM:
-                            n_amplitudes = len(state.parameters["amplitudes"])
-                            if self.cavity_levels[index] < n_amplitudes:
-                                raise ValueError(
-                                    f"Initial state of {config.name} specifies a CUSTOM state with {n_amplitudes} "
-                                    f"Fock amplitudes for cavity {index}, but the cavity truncation level is "
-                                    f"{self.cavity_levels[index]}. Provide at most {self.cavity_levels[index]} "
-                                    f"amplitudes or raise the cavity_levels truncation parameter."
-                                )
-
-                if config.initial_state.field_states is not None:
-                    for (index, state) in config.initial_state.field_states.items():
-                        if not 0 <= index < self.n_fields:
-                            raise ValueError(
-                                f"Initial state of {config.name} specifies field state for field mode {index}, but only {self.n_fields} field modes in system. Indexing starts from 0."
-                            )
-                        if state.state_type == InitialStateType.FOCK:
-                            n = state.parameters["n"]
-                            if self.field_levels[index] < n:
-                                raise ValueError(
-                                    f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for field mode {index},\n\
-                                    but field truncation level is {self.field_levels[index]}.\n\
-                                    Valid n values are 0 to {self.field_levels[index]-1}, or raise the field_levels truncation parameter."
-                                )
-                        if state.state_type == InitialStateType.COHERENT:
-                            # Mean + 6 std dev truncation heuristic (see cavity states above).
-                            n_avg = pow(abs(state.parameters["alpha"]), 2)
-                            if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
-                                warnings.warn(
-                                    f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for field mode {index},\n\
-                                    which may lead to significant population in levels above the field truncation level {self.field_levels[index]}.\n\
-                                    Consider increasing field_levels or reducing alpha for more accurate simulations.",
-                                    UserWarning,
-                                )
-                        if state.state_type == InitialStateType.THERMAL:
-                            # Mean + 6 std dev truncation heuristic (see cavity states above).
-                            n_avg = state.parameters["n_avg"]
-                            if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
-                                warnings.warn(
-                                    f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for field mode {index},\n\
-                                    which may lead to significant population in levels above the field truncation level {self.field_levels[index]}.\n\
-                                    Consider increasing field_levels or reducing n_avg for more accurate simulations.",
-                                    UserWarning,
-                                )
-                        if state.state_type == InitialStateType.CUSTOM:
-                            n_amplitudes = len(state.parameters["amplitudes"])
-                            if self.field_levels[index] < n_amplitudes:
-                                raise ValueError(
-                                    f"Initial state of {config.name} specifies a CUSTOM state with {n_amplitudes} "
-                                    f"Fock amplitudes for field mode {index}, but the field truncation level is "
-                                    f"{self.field_levels[index]}. Provide at most {self.field_levels[index]} "
-                                    f"amplitudes or raise the field_levels truncation parameter."
-                                )
-
-                if config.initial_state.density_matrix is not None:
-                    dim = math.prod(self.cavity_levels) * math.prod(self.field_levels)
-                    if config.initial_state.density_matrix.shape != (dim, dim):
+            if config.init_cavity_states is not None:
+                for (index, state) in config.init_cavity_states.items():
+                    if not 0 <= index < self.n_cavities:
                         raise ValueError(
-                            f"Initial state of {config.name} specifies a density matrix with shape {config.initial_state.density_matrix.shape}, but expected shape is ({dim}, {dim}) based on the physical model dimensions (only considers cavity and field modes)."
+                            f"Initial state of {config.name} specifies cavity state for cavity {index}, but only {self.n_cavities} cavities in system. Indexing starts from 0."
                         )
-                else:
-                    # No density matrix: fill every cavity/field left unspecified with the
-                    # vacuum state, so all subsystems have an explicit initial state downstream.
-                    if config.initial_state.cavity_states is not None:
-                        vacuum_cavity_idx = list(
-                            set(range(self.n_cavities))
-                            - set(config.initial_state.cavity_states.keys())
-                        )
-                    else:
-                        vacuum_cavity_idx = list(range(self.n_cavities))
-                        config.initial_state.cavity_states = {}
-                    if config.initial_state.field_states is not None:
-                        vacuum_field_idx = list(
-                            set(range(self.n_fields))
-                            - set(config.initial_state.field_states.keys())
-                        )
-                    else:
-                        vacuum_field_idx = list(range(self.n_fields))
-                        config.initial_state.field_states = {}
+                    if state.state_type == State.FOCK:
+                        n = state.parameters["n"]
+                        if self.cavity_levels[index] < n:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for cavity {index},\n\
+                                but cavity truncation level is {self.cavity_levels[index]}.\n\
+                                Valid n values are 0 to {self.cavity_levels[index]-1}, or raise the cavity_levels truncation parameter."
+                            )
 
-                    for idx in vacuum_cavity_idx:
-                        config.initial_state.cavity_states[idx] = SubsystemState(
-                            state_type=InitialStateType.VACUUM
+                    if state.state_type == State.COHERENT:
+                        # Warn when the truncation is below mean + 6 std dev of the photon
+                        # number (a coherent state has mean and variance both |alpha|^2).
+                        n_avg = pow(abs(state.parameters["alpha"]), 2)
+                        if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for cavity {index},\n\
+                                which may lead to significant population in levels above the cavity truncation level {self.cavity_levels[index]}.\n\
+                                Consider increasing cavity_levels or reducing alpha for more accurate simulations.",
+                                UserWarning,
+                            )
+                    if state.state_type == State.THERMAL:
+                        # Same mean + 6 std dev check; a thermal state has variance
+                        # n_avg*(n_avg + 1), hence the different square-root term.
+                        n_avg = state.parameters["n_avg"]
+                        if self.cavity_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for cavity {index},\n\
+                                which may lead to significant population in levels above the cavity truncation level {self.cavity_levels[index]}.\n\
+                                Consider increasing cavity_levels or reducing n_avg for more accurate simulations.",
+                                UserWarning,
+                            )
+                    if state.state_type == State.CUSTOM:
+                        n_amplitudes = len(state.parameters["amplitudes"])
+                        if self.cavity_levels[index] < n_amplitudes:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies a CUSTOM state with {n_amplitudes} "
+                                f"Fock amplitudes for cavity {index}, but the cavity truncation level is "
+                                f"{self.cavity_levels[index]}. Provide at most {self.cavity_levels[index]} "
+                                f"amplitudes or raise the cavity_levels truncation parameter."
+                            )
+
+            if config.init_field_states is not None:
+                for (index, state) in config.init_field_states.items():
+                    if not 0 <= index < self.n_fields:
+                        raise ValueError(
+                            f"Initial state of {config.name} specifies field state for field mode {index}, but only {self.n_fields} field modes in system. Indexing starts from 0."
                         )
-                    for idx in vacuum_field_idx:
-                        config.initial_state.field_states[idx] = SubsystemState(
-                            state_type=InitialStateType.VACUUM
-                        )
+                    if state.state_type == State.FOCK:
+                        n = state.parameters["n"]
+                        if self.field_levels[index] < n:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies FOCK state with n={state.parameters['n']} for field mode {index},\n\
+                                but field truncation level is {self.field_levels[index]}.\n\
+                                Valid n values are 0 to {self.field_levels[index]-1}, or raise the field_levels truncation parameter."
+                            )
+                    if state.state_type == State.COHERENT:
+                        # Mean + 6 std dev truncation heuristic (see cavity states above).
+                        n_avg = pow(abs(state.parameters["alpha"]), 2)
+                        if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg)):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies COHERENT state with alpha={state.parameters['alpha']} for field mode {index},\n\
+                                which may lead to significant population in levels above the field truncation level {self.field_levels[index]}.\n\
+                                Consider increasing field_levels or reducing alpha for more accurate simulations.",
+                                UserWarning,
+                            )
+                    if state.state_type == State.THERMAL:
+                        # Mean + 6 std dev truncation heuristic (see cavity states above).
+                        n_avg = state.parameters["n_avg"]
+                        if self.field_levels[index] < (n_avg + 6*np.sqrt(n_avg*(n_avg + 1))):
+                            warnings.warn(
+                                f"Initial state of {config.name} specifies THERMAL state with n_avg={n_avg} for field mode {index},\n\
+                                which may lead to significant population in levels above the field truncation level {self.field_levels[index]}.\n\
+                                Consider increasing field_levels or reducing n_avg for more accurate simulations.",
+                                UserWarning,
+                            )
+                    if state.state_type == State.CUSTOM:
+                        n_amplitudes = len(state.parameters["amplitudes"])
+                        if self.field_levels[index] < n_amplitudes:
+                            raise ValueError(
+                                f"Initial state of {config.name} specifies a CUSTOM state with {n_amplitudes} "
+                                f"Fock amplitudes for field mode {index}, but the field truncation level is "
+                                f"{self.field_levels[index]}. Provide at most {self.field_levels[index]} "
+                                f"amplitudes or raise the field_levels truncation parameter."
+                            )
+
+            if config.density_matrix is not None:
+                dim = math.prod(self.cavity_levels) * math.prod(self.field_levels)
+                if config.density_matrix.shape != (dim, dim):
+                    raise ValueError(
+                        f"Initial state of {config.name} specifies a density matrix with shape {config.density_matrix.shape}, but expected shape is ({dim}, {dim}) based on the physical model dimensions (only considers cavity and field modes)."
+                    )
+            else:
+                # No density matrix: fill every cavity/field left unspecified with the
+                # vacuum state, so all subsystems have an explicit initial state downstream.
+                if config.init_cavity_states is not None:
+                    vacuum_cavity_idx = list(
+                        set(range(self.n_cavities))
+                        - set(config.init_cavity_states.keys())
+                    )
+                else:
+                    vacuum_cavity_idx = list(range(self.n_cavities))
+                    config.init_cavity_states = {}
+                if config.init_field_states is not None:
+                    vacuum_field_idx = list(
+                        set(range(self.n_fields))
+                        - set(config.init_field_states.keys())
+                    )
+                else:
+                    vacuum_field_idx = list(range(self.n_fields))
+                    config.init_field_states = {}
+
+                for idx in vacuum_cavity_idx:
+                    config.init_cavity_states[idx] = SubsystemState(
+                        state_type=State.VACUUM
+                    )
+                for idx in vacuum_field_idx:
+                    config.init_field_states[idx] = SubsystemState(
+                        state_type=State.VACUUM
+                    )
 
         names = [config.name for config in self.configuration_set]
         if len(names) != len(set(names)):
@@ -1918,13 +1985,10 @@ class ExperimentalParameters:
         field_dim = int(np.prod(field_levels_list))
 
         total_dim = cavity_dim * qubit_dim * field_dim
-        lines.append(f"  Number of cavities:   {n_cavities:>6}")
-        lines.append(f"  Number of fields:     {n_fields:>6}")
-        lines.append(f"  Number of qubits:     {n_qubits:>6}")
-        lines.append(f"  Cavity levels:        {cavity_levels_list}")
-        lines.append(f"  Qubit levels:         {qubit_levels_list}")
-        lines.append(f"  Field levels:         {field_levels_list}")
-        lines.append(f"  Total dimension:      {total_dim:>6}")
+        lines.append(f"  Cavities: {n_cavities}   levels {cavity_levels_list}")
+        lines.append(f"  Fields:   {n_fields}   levels {field_levels_list}")
+        lines.append(f"  Qubits:   {n_qubits}   levels {qubit_levels_list}")
+        lines.append(f"  Total dimension: {total_dim}")
 
         def format_subsystem(subsystem: Tuple[str, int]) -> str:
             return f"{subsystem[0]}{subsystem[1]}"
@@ -1938,10 +2002,10 @@ class ExperimentalParameters:
             return f"value={parameters}"
 
         def format_interaction_name(interaction: Interaction) -> str:
-            name = f"{interaction.interaction_type.value} {format_subsystem(interaction.subsystem1)}"
+            subsystems = format_subsystem(interaction.subsystem1)
             if interaction.subsystem2 is not None:
-                name += f"-{format_subsystem(interaction.subsystem2)}"
-            return name
+                subsystems += f"-{format_subsystem(interaction.subsystem2)}"
+            return f"{interaction.interaction_type.value}({subsystems})"
 
         def format_interaction(interaction: Interaction) -> str:
             return f"{format_interaction_name(interaction)}: {format_params(interaction.parameters)}"
@@ -1951,8 +2015,27 @@ class ExperimentalParameters:
                 return "None"
             if not isinstance(state, SubsystemState):
                 return f"invalid_state={state}"
-            params = "no parameters" if state.parameters is None else format_params(state.parameters)
-            return f"{state.state_type.value}: {params}"
+            # Parameter-less states (e.g. vacuum) are shown by name only, no "no parameters".
+            if not isinstance(state.parameters, dict) or not state.parameters:
+                return f"{state.state_type.value}"
+            return f"{state.state_type.value}: {format_params(state.parameters)}"
+
+        def describe_uncertainty(func: Any) -> str:
+            # Give the standard, representable uncertainties a readable name instead of
+            # printing a raw function object; fall back to "custom" for anything else.
+            if func is None:
+                return "none"
+            if not callable(func):
+                return str(func)
+            try:
+                samples = [float(func(t)) for t in np.linspace(-10, 10, 11)]
+            except Exception:
+                return "custom"
+            if all(abs(s) < 1e-12 for s in samples):
+                return "none"
+            if all(abs(s - samples[0]) < 1e-12 for s in samples):
+                return f"constant ({samples[0]:g})"
+            return "custom"
 
         # Identity of an interaction (type + subsystems, ignoring parameters); lets the
         # repr recognize the same interaction across different configurations.
@@ -2047,6 +2130,7 @@ class ExperimentalParameters:
                         lines.append(f"{base_indent}    {format_interaction(interaction)}")
 
         # Physical Model Interactions
+        lines.append("")
         lines.append("PHYSICAL MODEL")
         interactions = list(self.physical_model.interactions)
         if not interactions:
@@ -2069,6 +2153,7 @@ class ExperimentalParameters:
                 append_grouped_interactions(time_dependent_interactions, "    ")
 
         # Measurement Protocol Group
+        lines.append("")
         lines.append("MEASUREMENT PROTOCOL")
 
         # Determine mode (list or interval)
@@ -2095,9 +2180,10 @@ class ExperimentalParameters:
             if isinstance(self.measurement.initial_time_uncertainty, str):
                 lines.append(f"    (specified as '{self.measurement.initial_time_uncertainty}')")
         lines.append(
-            f"  Single measurement uncertainty: {self.measurement.single_measurement_uncertainty}"
+            f"  Single measurement uncertainty: {describe_uncertainty(self.measurement.single_measurement_uncertainty)}"
         )
         # Noise Configuration Group
+        lines.append("")
         lines.append("NOISE MODEL")
         lines.append(f"  Depolarizing rate:    {self.noise_model.depolarizing}")
         lines.append(f"  Dephasing rate:       {self.noise_model.dephasing}")
@@ -2109,6 +2195,7 @@ class ExperimentalParameters:
             lines.append("  Custom operators:     None")
 
         # Configuration Set Group
+        lines.append("")
         lines.append("CONFIGURATIONS")
         lines.append(f"  Count:                {len(self.configuration_set)}")
         # Collect the set of distinct parameter signatures for each interaction type
@@ -2125,47 +2212,27 @@ class ExperimentalParameters:
         for i, config in enumerate(self.configuration_set):
             has_noise = "yes" if config.noise_model is not None else "no"
             interactions = config.interactions or []
-            
-            cavity_states_count = len(config.initial_state.cavity_states or {})
-            field_states_count = len(config.initial_state.field_states or {})
-            has_density_matrix = "yes" if config.initial_state.density_matrix is not None else "no"
 
             lines.append(
-                f"    [{i}] {config.name}: noise_override={has_noise}, interactions={len(interactions)}, "
-                f"cavity_states={cavity_states_count}, field_states={field_states_count}, "
-                f"density_matrix={has_density_matrix}"
+                f"    [{i}] {config.name}: noise_override={has_noise}, interactions={len(interactions)}"
             )
-            if config.initial_state is None:
-                lines.append("      Initial state: None")
+
+            # A configuration is initialised either from a custom density matrix or from
+            # per-subsystem states, never both.
+            if config.density_matrix is not None:
+                lines.append(
+                    f"      Initial state: custom density matrix (shape={config.density_matrix.shape})"
+                )
+            elif config.init_cavity_states or config.init_field_states:
+                for index in sorted(config.init_cavity_states or {}):
+                    state = config.init_cavity_states[index]
+                    lines.append(f"      Cavity {index}: {format_subsystem_state(state)}")
+                for index in sorted(config.init_field_states or {}):
+                    state = config.init_field_states[index]
+                    lines.append(f"      Field {index}: {format_subsystem_state(state)}")
             else:
-                density_matrix_present = config.initial_state.density_matrix is not None
-                cavity_header = "      Cavity states:"
-                field_header = "      Field states:"
-                if density_matrix_present:
-                    cavity_header = "      Cavity states (ignored due to density matrix):"
-                    field_header = "      Field states (ignored due to density matrix):"
-                lines.append(cavity_header)
-                if config.initial_state.cavity_states:
-                    for index in sorted(config.initial_state.cavity_states):
-                        state = config.initial_state.cavity_states[index]
-                        lines.append(f"        Cavity {index}: {format_subsystem_state(state)}")
-                else:
-                    lines.append("        None")
+                lines.append("      Initial state: None")
 
-                lines.append(field_header)
-                if config.initial_state.field_states:
-                    for index in sorted(config.initial_state.field_states):
-                        state = config.initial_state.field_states[index]
-                        lines.append(f"        Field {index}: {format_subsystem_state(state)}")
-                else:
-                    lines.append("        None")
-
-                if config.initial_state.density_matrix is not None:
-                    lines.append(
-                        f"      Density matrix: shape={config.initial_state.density_matrix.shape} (overrides cavity/field states)"
-                    )
-                else:
-                    lines.append("      Density matrix: None")
             if interactions:
                 lines.append("      Interactions:")
                 for interaction in interactions:
@@ -2178,6 +2245,7 @@ class ExperimentalParameters:
                         lines.append(f"        {name}")
 
         # Overall System Status
+        lines.append("")
         lines.append("SYSTEM STATUS")
 
         try:
@@ -2187,6 +2255,7 @@ class ExperimentalParameters:
             lines.append("  Configuration:        INVALID")
             lines.append(f"  Error:                {str(exc)}")
 
+        lines.append("")
         lines.append("RANDOM SEED")
         lines.append(f"  Seed:                 {self.random_seed}")
 

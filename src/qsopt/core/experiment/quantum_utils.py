@@ -18,7 +18,7 @@ import numpy as np
 import qutip as qt
 from jax.scipy.special import erfc
 
-from qsopt.core.experimental_parameters import InitialStateType, InitialState
+from qsopt.core.experimental_parameters import State, SystemConfiguration
 
 
 @jax.jit
@@ -306,7 +306,7 @@ def build_qubit_noise_operators(
 
 
 def generate_initial_state(
-    initial_state: InitialState,
+    system_configuration: SystemConfiguration,
     cavity_levels: Union[int, List[int]],
     field_levels: Union[int, List[int]],
     qubit_levels: Union[int, List[int]],
@@ -327,7 +327,8 @@ def generate_initial_state(
     - CUSTOM: User-defined superposition
 
     Args:
-        initial_state: InitialState object with dictionaries of subsystems states or custom initial density_matrix
+        system_configuration: SystemConfiguration with dictionaries of subsystem states
+            (init_cavity_states, init_field_states) or a custom initial density_matrix
         cavity_levels: Number of Fock levels for each resonator cavity
         field_levels: Number of Fock levels for each input field
         qubit_levels: Number of levels for each qubit (int or list)
@@ -341,9 +342,10 @@ def generate_initial_state(
         ValueError: If required parameters are missing or invalid
 
     Example:
-        >>> from qsopt.core.experimental_parameters import InitialState, SubsystemState, InitialStateType
-        >>> config = InitialState(
-        ...     field_states={0: SubsystemState(state_type=InitialStateType.FOCK, parameters={"n": 1})}
+        >>> from qsopt.core.experimental_parameters import SystemConfiguration, SubsystemState, State
+        >>> config = SystemConfiguration(
+        ...     name="example",
+        ...     init_field_states={0: SubsystemState(state_type=State.FOCK, parameters={"n": 1})},
         ... )
         >>> rho0 = generate_initial_state(
         ...     config, cavity_levels=2, field_levels=2, qubit_levels=2,
@@ -351,11 +353,11 @@ def generate_initial_state(
         ... )
     """
 
-    cavity_states = initial_state.cavity_states
-    field_states = initial_state.field_states
-    density_matrix = initial_state.density_matrix
+    cavity_states = system_configuration.init_cavity_states
+    field_states = system_configuration.init_field_states
+    density_matrix = system_configuration.density_matrix
     if (cavity_states is None or field_states is None) and density_matrix is None:
-        raise ValueError("Either cavity_states and field_states dictionaries or a custom density_matrix must be provided in initial_state.")
+        raise ValueError("Either init_cavity_states and init_field_states dictionaries or a custom density_matrix must be provided in the system configuration.")
 
     if isinstance(cavity_levels, int):
         c_levels = [cavity_levels] * n_cavities
@@ -394,16 +396,16 @@ def generate_initial_state(
         for i in range(n_cavities):
             if i in cavity_keys:
                 state = cavity_states[i]
-                if state.state_type == InitialStateType.THERMAL:
+                if state.state_type == State.THERMAL:
                     n_avg = state.parameters["n_avg"]
                     state_matrix = _create_thermal(c_levels[i], n_avg)
-                elif state.state_type == InitialStateType.FOCK:
+                elif state.state_type == State.FOCK:
                     n = state.parameters["n"]
                     state_matrix = _create_fock(c_levels[i], n)
-                elif state.state_type == InitialStateType.COHERENT:
+                elif state.state_type == State.COHERENT:
                     alpha = state.parameters["alpha"]
                     state_matrix = _create_coherent(c_levels[i], alpha)
-                elif state.state_type == InitialStateType.CUSTOM:
+                elif state.state_type == State.CUSTOM:
                     state_matrix = _create_custom_state(c_levels[i], state.parameters["amplitudes"])
                 else:
                     state_matrix = _create_vacuum(c_levels[i])
@@ -415,16 +417,16 @@ def generate_initial_state(
         for i in range(n_fields):
             if i in field_keys:
                 state = field_states[i]
-                if state.state_type == InitialStateType.THERMAL:
+                if state.state_type == State.THERMAL:
                     n_avg = state.parameters["n_avg"]
                     state_matrix = _create_thermal(f_levels[i], n_avg)
-                elif state.state_type == InitialStateType.FOCK:
+                elif state.state_type == State.FOCK:
                     n = state.parameters["n"]
                     state_matrix = _create_fock(f_levels[i], n)
-                elif state.state_type == InitialStateType.COHERENT:
+                elif state.state_type == State.COHERENT:
                     alpha = state.parameters["alpha"]
                     state_matrix = _create_coherent(f_levels[i], alpha)
-                elif state.state_type == InitialStateType.CUSTOM:
+                elif state.state_type == State.CUSTOM:
                     state_matrix = _create_custom_state(f_levels[i], state.parameters["amplitudes"])
                 else:
                     state_matrix = _create_vacuum(f_levels[i])
@@ -845,36 +847,46 @@ def measure_qubits_probability(
 
 def embed_circuit_unitary(
     circuit_unitary: jnp.ndarray,
-    field_levels: int,
-    cavity_levels: int
+    field_levels: List[int],
+    cavity_levels: List[int],
 ) -> jnp.ndarray:
     """
     Embed an n-qubit circuit unitary into the full composite Hilbert space using JAX.
 
-    The composite space is: input_field ⊗ resonator_cavity ⊗ qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn
-    The circuit acts only on the qubit subspace (qubit1 ⊗ qubit2 ⊗ ... ⊗ qubitn).
+    The composite space follows the canonical ordering
+    (cavity_1 ⊗ ... ⊗ cavity_C ⊗ field_1 ⊗ ... ⊗ field_F ⊗ qubit_1 ⊗ ... ⊗ qubit_n),
+    matching ``total_dims = cavity_levels + field_levels + qubit_levels``. The circuit
+    acts only on the trailing qubit subspace, so the embedding is
+    ``I_bosonic ⊗ circuit_unitary`` with the qubits as the least-significant factor.
+
+    Because every cavity and field factor is an identity, their tensor product collapses
+    to a single identity of size ``∏ cavity_levels · ∏ field_levels`` (identities commute,
+    so the cavity/field interleaving is irrelevant). The embedding is therefore a single
+    Kronecker product, which keeps the per-call cost minimal when circuits are recomputed.
 
     Args:
-        circuit_unitary: (∏ qubit_levels)×(∏ qubit_levels) unitary matrix for n-qubit circuit (JAX array)
-        field_levels: Number of levels in the input field subsystem
-        cavity_levels: Number of levels in the resonator cavity subsystem
+        circuit_unitary: (∏ qubit_levels)×(∏ qubit_levels) unitary matrix (JAX array).
+        field_levels: Per-mode levels of the field subsystems, one entry per field mode.
+        cavity_levels: Per-mode levels of the cavity subsystems, one entry per cavity mode.
 
     Returns:
-        Full-space unitary as JAX array: I_field ⊗ I_cavity ⊗ circuit_unitary
+        Full-space unitary as JAX array: ``I_{∏cavity·∏field} ⊗ circuit_unitary``.
 
     Example:
-        >>> # 2-qubit circuit unitary (4x4 for 2-level qubits)
+        >>> # 2-qubit circuit unitary (4x4) with 2 cavities (2,3) and 1 field (2)
         >>> U_circuit = jnp.eye(4, dtype=jnp.complex128)
-        >>> U_full = embed_circuit_unitary(U_circuit, field_levels=2, cavity_levels=3)
-        >>> # U_full shape: (2*3*4)×(2*3*4) = 24×24
+        >>> U_full = embed_circuit_unitary(U_circuit, field_levels=[2], cavity_levels=[2, 3])
+        >>> # U_full shape: (2*3 * 2 * 4)×(...) = 48×48
     """
-    # Build full operator using JAX Kronecker products
-    # I_field ⊗ I_cavity ⊗ U_circuit
-    I_field = jnp.eye(field_levels, dtype=jnp.complex128)
-    I_cavity = jnp.eye(cavity_levels, dtype=jnp.complex128)
+    # Total dimension of all bosonic (cavity + field) modes; np.prod over the per-mode
+    # level lists (returns 1 for an empty list, i.e. no such modes).
+    bosonic_dim = int(np.prod(cavity_levels)) * int(np.prod(field_levels))
 
-    # Kronecker product: I_field ⊗ I_cavity ⊗ U_circuit
-    U_full_jax = jnp.kron(jnp.kron(I_field, I_cavity), circuit_unitary)
+    # I_cavity ⊗ I_field == I_bosonic, so a single identity plus one Kronecker product
+    # suffices regardless of the number of cavity/field modes. Under jit the identity is
+    # a compile-time constant (folded by XLA), so it adds no per-call cost.
+    I_bosonic = jnp.eye(bosonic_dim, dtype=jnp.complex128)
+    U_full_jax = jnp.kron(I_bosonic, circuit_unitary)
 
     return U_full_jax
 

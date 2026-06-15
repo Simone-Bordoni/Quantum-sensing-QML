@@ -17,8 +17,6 @@ from typing import Any, Dict, Tuple
 from ..core.callback import OptimizationCallback
 from ..core.experimental_parameters import (
     ExperimentalParameters,
-    InitialState,
-    InitialStateType,
     MeasurementProtocol,
     NoiseModel,
     PhysicalModel,
