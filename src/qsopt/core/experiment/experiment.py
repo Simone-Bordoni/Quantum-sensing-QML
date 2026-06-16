@@ -712,8 +712,8 @@ class Experiment:
         # Get detection metric
         detection_metric = self.detection_metric
 
-        # Get reset operators
-        zipped_reset = zip(self.operators['measure_reset'], self.operators['measure_reset_dag'])
+        # Get reset operators (pre-zipped at construction; see generate_system_operators)
+        reset_list = self.operators['measure_reset_pairs']
 
         # Get circuit unitaries
         if precomputed_unitaries is None:
@@ -737,7 +737,7 @@ class Experiment:
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Reset the qubit
-            rho_reset = [op * rho_final * op_dag for op,op_dag in zipped_reset]
+            rho_reset = [op * rho_final * op_dag for op,op_dag in reset_list]
             rho_current = sum(rho_reset)
             
             rho_list.append(rho_final)
@@ -779,8 +779,8 @@ class Experiment:
         # Get detection metric
         detection_metric = self.detection_metric
 
-        # Get reset operators
-        zipped_reset = zip(self.operators['measure_reset'], self.operators['measure_reset_dag'])
+        # Get reset operators (pre-zipped at construction; see generate_system_operators)
+        zipped_reset = self.operators['measure_reset_pairs']
 
         # Get circuit unitaries
         if precomputed_unitaries is None:
@@ -1660,9 +1660,9 @@ class Experiment:
 
             # Call callback to track progress
             callback(
-                trainable_params_initial=params[:n_initial], 
+                trainable_params_initial=params[:n_initial],
                 trainable_params_final=params[n_initial:],
-                detection_dict=detection_dict.update((name, float(detection)) for name, detection in detection_dict.items()),
+                detection_dict={name: float(detection) for name, detection in detection_dict.items()},
                 metric=step_metric_value,
                 validation=step_validation_value,
                 optimizer_state=opt_state,

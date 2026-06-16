@@ -21,11 +21,14 @@ import warnings
 import copy
 
 # 3-tuple protocol for aggregating a sequence of per-measurement values into a single scalar:
-#   (initial_value, aggregation_fn(acc, step_value) -> acc, post_aggregation_fn(acc) -> result)
+#   (initial_value,
+#    aggregation_fn(acc, step_value, epoch_fraction) -> acc,
+#    post_aggregation_fn(acc, epoch_fraction) -> result)
+# epoch_fraction (0 at the first step, ->1 at the last) lets the aggregation anneal over training.
 Aggregator: TypeAlias = Tuple[
     Optional[Union[float, Array]],
-    Optional[Callable[[Union[float, Array], Union[float, Array]], Union[float, Array]]],
-    Optional[Callable[[Union[float, Array]], Union[float, Array]]],
+    Optional[Callable[[Union[float, Array], Union[float, Array], float], Union[float, Array]]],
+    Optional[Callable[[Union[float, Array], float], Union[float, Array]]],
 ]
 
 
@@ -96,9 +99,12 @@ class DetectionMetric:
 
     detection_param : Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]], optional
         Parameter for the detection criterion, defaults to None
-    multiple_measurement_logic: Tuple[type,Callable[[type,type], type], optional
-        Protocol that aggregates detection measures from multiple measurements. Contains an initialization value, an aggregator function and a post-aggregation function.
-        If None, defaults to (jnp.array(1),lambda x,y: x*y, lambda x: 1-x)
+    multiple_measurement_logic: Optional[Aggregator]
+        Protocol that aggregates detection measures over the sequential measurements: a 3-tuple of
+        (initialization value, aggregation function (acc, value, epoch_fraction)->acc,
+        post-aggregation function (acc, epoch_fraction)->result). epoch_fraction lets the aggregation
+        anneal over training. If None, defaults to an OR over measurements for the state-detection
+        criteria and a temperature-annealed soft-max for the matrix-distance criteria.
     batching_logic: Callable[...,Tuple[float]], optional
         Protocol that aggregates detection measures from different batches. Takes as input the list of detection measures for the batches and outputs the aggregated detection measure.
         If None, defaults to average over batch.
@@ -282,7 +288,7 @@ class DetectionMetric:
             aggregate_init, measurement_aggregation, post_aggregation, custom_meas_aggr = \
                 _resolve_measurement_aggregation(
                     multi_measurement_logic,
-                    (jnp.array(1), lambda x, y: x * (1 - y), lambda x: 1 - x))
+                    (jnp.array(1), lambda x, y, f: x * (1 - y), lambda x, f: 1 - x))
 
             # Per-config transform applied to each configuration's true-positive probability.
             if metric is None:
@@ -317,13 +323,18 @@ class DetectionMetric:
 
         elif criterion in matrix_distance:
 
-            # Default multi-measurement aggregation for the matrix-distance criteria: a log-sum-exp
-            # over measurements (accumulate sum_i exp(y_i), then take the log). This is a smooth maximum
-            # that rewards the single best-separating measurement while remaining differentiable.
+            # Default multi-measurement aggregation for the matrix-distance criteria: a
+            # temperature-annealed soft-max, (1/beta) log sum_i exp(beta * y_i). beta ramps with the
+            # epoch fraction f from 0.1 (soft, ~mean: every measurement contributes) to 10 (hard,
+            # ~max: only the best-separating measurement). log10(beta) = 2*f**0.63 - 1, whose
+            # exponent 0.63 = ln(0.5)/ln(1/3) places beta=1 at f~=1/3, so the soft 0.1->1 decade
+            # spans the first ~33% of training and the hard 1->10 decade the rest.
+            beta = lambda f: 10.0 ** (2.0 * f**0.63 - 1.0)
+
             aggregate_init, measurement_aggregation, post_aggregation, custom_meas_aggr = \
                 _resolve_measurement_aggregation(
                     multi_measurement_logic,
-                    (0, lambda x, y: x + jnp.exp(y), lambda x: jnp.log(x)))
+                    (0, lambda x, y, f: x + jnp.exp(beta(f)*y), lambda x, f: jnp.log(x)/beta(f)))
             agg = (aggregate_init, measurement_aggregation, post_aggregation)
 
             if criterion in ['min fidelity', 'max trace distance']:
@@ -354,13 +365,10 @@ class DetectionMetric:
             elif criterion == 'max computational distance':
 
                 if metric is None:
-                    # decay goes from exactly 1 (f=0) to exactly 0 (f=1), annealing the metric
-                    # from x²+y²-4xy toward pure anti-correlation -4xy. Logit-based: flat shoulders
-                    # with a fast middle handoff. `v` sets the plateau width (keep in 0.4..0.98).
-                    v = 0.6
-                    k = float(jnp.log(100.0) / jnp.log((1.0 + v) / (1.0 - v)))
-                    decay = lambda f: 0.5 * (jnp.tanh(-0.5 * k * jnp.log(f / (1.0 - f))) + 1.0)
-                    metric = lambda x,y,f: -4*x*y + decay(f)*(x**2 + y**2)
+                    # Total-variation distance: 0.5*|x - y| per state (summed to 0.5*||x-y||_1).
+                    # In [0,1], peakedness-invariant (0 for identical distributions), = the
+                    # single-measurement distinguishability. f is accepted but unused.
+                    metric = lambda x,y,f: 0.5*abs(x-y)
                     custom_metric = False
                 elif not callable(metric):
                     raise ValueError(f"metric expects a callable (x,y,f)->z. Where f is the epoch fraction.\n\
@@ -644,19 +652,19 @@ def _resolve_measurement_aggregation(multi_measurement_logic, default):
     if not isinstance(multi_measurement_logic[0], number):
         raise ValueError(f"multiple_measurement_logic expects the first element of the tuple to be a float (the initialization value for the aggregation). Value given: {multi_measurement_logic[0]}")
     if not callable(multi_measurement_logic[1]):
-        raise ValueError(f"multiple_measurement_logic expects the second element of the tuple to be a callable (x,y)->z (the aggregation function for multiple measurements). Value given: {multi_measurement_logic[1]}")
+        raise ValueError(f"multiple_measurement_logic expects the second element of the tuple to be a callable (acc, value, epoch_fraction)->acc (the aggregation function for multiple measurements). Value given: {multi_measurement_logic[1]}")
     if not callable(multi_measurement_logic[2]):
-        raise ValueError(f"multiple_measurement_logic expects the third element of the tuple to be a callable (x)->z (the post-aggregation function for multiple measurements). Value given: {multi_measurement_logic[2]}")
+        raise ValueError(f"multiple_measurement_logic expects the third element of the tuple to be a callable (acc, epoch_fraction)->result (the post-aggregation function for multiple measurements). Value given: {multi_measurement_logic[2]}")
 
     error_msg = f"multiple_measurement_logic contains invalid elements:\n\
-                            2nd element: The aggregation function must be able to take as input two floats and outputs a float.\n\
-                            3rd element: The post-aggregation function must be able to take as input one float and output a float."
+                            2nd element: The aggregation function must take (accumulator, value, epoch_fraction) (three floats) and output a float.\n\
+                            3rd element: The post-aggregation function must take (accumulator, epoch_fraction) (two floats) and output a float."
     try:
         for i in range(100):
             test_agg = multi_measurement_logic[0]
             for j in range(10):
-                test_agg = multi_measurement_logic[1](test_agg, random.random())
-            test_post_agg = multi_measurement_logic[2](test_agg)
+                test_agg = multi_measurement_logic[1](test_agg, random.random(), random.random())
+            test_post_agg = multi_measurement_logic[2](test_agg, random.random())
             if not isinstance(test_post_agg, number):
                 raise ValueError(error_msg + f"\nError from test:\naggregation function output: {test_agg}, post-aggregation function output: {test_post_agg}")
     except Exception as e:
@@ -721,11 +729,11 @@ def _make_state_detection_builder(detection_states, metric, agg):
                 temp_metric = -inv_beta * (logsumexp(neg_beta * config_metrics) - log_n_configs)
 
                 # Fold this measurement into the running aggregates.
-                metric_tot = measurement_aggregation(metric_tot, temp_metric)
-                detection_tot = {name: measurement_aggregation(detection_tot[name], detection_temp[name]) for name in config_names}
+                metric_tot = measurement_aggregation(metric_tot, temp_metric, epoch_fraction)
+                detection_tot = {name: measurement_aggregation(detection_tot[name], detection_temp[name], epoch_fraction) for name in config_names}
 
-            metric_tot = post_aggregation(metric_tot)
-            detection_tot = {name: post_aggregation(detection_tot[name]) for name in config_names}
+            metric_tot = post_aggregation(metric_tot, epoch_fraction)
+            detection_tot = {name: post_aggregation(detection_tot[name], epoch_fraction) for name in config_names}
 
             return metric_tot, (detection_tot, metric_tot)
 
@@ -785,16 +793,18 @@ def _make_matrix_distance_builder(make_prepare, pair_metric, pair_validation, ag
                 metric_pairs = jnp.stack([pair_metric(prepared[config1], prepared[config2], epoch_fraction)
                                           for config1, config2 in config_pairs])
                 temp_metric = -inv_beta * (logsumexp(neg_beta * metric_pairs) - log_n_config_pairs)
-                metric_tot = measurement_aggregation(metric_tot, temp_metric)
+                metric_tot = measurement_aggregation(metric_tot, temp_metric, epoch_fraction)
 
                 if separate_validation:
+                    # Validation is aggregated at f=1.0 (the fully hardened soft-max) regardless of
+                    # the training epoch, so the reported validation is comparable across epochs.
                     validation_pairs = jnp.stack([pair_validation(prepared[config1], prepared[config2])
                                                   for config1, config2 in config_pairs])
                     temp_validation = -inv_beta * (logsumexp(neg_beta * validation_pairs) - log_n_config_pairs)
-                    validation_tot = measurement_aggregation(validation_tot, temp_validation)
+                    validation_tot = measurement_aggregation(validation_tot, temp_validation, 1.0)
 
-            metric_tot = post_aggregation(metric_tot)
-            validation_tot = post_aggregation(validation_tot) if separate_validation else metric_tot
+            metric_tot = post_aggregation(metric_tot, epoch_fraction)
+            validation_tot = post_aggregation(validation_tot, 1.0) if separate_validation else metric_tot
 
             return metric_tot, (detection_tot, validation_tot)
 

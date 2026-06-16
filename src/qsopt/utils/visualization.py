@@ -76,19 +76,16 @@ def plot_optimization_dashboard(
         ...                                   show_gradients=False,
         ...                                   show_detection_measures=False)
     """
-    # Confusion-matrix summary panel is shown only if explicitly requested and
-    # callback carries at least one related piece of information.
-    has_state_probabilities = (
-        optimization_callback.state_probabilities_with is not None
-        and optimization_callback.state_probabilities_without is not None
-    )
-    has_detection_protocol = bool(
-        optimization_callback.interaction_detection_states
-        or optimization_callback.noninteraction_detection_states
-    )
+    # Confusion-matrix summary panel is shown only if explicitly requested and the
+    # callback carries at least one related piece of information. The multi-configuration
+    # API stores: state_probabilities (each configuration -> measurement-state probabilities),
+    # detection_states (each configuration -> states classified as it), and confusion_matrix
+    # ((true, predicted) configuration pair -> accumulated probability mass).
+    has_state_probabilities = bool(getattr(optimization_callback, "state_probabilities", None))
+    has_detection_protocol = bool(getattr(optimization_callback, "detection_states", None))
     has_confusion_values = any(
-        getattr(optimization_callback, key, 0.0) > 0.0
-        for key in ("true_positive", "true_negative", "false_positive", "false_negative")
+        float(value) > 0.0
+        for value in (getattr(optimization_callback, "confusion_matrix", {}) or {}).values()
     )
     show_confusion_summary_panel = show_confusion_matrix_summary and (
         has_state_probabilities or has_detection_protocol or has_confusion_values
@@ -120,8 +117,25 @@ def plot_optimization_dashboard(
     history = optimization_callback.get_history()
     epochs = np.array(history["epochs"])
     metric_values = np.array(history["metric"])
-    detection_with = np.array(history["detection_with"])
-    detection_without = np.array(history["detection_without"])
+    validation_values = np.array(history.get("validation", []), dtype=float)
+
+    # Per-configuration detection measures over epochs. detection_dict is a list (one entry
+    # per saved epoch) of {configuration_name: detection_measure}; the configuration set is
+    # read from the first populated entry. Missing/None values become NaN so they are simply
+    # skipped when plotting (e.g. matrix-distance criteria do not report per-config measures).
+    detection_history = history.get("detection_dict", []) or []
+    detection_config_names: List[str] = []
+    for entry in detection_history:
+        if entry:
+            detection_config_names = list(entry.keys())
+            break
+    detection_series = {name: [] for name in detection_config_names}
+    for entry in detection_history:
+        for name in detection_config_names:
+            value = entry.get(name) if entry else None
+            detection_series[name].append(float(value) if value is not None else np.nan)
+    detection_series = {name: np.array(values, dtype=float) for name, values in detection_series.items()}
+    has_detection_series = any(np.any(np.isfinite(values)) for values in detection_series.values())
 
     # Extract parameter arrays from tuple structure
     param_arrays = []
@@ -147,30 +161,41 @@ def plot_optimization_dashboard(
     param_arrays = np.array(param_arrays)
     n_total_params = len(param_names)
 
-    # Calculate gradients (approximate from metric differences)
-    gradients = np.zeros_like(param_arrays)
-    if len(param_arrays) > 1:
-        # Central differences for interior points
-        gradients[1:-1] = (param_arrays[2:] - param_arrays[:-2]) / 2
-        # Forward difference for first point
-        gradients[0] = param_arrays[1] - param_arrays[0]
-        # Backward difference for last point
-        gradients[-1] = param_arrays[-1] - param_arrays[-2]
-
-    grad_norms = np.linalg.norm(gradients, axis=1) if len(gradients) > 0 else np.array([])
+    # Gradient magnitude per epoch. The callback now stores the true optimization gradients
+    # (history["grads"], one flat vector per saved epoch), so use their norm directly. Fall
+    # back to a finite-difference estimate from the parameter trajectory when gradients are
+    # unavailable (e.g. callbacks loaded without grads, or run_simulation reference outputs).
+    grad_norms = np.array(
+        [
+            np.nan if grad is None else float(np.linalg.norm(np.asarray(grad, dtype=float)))
+            for grad in history.get("grads", []) or []
+        ]
+    )
+    if grad_norms.size == 0 or not np.any(np.isfinite(grad_norms)):
+        gradients = np.zeros_like(param_arrays)
+        if len(param_arrays) > 1:
+            # Central differences for interior points
+            gradients[1:-1] = (param_arrays[2:] - param_arrays[:-2]) / 2
+            # Forward difference for first point
+            gradients[0] = param_arrays[1] - param_arrays[0]
+            # Backward difference for last point
+            gradients[-1] = param_arrays[-1] - param_arrays[-2]
+        grad_norms = np.linalg.norm(gradients, axis=1) if len(gradients) > 0 else np.array([])
 
     # Extract reference values if provided
     reference_metric = None
-    reference_detection_with = None
-    reference_detection_without = None
+    reference_validation = None
+    reference_detection = None
     reference_params = None
 
     if reference_callback is not None:
         ref_history = reference_callback.get_history()
         if ref_history["metric"]:
             reference_metric = ref_history["metric"][0]
-            reference_detection_with = ref_history["detection_with"][0]
-            reference_detection_without = ref_history["detection_without"][0]
+            ref_validation = ref_history.get("validation", [])
+            reference_validation = ref_validation[0] if len(ref_validation) else None
+            ref_detection = ref_history.get("detection_dict", [])
+            reference_detection = ref_detection[0] if ref_detection and ref_detection[0] else None
 
         if ref_history["trainable_params"]:
             # Extract reference params from tuple structure
@@ -182,27 +207,41 @@ def plot_optimization_dashboard(
     axes = []
     plot_idx = 0
 
-    # Plot 1: Metric Evolution
+    # Plot 1: Metric & Validation Evolution
     if show_metric:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
         plot_idx += 1
 
-        ax.plot(epochs, metric_values, "g-", linewidth=2, alpha=0.8, label="Optimized")
+        ax.plot(epochs, metric_values, "g-", linewidth=2, alpha=0.8, label="Metric (training)")
+
+        # The validation objective is tracked alongside the training metric; show it on the
+        # same axes so the two can be compared directly.
+        if validation_values.size == epochs.size and validation_values.size > 0:
+            ax.plot(epochs, validation_values, "b-", linewidth=2, alpha=0.8, label="Validation (training)")
 
         if reference_metric is not None:
             ax.axhline(
                 y=reference_metric,
-                color="red",
+                color="green",
                 linestyle="--",
-                linewidth=2,
-                alpha=0.7,
-                label="Reference",
+                linewidth=1.8,
+                alpha=0.6,
+                label="Metric (reference)",
+            )
+        if reference_validation is not None:
+            ax.axhline(
+                y=reference_validation,
+                color="blue",
+                linestyle="--",
+                linewidth=1.8,
+                alpha=0.6,
+                label="Validation (reference)",
             )
 
         ax.set_xlabel("Epoch", fontsize=12)
-        ax.set_ylabel("Metric", fontsize=12)
-        ax.set_title("Metric Evolution", fontsize=14)
+        ax.set_ylabel("Objective", fontsize=12)
+        ax.set_title("Metric & Validation Evolution", fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
 
@@ -251,42 +290,61 @@ def plot_optimization_dashboard(
         ax.legend(fontsize=9 if n_total_params > 4 else 10, ncol=2 if n_total_params > 6 else 1)
         ax.grid(True, alpha=0.3)
 
-    # Plot 4: Detection Measures Evolution
+    # Plot 4: Detection Measures Evolution (one line per configuration)
     if show_detection_measures:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
         plot_idx += 1
 
-        ax.plot(epochs, detection_with, "g-", linewidth=2, label="With Photon (Optimized)", alpha=0.8)
-        ax.plot(
-            epochs, detection_without, "r-", linewidth=2, label="Without Photon (Optimized)", alpha=0.8
-        )
+        if has_detection_series:
+            cmap = plt.get_cmap("tab10")
+            for i, name in enumerate(detection_config_names):
+                color = cmap(i % cmap.N)
+                values = detection_series[name]
+                mask = np.isfinite(values)
+                ax.plot(
+                    epochs[mask],
+                    values[mask],
+                    "-",
+                    color=color,
+                    linewidth=2,
+                    alpha=0.85,
+                    label=str(name),
+                )
 
-        # Add reference benchmarks if available
-        if reference_detection_with is not None:
-            ax.axhline(
-                y=reference_detection_with,
-                color="green",
-                linestyle="--",
-                linewidth=2,
-                alpha=0.6,
-                label="With Photon (Reference)",
-            )
-        if reference_detection_without is not None:
-            ax.axhline(
-                y=reference_detection_without,
-                color="red",
-                linestyle="--",
-                linewidth=2,
-                alpha=0.6,
-                label="Without Photon (Reference)",
-            )
+                # Reference benchmark for this configuration (matching colour, dashed).
+                if reference_detection is not None and reference_detection.get(name) is not None:
+                    ax.axhline(
+                        y=float(reference_detection[name]),
+                        color=color,
+                        linestyle="--",
+                        linewidth=1.8,
+                        alpha=0.5,
+                    )
 
-        ax.set_xlabel("Epoch", fontsize=12)
-        ax.set_ylabel("Detection Measure", fontsize=12)
-        ax.set_title("Detection Measures Evolution", fontsize=14)
-        ax.legend(fontsize=10)
-        ax.grid(True, alpha=0.3)
+            ax.set_xlabel("Epoch", fontsize=12)
+            ax.set_ylabel("Detection Measure", fontsize=12)
+            ax.set_title("Detection Measures Evolution", fontsize=14)
+            ax.legend(
+                fontsize=9 if len(detection_config_names) > 4 else 10,
+                ncol=2 if len(detection_config_names) > 6 else 1,
+            )
+            ax.grid(True, alpha=0.3)
+        else:
+            # Matrix-distance criteria (e.g. 'max computational distance') do not report
+            # per-configuration detection probabilities, so there is nothing to plot.
+            ax.text(
+                0.5,
+                0.5,
+                "No per-configuration\ndetection measures recorded",
+                ha="center",
+                va="center",
+                fontsize=12,
+                transform=ax.transAxes,
+            )
+            ax.set_title("Detection Measures Evolution", fontsize=14)
+            ax.set_xticks([])
+            ax.set_yticks([])
 
     # Plot 5: Parameter Trajectory
     if show_trajectory and len(param_arrays) >= 2 and n_total_params >= 2:
@@ -363,52 +421,73 @@ def plot_optimization_dashboard(
         axes.append(ax)
         plot_idx += 1
 
-        tp = float(getattr(optimization_callback, "true_positive", 0.0))
-        fn = float(getattr(optimization_callback, "false_negative", 0.0))
-        fp = float(getattr(optimization_callback, "false_positive", 0.0))
-        tn = float(getattr(optimization_callback, "true_negative", 0.0))
+        confusion_matrix = getattr(optimization_callback, "confusion_matrix", {}) or {}
+        detection_states = getattr(optimization_callback, "detection_states", {}) or {}
+        state_probabilities = getattr(optimization_callback, "state_probabilities", {}) or {}
 
-        cm_values = np.array([[tp, fn], [fp, tn]], dtype=float)
-        im = ax.imshow(cm_values, cmap="Blues", vmin=0.0, vmax=max(1.0, float(np.max(cm_values))))
+        # Ordered configuration names: prefer the confusion-matrix keys, then fall back to the
+        # detection-state / state-probability mappings so the panel still renders when only a
+        # subset of the data is present.
+        config_names_cm: List[str] = []
+        for true_name, pred_name in confusion_matrix:
+            for name in (true_name, pred_name):
+                if name not in config_names_cm:
+                    config_names_cm.append(name)
+        for name in list(detection_states.keys()) + list(state_probabilities.keys()):
+            if name not in config_names_cm:
+                config_names_cm.append(name)
+
+        n_cm = len(config_names_cm)
+        # confusion_matrix[(true, predicted)] = accumulated probability mass; rows are the true
+        # configuration, columns the predicted one.
+        cm_values = np.array(
+            [
+                [float(confusion_matrix.get((true, pred), 0.0)) for pred in config_names_cm]
+                for true in config_names_cm
+            ],
+            dtype=float,
+        ).reshape(n_cm, n_cm)
+
+        vmax = max(1.0, float(np.max(cm_values))) if cm_values.size else 1.0
+        im = ax.imshow(cm_values, cmap="Blues", vmin=0.0, vmax=vmax)
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        ax.set_xticks([0, 1])
-        ax.set_xticklabels(["Pred: Interaction", "Pred: No interaction"], rotation=20, ha="right")
-        ax.set_yticks([0, 1])
-        ax.set_yticklabels(["True: Photon", "True: No photon"])
+        ax.set_xticks(range(n_cm))
+        ax.set_xticklabels([f"Pred: {name}" for name in config_names_cm], rotation=20, ha="right")
+        ax.set_yticks(range(n_cm))
+        ax.set_yticklabels([f"True: {name}" for name in config_names_cm])
         ax.set_title("Confusion Matrix", fontsize=14)
 
-        labels = [["TP", "FN"], ["FP", "TN"]]
-        for i in range(2):
-            for j in range(2):
+        for i in range(n_cm):
+            for j in range(n_cm):
                 ax.text(
                     j,
                     i,
-                    f"{labels[i][j]}\n{cm_values[i, j]:.4f}",
+                    f"{cm_values[i, j]:.3f}",
                     ha="center",
                     va="center",
                     color="black",
-                    fontsize=10,
+                    fontsize=9,
                     fontweight="bold",
                 )
 
         summary_lines = []
         if has_detection_protocol:
-            interaction_states = optimization_callback.interaction_detection_states
-            noninteraction_states = optimization_callback.noninteraction_detection_states
-            summary_lines.append("Protocol:")
-            summary_lines.append(f"  Interaction: {interaction_states}")
-            summary_lines.append(f"  No interaction: {noninteraction_states}")
+            summary_lines.append("Protocol (states per configuration):")
+            for name in config_names_cm:
+                if name in detection_states:
+                    summary_lines.append(f"  {name}: {list(detection_states[name])}")
 
         if has_state_probabilities:
-            with_probs = optimization_callback.state_probabilities_with or {}
-            without_probs = optimization_callback.state_probabilities_without or {}
-            ordered_states = sorted(set(with_probs.keys()) | set(without_probs.keys()))
+            ordered_states = sorted({state for probs in state_probabilities.values() for state in probs})
             summary_lines.append("State probabilities:")
+            summary_lines.append("  state | " + " | ".join(str(name) for name in config_names_cm))
             for state in ordered_states:
-                p_with = float(with_probs.get(state, 0.0))
-                p_without = float(without_probs.get(state, 0.0))
-                summary_lines.append(f"  {state}: with={p_with:.4f}, without={p_without:.4f}")
+                row = " | ".join(
+                    f"{float(state_probabilities.get(name, {}).get(state, 0.0)):.3f}"
+                    for name in config_names_cm
+                )
+                summary_lines.append(f"  {state} | {row}")
 
         if summary_lines:
             # Position the summary in figure coordinates to the right of the confusion

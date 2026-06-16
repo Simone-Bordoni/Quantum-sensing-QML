@@ -225,6 +225,9 @@ def generate_system_operators(
             "reset_all": reset_all, 
             "measure_reset": measure_reset,
             "measure_reset_dag": measure_reset_dag,
+            # Pre-zipped (op, op_dag) pairs, materialised as a list so they can be
+            # iterated once per measurement without exhausting a single-use zip iterator.
+            "measure_reset_pairs": list(zip(measure_reset, measure_reset_dag)),
             # Rotation operators (Y-rotation by π/2, can be applied independently)
             "roty_q": [embed_qubit_op(rot_single, i) for i in range(n_qubits)],
             "roty": qt.tensor(I_c + I_f + [rot_single]*n_qubits),  # Simultaneous Ry on all qubits
