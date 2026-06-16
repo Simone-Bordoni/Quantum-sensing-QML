@@ -1578,7 +1578,10 @@ class Experiment:
 
                 return -mean_metric, (mean_detect_dict, mean_metric, mean_validation)
 
-        jitted_objective = jit(objective_function, static_argnums=tuple(static_args))
+        jitted_grad = jax.jit(
+            jax.grad(objective_function, has_aux=True, argnums=0),
+            static_argnums=tuple(static_args),
+        )
 
 
         # Get detection description for verbose output
@@ -1638,9 +1641,9 @@ class Experiment:
             measurement_uncertainty_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
-            grads, (detection_dict, step_metric, step_validation) = jax.grad(
-                jitted_objective, has_aux=True, argnums=0 #(0,1)
-            )(params, base_measurement_times, measurement_uncertainty_batch, epoch_fraction=step/tot_steps)
+            grads, (detection_dict, step_metric, step_validation) = jitted_grad(
+                params, base_measurement_times, measurement_uncertainty_batch, step / tot_steps
+            )
 
             step_metric_value = float(step_metric)
             step_validation_value = float(step_validation)
