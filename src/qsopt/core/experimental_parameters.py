@@ -2018,7 +2018,7 @@ class ExperimentalParameters:
             # Parameter-less states (e.g. vacuum) are shown by name only, no "no parameters".
             if not isinstance(state.parameters, dict) or not state.parameters:
                 return f"{state.state_type.value}"
-            return f"{state.state_type.value}: {format_params(state.parameters)}"
+            return f"{state.state_type.value}({format_params(state.parameters)})"
 
         def describe_uncertainty(func: Any) -> str:
             # Give the standard, representable uncertainties a readable name instead of
