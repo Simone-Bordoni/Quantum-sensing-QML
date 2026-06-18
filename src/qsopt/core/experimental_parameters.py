@@ -1051,7 +1051,7 @@ class SubsystemState:
     State for a single subsystem.
 
     Attributes:
-        state_type: Type of initial state
+        state_type: Type of initial state (VACUUM, FOCK, COHERENT, THERMAL, CUSTOM)
         parameters: Dictionary of parameters for the initial state
     """
 
