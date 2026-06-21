@@ -15,6 +15,7 @@ import math
 import time as t
 import jax.numpy as jnp
 import equinox
+import diffrax
 from jax import jit, lax
 import copy
 
@@ -28,6 +29,7 @@ from qsopt.core.experimental_parameters import (
     SystemConfiguration,
 )
 from qsopt.core.loss_functions import DetectionMetric
+from qsopt.core.functions_utils import annealing_weight
 from qsopt.utils.results import SweepResults
 
 if TYPE_CHECKING:
@@ -50,6 +52,12 @@ import qutip_jax  # pylint: disable=unused-import
 
 # Suppress Diffrax complex dtype warning
 warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a work in progress*")
+
+# Tight (final) ODE-solver tolerances == qutip_jax diffrax defaults. Tolerance annealing
+# loosens these by _TOL_ANNEAL_FACTOR early in training and tightens back to them by the end.
+_SOLVER_ATOL = 1e-8
+_SOLVER_RTOL = 1e-6
+_TOL_ANNEAL_FACTOR = 100.0  # start 100x (2 decades) looser than the tight tolerances
 
 
 class Experiment:
@@ -642,10 +650,25 @@ class Experiment:
                 self._cached_solvers[config.name] = qt.MESolver(
                     self.hamiltonians[config.name],
                     self.lindblad_operators[config.name],
-                    options={"method": "diffrax", "progress_bar": False, "normalize_output": False},
+                    options={
+                        "method": "diffrax",
+                        "progress_bar": False,
+                        "normalize_output": False,
+                        "stepsize_controller": diffrax.PIDController(atol=_SOLVER_ATOL, rtol=_SOLVER_RTOL),
+                    },
                 )
 
         return self._cached_solvers
+
+    @staticmethod
+    def _set_solver_tolerances(solvers: Dict[str, qt.MESolver], atol, rtol) -> None:
+        """Inject a diffrax PIDController with the given tolerances into each cached solver.
+
+        atol/rtol may be traced (epoch-dependent) values: they enter the compiled graph as
+        dynamic leaves, so annealing the tolerance over training costs no recompilation.
+        """
+        for solver in solvers.values():
+            solver._integrator._options["stepsize_controller"] = diffrax.PIDController(atol=atol, rtol=rtol)
     
     def _prepare_circuit_unitaries(self) -> tuple:
         """
@@ -1336,7 +1359,8 @@ class Experiment:
         noisy_training: Optional[float] = None,
         final_results: bool = True,
         hot_start: bool = False,
-        tot_steps: Optional[int] = None
+        tot_steps: Optional[int] = None,
+        anneal_tolerances: bool = True
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -1363,9 +1387,13 @@ class Experiment:
                     If a float is given, it is used as the standard deviation relative to the average gradient. (default: None)
             hot_start: If True, continues optimization from the last parameters and optimizer state in the callback.
                     If either the optimizer or the params are given they override the hot start values. (default: False)
-            tot_steps: Total number of optimization steps to run, it's used to give the epoch percentage to the detection metric. 
+            tot_steps: Total number of optimization steps to run, it's used to give the epoch percentage to the detection metric.
                     It's useful if the optimization is divided in multiple runs.
                     If None, uses num_steps. (default: None)
+            anneal_tolerances: If True, anneals the ODE-solver tolerances over training from loose
+                    (fast, approximate gradients early) to the tight final tolerances (accurate near
+                    convergence), following annealing_weight(epoch_fraction). Costs no recompilation.
+                    (default: True)
             final_results: If True, stores the final optimization results in the callback. (default: True)
 
         Returns:
@@ -1424,7 +1452,7 @@ class Experiment:
         if tot_steps is None:
             tot_steps = num_steps
         elif tot_steps < num_steps:
-            raise ValueError(f"tot_steps should be greater than or equal to num_steps, got tot_steps={tot_steps} and num_steps={num_steps}")
+            raise ValueError(f"tot_steps should be greater than or equal to num_steps+start_step, got tot_steps={tot_steps} and num_steps={num_steps-start_step}, start_step={start_step}")
 
         if isinstance(noisy_training, (int, float)) and noisy_training > 0.01:
             raise ValueError(f"noisy_training should be a boolean or a float representing the standard deviation of the noise relative to the gradient norm. It shouldn't exceed 1% Got value: {noisy_training}")
@@ -1492,6 +1520,12 @@ class Experiment:
         # Signature order is kept future-proof for optional optimization over times.
         def parallel_simulations(circuit_unitaries, measurement_times, measurement_noise, epoch_fraction: float):
             """Single-realization of the two simulations with the same parameters and noise."""
+
+            # Anneal ODE-solver tolerances loose -> tight over training (epoch_fraction is
+            # unbatched here, so this sets one scalar tolerance per step; no recompilation).
+            if anneal_tolerances:
+                scale = _TOL_ANNEAL_FACTOR ** annealing_weight(epoch_fraction)
+                self._set_solver_tolerances(solvers, _SOLVER_ATOL * scale, _SOLVER_RTOL * scale)
 
             noisy_measurement_times = measurement_times + measurement_noise
 
@@ -1710,6 +1744,12 @@ class Experiment:
         self.initial_circuit.set_trainable_parameters(best_initial)
         self.final_circuit.set_trainable_parameters(best_final)
 
+        # Restore concrete tight tolerances on the cached solvers: annealing left their
+        # controllers holding (now dead) traced tolerances, and the final run_simulation
+        # below reuses these same solvers and wants full accuracy.
+        if anneal_tolerances:
+            self._set_solver_tolerances(solvers, _SOLVER_ATOL, _SOLVER_RTOL)
+
         # Run simulation to get probabilities for each state with the best parameters
         if time_uncertainty != 0 and batch_size < 16:
             batch_size = 16 # Use a larger batch size for final evaluation to reduce noise in results when uncertainty is present
@@ -1726,6 +1766,7 @@ class Experiment:
 
         if verbose:
             print("=" * (5+len(header)))
+            print(f"Total optimization time: {t.strftime('%Hh%Mm%Ss', t.gmtime(t.time() - start_time))}")
             print(f"Final gradient norm: {grad_norm:.2e}")
             print(f"Best validation: {best_validation:.6f}")
             print(f"Best metric (at best validation): {best_metric:.6f}")
