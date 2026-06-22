@@ -1,10 +1,14 @@
+
+personal_test.py
+personal_text.txt
+*personal_results/
+experiments/Nathan_experiments/
+
+
 # Byte-compiled / optimized / DLL files
 *__pycache__/
 *.py[codz]
 *$py.class
-personal_test.py
-personal_text.txt
-*personal_results/
 ֿֿ*.pyc
 *.conda
 

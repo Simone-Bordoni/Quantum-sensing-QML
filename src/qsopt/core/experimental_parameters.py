@@ -1834,7 +1834,7 @@ class ExperimentalParameters:
             if config.name == name:
                 return config
     
-    def get_all_configuration_names(self) -> List[str]:
+    def get_configuration_names(self) -> List[str]:
         """
         Get a list of all configuration names in the configuration set.
 
