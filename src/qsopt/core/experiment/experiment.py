@@ -296,7 +296,30 @@ class Experiment:
 
     def _generate_hamiltonian(self) -> None:
         """
-        Generate Hamiltonian for the system.
+        Generate Hamiltonian for the system and store it on ``self``.
+
+        Thin wrapper around :meth:`_build_hamiltonian`: builds the operators with the
+        configured parameter values and assigns ``self.hamiltonians``,
+        ``self.lindblad_operators`` and ``self.global_args``. The existing optimize/run
+        paths rely on these attributes being populated here.
+        """
+        self.hamiltonians, self.lindblad_operators, self.global_args = self._build_hamiltonian()
+
+    # scalar(param)*operator types whose single parameter can be factored into an
+    # args-coefficient: term = [operator|param=1, coeff(args)] (see dynamic_keys).
+    _PROMOTABLE_TYPES = frozenset({
+        InteractionType.DISPERSIVE, InteractionType.DETUNING, InteractionType.COUPLING,
+        InteractionType.XX, InteractionType.YY, InteractionType.ZZ,
+    })
+
+    def _build_hamiltonian(self, overrides: Optional[Dict[str, Any]] = None,
+                           dynamic_keys: Optional[set] = None) -> tuple:
+        """
+        Build the Hamiltonian and Lindblad operators for the system (pure).
+
+        Returns ``(hamiltonians, lindblad_operators, global_args)`` and does NOT mutate
+        ``self``, so it is safe to call inside ``jax.vmap``/``jax.jit`` for parameter
+        sweeps. :meth:`_generate_hamiltonian` wraps it for the normal (cached) path.
 
         Creates:
         1. Time-dependent cavity-field coupling: H_cavity = (i/2)√γ (a_in† a - a_in a†) g(t)
@@ -305,6 +328,18 @@ class Experiment:
 
         The Hamiltonian uses individual chi values for each qubit, allowing for
         differential dispersive coupling strengths between qubits and the cavity.
+
+        Args:
+            overrides: Optional ``{global_args_key: value}`` mapping. Any interaction
+                parameter whose global key (e.g. ``"BaseModel_dispersive(cavity0,qubit0)__chi"``)
+                appears here has its value replaced by the override, which may be a traced
+                JAX value. The returned operators then become a (differentiable, vmappable)
+                function of those values. When ``None`` the configured values are used and
+                the result is identical to the previous behaviour.
+            dynamic_keys: Global keys emitted as ``[operator, args-coeff]`` instead of baked, so a
+                sweep varies them via ``solver.run(args=...)`` with the solver built once. Sweeps
+                only (optimizer leaves it ``None`` → fast baked solver). Only
+                :data:`_PROMOTABLE_TYPES`; any existing ``time_modulation`` is kept in the coeff.
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
@@ -312,12 +347,15 @@ class Experiment:
         interaction_list = self.experimental_params.interactions
 
 
-        def generate_hamiltonian_term(interaction: Interaction):
+        def generate_hamiltonian_term(interaction: Interaction, params: Optional[Dict[str, Any]] = None):
             """
             Generate Hamiltonian term for a given interaction.
 
             Args:
                 interaction: Interaction object containing interaction_type, subsystems, parameters, and time modulation
+                params: Resolved parameter values to bake into the term (configured values
+                    merged with any sweep overrides). Falls back to ``interaction.parameters``
+                    when ``None``.
             Returns:
                 H_term: Hamiltonian term as a Qobj or QobjEvo
                 L_term: Lindblad operator term as a Qobj or QobjEvo (if applicable)
@@ -331,7 +369,7 @@ class Experiment:
             # rejected by QuTiP's numbers.Number check. Jit here so user pulses can be
             # written as ordinary (t, **kwargs) functions.
             t_func = jit(interaction.time_modulation) if interaction.time_modulation is not None else None
-            args = interaction.parameters
+            args = params if params is not None else interaction.parameters
 
             if args is None:
                 args = {}
@@ -474,9 +512,13 @@ class Experiment:
             return H_term, L_term, t_func, args
 
         def _wrap_time_modulation(func, key_map):
-            # qutip-jax routes the coefficient to JaxJitCoeff only for jitted
-            # PjitFunctions, and JaxJitCoeff calls it as func(t, **args). So the
-            # wrapper must take keyword args (the global QobjEvo args) and be jitted.
+            """Adapt a user time-modulation ``func(t, **local_params)`` to a jitted
+            ``coeff(t, **global_args)``.
+
+            Returns a jitted coefficient that picks this interaction's params out of the global
+            args dict (via ``key_map``: local name -> global key) and calls ``func``. Must be
+            jitted: qutip-jax only accepts JAX-valued coefficients from jitted PjitFunctions.
+            """
             def wrapped(t, **all_args):
                 local = {k: all_args[v] for k, v in key_map.items()}
                 return func(t, **local)
@@ -485,26 +527,74 @@ class Experiment:
         H_const = []
         H_time_dependent = []
         L_interaction = []
-        self.global_args = {}
+        global_args: Dict[str, Any] = {}
+
+        def _map_to_global_args(interaction, prefix):
+            """Remap this interaction's local parameters to globally-unique keys.
+
+            For each local name (e.g. ``'chi'``) builds the global key
+            ``f"{prefix}{context}__{name}"`` (e.g. ``'BaseModel_dispersive(cavity0,qubit0)__chi'``),
+            writes its value into ``global_args`` (override if given in ``overrides``, else the
+            configured value), and returns ``(params, key_map)`` with ``key_map`` mapping local
+            name -> global key. A non-dict ``parameters`` (a bare scalar) is returned unchanged.
+            """
+            params = interaction.parameters
+            if not isinstance(params, dict):
+                return params, {}
+            merged = dict(params)
+            key_map = {}
+            for key in params:
+                global_key = f"{prefix}{interaction._interaction_context()}__{key}"
+                key_map[key] = global_key
+                if overrides is not None and global_key in overrides:
+                    merged[key] = overrides[global_key]
+                global_args[global_key] = merged[key]
+            return merged, key_map
+
+        def _interaction_terms(interaction, prefix):
+            """Build one interaction's contribution as a ``(const_H, timedep_H, L)`` triple.
+
+            Each entry is ``None`` when absent:
+              - const_H   : a constant ``Qobj``                  (time-independent H term)
+              - timedep_H : a ``[Qobj, coeff(t, **args)]`` pair   (time-dependent H term)
+              - L_term    : a ``Qobj`` / ``QobjEvo``             (Lindblad operator)
+
+            A parameter in ``dynamic_keys`` is pulled out of the matrix into the coefficient,
+            ``[operator|_{param=1}, lambda t: g(t)*args[key]]`` (any existing time-modulation
+            ``g(t)`` kept), so it can be swept via ``args``. Other parameters are baked in
+            (overrides applied).
+            """
+            merged, key_map = _map_to_global_args(interaction, prefix)
+            dyn = [name for name, gkey in key_map.items() if dynamic_keys and gkey in dynamic_keys]
+
+            if not dyn:
+                H_term, L_term, t_func, _ = generate_hamiltonian_term(interaction, merged)
+                if H_term is not None and t_func is not None:
+                    return None, [H_term, _wrap_time_modulation(t_func, key_map)], L_term
+                return H_term, None, L_term
+
+            if interaction.interaction_type not in self._PROMOTABLE_TYPES:
+                raise NotImplementedError(
+                    f"Cannot factor {dyn} of {interaction._interaction_context()} into an args-coefficient; "
+                    f"only {sorted(t.name for t in self._PROMOTABLE_TYPES)} support it. Sweep it via the rebuild path instead.")
+            if len(dyn) != 1:
+                raise NotImplementedError(f"{interaction._interaction_context()}: expected one promoted parameter, got {dyn}.")
+
+            gkey = key_map[dyn[0]]
+            H_unit, _, t_func, _ = generate_hamiltonian_term(interaction, {**merged, dyn[0]: 1.0})
+            if t_func is not None:
+                mod = _wrap_time_modulation(t_func, key_map)
+                coeff = jit(lambda t, **a: mod(t, **a) * a[gkey])
+            else:
+                coeff = jit(lambda t, **a: a[gkey])
+            return None, [H_unit, coeff], None
 
         for interaction in interaction_list:
-            
-            H_term, L_term, t_func, args = generate_hamiltonian_term(interaction)
-
-            params = interaction.parameters if isinstance(interaction.parameters, dict) else {}
-            key_map = {}
-            for key, value in params.items():
-                global_key = f"BaseModel_{interaction._interaction_context()}__{key}"
-                key_map[key] = global_key
-                self.global_args[global_key] = value
-
-
-            if H_term is not None and t_func is not None:
-                modulation = _wrap_time_modulation(t_func, key_map)
-                H_time_dependent.append([H_term, modulation])
-            elif H_term is not None:
-                H_const.append(H_term)
-            
+            const_H, timedep_H, L_term = _interaction_terms(interaction, "BaseModel_")
+            if const_H is not None:
+                H_const.append(const_H)
+            if timedep_H is not None:
+                H_time_dependent.append(timedep_H)
             if L_term is not None:
                 L_interaction.append(L_term)
 
@@ -512,7 +602,7 @@ class Experiment:
             H_static = self.operators["identity"]  # Identity operator if no constant terms
         else:
             H_static = sum(H_const)
-        H_base = qt.QobjEvo([H_static] + H_time_dependent, args=self.global_args)
+        H_base = qt.QobjEvo([H_static] + H_time_dependent, args=global_args)
 
         # Noise model
         noise_model = self.experimental_params.noise_model
@@ -554,11 +644,11 @@ class Experiment:
         L_base = L_interaction + L_base_noise
 
         # Generate base hamiltonian and lindblad operators and for each configuration
-        self.hamiltonians = {
+        hamiltonians = {
             'base': H_base,
             }
-        
-        self.lindblad_operators = {
+
+        lindblad_operators = {
             'base': L_base,
             }
 
@@ -569,23 +659,11 @@ class Experiment:
             lindblad_terms = []
             
             for interaction in configuration.interactions:
-                
-                H_term, L_term, t_func, args = generate_hamiltonian_term(interaction)
-
-                params = interaction.parameters if isinstance(interaction.parameters, dict) else {}
-                key_map = {}
-                for key, value in params.items():
-                    global_key = f"Conf:{configuration.name}_{interaction._interaction_context()}__{key}"
-                    key_map[key] = global_key
-                    self.global_args[global_key] = value
-
-
-                if H_term is not None and t_func is not None:
-                    modulation = _wrap_time_modulation(t_func, key_map)
-                    time_dependent_terms.append([H_term, modulation])
-                elif H_term is not None:
-                    const_terms.append(H_term)
-                
+                const_H, timedep_H, L_term = _interaction_terms(interaction, f"Conf:{configuration.name}_")
+                if const_H is not None:
+                    const_terms.append(const_H)
+                if timedep_H is not None:
+                    time_dependent_terms.append(timedep_H)
                 if L_term is not None:
                     lindblad_terms.append(L_term)
             
@@ -625,8 +703,10 @@ class Experiment:
             conf_H_time = H_time_dependent + time_dependent_terms
             conf_L_tot = L_interaction + lindblad_terms + noise_terms
 
-            self.hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=self.global_args)
-            self.lindblad_operators[configuration.name] = conf_L_tot
+            hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=global_args)
+            lindblad_operators[configuration.name] = conf_L_tot
+
+        return hamiltonians, lindblad_operators, global_args
 
     def _initialize_initial_state(self, system_configuration: SystemConfiguration) -> qt.Qobj:
         """

@@ -14,11 +14,16 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Set, Optional, Tuple, Union
 
 import numpy as np
+import jax.numpy as jnp
 import qutip as qt
 import math
 
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
+
+# Default measurement-window slope factor: slope = _WINDOW_SLOPE_FACTOR / window_width when
+# window_slope is not given, so smaller windows get sharper edges (constant slope*width).
+_WINDOW_SLOPE_FACTOR = 30.0
 
 
 class State(Enum):
@@ -1000,6 +1005,10 @@ class MeasurementProtocol:
                  will be resolved dynamically. When numeric, represents the half-width of
                  a uniform distribution [-initial_time_uncertainty, initial_time_uncertainty].
         single_measurement_uncertainty: Function defining uncertainty at each measurement time
+        window_start: Start of the measurement window for the double-sigmoid weight (absolute time).
+                     Must be given together with window_end (or both omitted for uniform weights).
+        window_end: End of the measurement window (absolute time, must be > window_start).
+        window_slope: Slope of the sigmoid edges; defaults to 30.0 / (window_end - window_start).
     """
 
     measurement_times: Optional[List[float]] = None
@@ -1008,6 +1017,9 @@ class MeasurementProtocol:
     time_interval: float = 1.0
     initial_time_uncertainty: Union[float, str] = 0.0
     single_measurement_uncertainty: Callable[[float], float] = lambda t: 0.0
+    window_start: Optional[float] = None
+    window_end: Optional[float] = None
+    window_slope: Optional[float] = None
 
     def __post_init__(self):
         """Validate the measurement-time specification and uncertainty settings."""
@@ -1043,6 +1055,39 @@ class MeasurementProtocol:
                         raise ValueError(f"single_measurement_uncertainty function must return a numeric value. Got type: {type(test_value)}")
             except Exception as e:
                 raise ValueError("single_measurement_uncertainty function got an error during testing:") from e
+
+        # Measurement window: double-sigmoid weight over measurement time. window_start/window_end
+        # must be given together (or not at all -> uniform weights); window_slope defaults to
+        # _WINDOW_SLOPE_FACTOR / (window_end - window_start).
+        if (self.window_start is None) != (self.window_end is None):
+            raise ValueError("window_start and window_end must be given together (or both omitted)")
+        if self.window_start is not None and self.window_end <= self.window_start:
+            raise ValueError("window_end must be greater than window_start")
+        if self.window_slope is not None and self.window_slope <= 0:
+            raise ValueError("window_slope must be positive")
+
+    @property
+    def resolved_window_slope(self) -> Optional[float]:
+        """Slope of the double-sigmoid window: ``window_slope`` if set, else auto from width.
+        None when no window is configured."""
+        if self.window_start is None:
+            return None
+        if self.window_slope is not None:
+            return self.window_slope
+        return _WINDOW_SLOPE_FACTOR / (self.window_end - self.window_start)
+
+    def measurement_weights(self, times):
+        """Per-measurement window weight w(t) in [0, 1] at the given times (JAX array).
+
+        Double sigmoid w(t) = sigmoid(s(t - a)) * sigmoid(-s(t - b)) with a=window_start,
+        b=window_end, s=resolved_window_slope: ~1 inside [a, b], ->0 outside. All ones when
+        no window is configured.
+        """
+        t = jnp.asarray(times, float)
+        if self.window_start is None:
+            return jnp.ones_like(t)
+        a, b, s = self.window_start, self.window_end, self.resolved_window_slope
+        return 1.0 / (1.0 + jnp.exp(-s * (t - a))) * 1.0 / (1.0 + jnp.exp(s * (t - b)))
 
 
 @dataclass
@@ -1941,6 +1986,9 @@ class ExperimentalParameters:
                 time_interval=self.measurement.time_interval,
                 initial_time_uncertainty=self.measurement.initial_time_uncertainty,
                 single_measurement_uncertainty=self.measurement.single_measurement_uncertainty,
+                window_start=self.measurement.window_start,
+                window_end=self.measurement.window_end,
+                window_slope=self.measurement.window_slope,
             )
 
         if "configuration_set" in updates:
@@ -2182,6 +2230,11 @@ class ExperimentalParameters:
         lines.append(
             f"  Single measurement uncertainty: {describe_uncertainty(self.measurement.single_measurement_uncertainty)}"
         )
+        if self.measurement.window_start is not None:
+            slope = self.measurement.resolved_window_slope
+            lines.append(f"  Measurement window:   [{self.measurement.window_start}, {self.measurement.window_end}]  slope={slope:.4g}")
+        else:
+            lines.append("  Measurement window:   None (uniform weights)")
         # Noise Configuration Group
         lines.append("")
         lines.append("NOISE MODEL")
