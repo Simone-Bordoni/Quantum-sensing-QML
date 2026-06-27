@@ -133,67 +133,59 @@ class SweepResults:
     (probabilities, contrast, detection maps). It provides a standardized format
     for all sweep functions and enables unified visualization.
 
-    Attributes:
-        param1_name: Name of first sweep parameter (e.g., 'chi', 'gamma', 'asymmetry')
-        param1_vals: 1D array of first parameter values
-        param1_scale: Scale for first parameter ('linear' or 'log')
-        param2_name: Name of second sweep parameter
-        param2_vals: 1D array of second parameter values
-        param2_scale: Scale for second parameter ('linear' or 'log')
-        results: Dictionary mapping result names to 2D arrays:
-            - For single qubit: 'metric_map', 'detection_map', 'detection_without_map'
-            - For two qubits: 'p00', 'p01', 'p10', 'p11', plus optional contrast/detection maps
-        metadata: Optional dictionary for additional information (optimal points, etc.)
+    Axes are stored as parallel lists (one entry per swept parameter).
 
-    Example:
-        >>> sweep = SweepResults(
-        ...     param1_name='gamma', param1_vals=gamma_vals, param1_scale='linear',
-        ...     param2_name='chi', param2_vals=chi_vals, param2_scale='linear',
-        ...     results={'metric_map': metric, 'detection_map': detection}
-        ... )
-        >>> print(sweep)
-        >>> plot_sweep_results(sweep)
-        >>> save_results(sweep, 'sweep_data.npz')
+    Attributes:
+        axis_names: List of swept-parameter names, one per axis.
+        axis_vals: List of 1D value arrays, one per axis.
+        axis_scales: List of scales ('linear' or 'log'), one per axis.
+        results: Dict mapping each scalar output name ('metric', 'detection_<config>' per
+            configuration, 'validation') to an N-D array of that value over the whole grid.
+        metadata: Optional dict for extra info (optimal points, etc.).
     """
 
-    param1_name: str
-    param1_vals: np.ndarray
-    param1_scale: str
-    param2_name: str
-    param2_vals: np.ndarray
-    param2_scale: str
+    axis_names: List[str]
+    axis_vals: List[np.ndarray]
+    axis_scales: List[str]
     results: Dict[str, np.ndarray]
     metadata: Dict[str, Union[float, str, np.ndarray, List]] = field(default_factory=dict)
+
+    @property
+    def ndim(self) -> int:
+        return len(self.axis_names)
+
+    @property
+    def shape(self) -> tuple:
+        return tuple(len(v) for v in self.axis_vals)
 
     def __str__(self) -> str:
         """Return a human-readable string representation of the sweep results."""
         lines = ["SweepResults:"]
-        lines.append(f"  Parameter 1: {self.param1_name}")
-        lines.append(f"    Interval: [{self.param1_vals.min():.3g}, {self.param1_vals.max():.3g}]")
-        lines.append(f"    Scale: {self.param1_scale}")
-        lines.append(f"    Resolution: {len(self.param1_vals)} points")
-        lines.append(f"  Parameter 2: {self.param2_name}")
-        lines.append(f"    Interval: [{self.param2_vals.min():.3g}, {self.param2_vals.max():.3g}]")
-        lines.append(f"    Scale: {self.param2_scale}")
-        lines.append(f"    Resolution: {len(self.param2_vals)} points")
+        for i, (name, vals, scale) in enumerate(zip(self.axis_names, self.axis_vals, self.axis_scales)):
+            v = np.asarray(vals)
+            lines.append(f"  Axis {i} ({name}): [{v.min():.3g}, {v.max():.3g}], {scale}, {len(v)} points")
         lines.append(f"  Available results: {', '.join(sorted(self.results.keys()))}")
-
-        # Show optimal point if available in metadata
-        if "optimal_chi" in self.metadata and "optimal_gamma" in self.metadata:
-            lines.append(
-                f"  Optimal point: {self.param2_name}={self.metadata['optimal_chi']:.3g}, "
-                f"{self.param1_name}={self.metadata['optimal_gamma']:.3g}"
-            )
-
         return "\n".join(lines)
 
     def __repr__(self) -> str:
         """Return a detailed string representation for debugging."""
         return (
-            f"SweepResults(param1_name='{self.param1_name}', param2_name='{self.param2_name}', "
-            f"shape=({len(self.param2_vals)}, {len(self.param1_vals)}), "
-            f"results={list(self.results.keys())})"
+            f"SweepResults(\n"
+            f"  axis_names={self.axis_names},\n"
+            f"  shape={self.shape},\n"
+            f"  results={list(self.results.keys())},\n"
+            f"  metadata={list(self.metadata.keys())},\n"
+            ")"
         )
+
+
+def _json_default_serializer(obj):
+    """JSON fallback for numpy types in metadata (arrays -> lists, scalars -> Python numbers)."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer, np.floating)):
+        return obj.item()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
 def save_results(
@@ -244,12 +236,11 @@ def save_results(
 
     elif isinstance(results, SweepResults):
         data["_type"] = np.array(["SweepResults"], dtype="U")
-        data["param1_name"] = np.array([results.param1_name], dtype="U")
-        data["param1_vals"] = results.param1_vals
-        data["param1_scale"] = np.array([results.param1_scale], dtype="U")
-        data["param2_name"] = np.array([results.param2_name], dtype="U")
-        data["param2_vals"] = results.param2_vals
-        data["param2_scale"] = np.array([results.param2_scale], dtype="U")
+        data["axis_names"] = np.array(results.axis_names, dtype="U")
+        data["axis_scales"] = np.array(results.axis_scales, dtype="U")
+        # axes may have different lengths, so store each one separately
+        for i, vals in enumerate(results.axis_vals):
+            data[f"axis_vals_{i}"] = np.asarray(vals)
 
         # Save results with prefixed keys
         for key, val in results.results.items():
@@ -324,13 +315,10 @@ def load_results(filepath: Union[str, Path]) -> Union[TimeEvolutionResults, Swee
         )
 
     elif result_type == "SweepResults":
-        # Extract parameters
-        param1_name = str(data["param1_name"][0])
-        param1_vals = data["param1_vals"]
-        param1_scale = str(data["param1_scale"][0])
-        param2_name = str(data["param2_name"][0])
-        param2_vals = data["param2_vals"]
-        param2_scale = str(data["param2_scale"][0])
+        # Extract axes (one axis_vals_<i> array per axis)
+        axis_names = [str(n) for n in data["axis_names"]]
+        axis_scales = [str(s) for s in data["axis_scales"]]
+        axis_vals = [data[f"axis_vals_{i}"] for i in range(len(axis_names))]
 
         # Extract results
         results = {}
@@ -343,12 +331,9 @@ def load_results(filepath: Union[str, Path]) -> Union[TimeEvolutionResults, Swee
         metadata = json.loads(str(data["metadata"][0])) if "metadata" in data else {}
 
         return SweepResults(
-            param1_name=param1_name,
-            param1_vals=param1_vals,
-            param1_scale=param1_scale,
-            param2_name=param2_name,
-            param2_vals=param2_vals,
-            param2_scale=param2_scale,
+            axis_names=axis_names,
+            axis_vals=axis_vals,
+            axis_scales=axis_scales,
             results=results,
             metadata=metadata,
         )

@@ -1,16 +1,13 @@
-General:
-- experiment creates global parameters dict, then handles the various functions through global params instead of the various self.constants
-- global parameters can be given as an input to create an experiment both if fully or partially populated
-
 Sweep:
-- vmapped
-- on all experimental and setup parameters through global parameters
-- as many dimensions as needed
+- rendere possibile sul rumore
+- test
 
 Optimization:
 - on measurement time
 - speedup
 - custom precision annealing
+- riparare metriche finali matrici di confusione
+- TEST
 
 Visualization:
 - Time evolution where various subsystems and observables can be choosen and toggled

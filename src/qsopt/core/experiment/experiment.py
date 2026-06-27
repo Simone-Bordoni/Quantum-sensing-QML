@@ -13,6 +13,7 @@ import numpy as np
 import qutip as qt
 import math
 import time as t
+import jax
 import jax.numpy as jnp
 import equinox
 import diffrax
@@ -122,7 +123,8 @@ class Experiment:
             self.detection_metric = DetectionMetric(n_cavities=experimental_params.n_cavities,\
                                                     n_qubits=experimental_params.n_qubits,\
                                                     n_fields=experimental_params.n_fields,\
-                                                    config_names=self.config_names)
+                                                    config_names=self.config_names,\
+                                                    perturbation_type="transient")
         else:
             if detection_metric.n_qubits != experimental_params.n_qubits or\
                 detection_metric.n_subsystems != (experimental_params.n_cavities + experimental_params.n_fields + experimental_params.n_qubits):
@@ -206,66 +208,6 @@ class Experiment:
         """Get the number of qubit levels in the experiment."""
         return self.experimental_params.qubit_levels
 
-
-    # def _save_sweep_state(self) -> Dict[str, Any]:
-    #     """
-    #     Save current state for parameter sweeps.
-
-    #     Returns:
-    #         Dictionary with current chi, gamma, interactions, and cached objects
-    #     """
-    #     return {
-    #         "chi": self.experimental_params.chi.copy() if isinstance(self.experimental_params.chi, list) else self.experimental_params.chi,
-    #         "gamma": self.experimental_params.photon_cavity_coupling,
-    #         "qubit_interactions": [
-    #             QubitInteraction(
-    #                 qubit_indices=interaction.qubit_indices,
-    #                 chi=interaction.chi,
-    #                 interaction_type=interaction.interaction_type
-    #             )
-    #             for interaction in self.experimental_params.physical_constants.qubit_interactions
-    #         ] if self.experimental_params.physical_constants.qubit_interactions else []
-    #     }
-
-    def _restore_sweep_state(self, state: Dict[str, Any]) -> None:
-        """
-        Restore state after parameter sweep.
-
-        Args:
-            state: State dictionary from _save_sweep_state()
-        """
-        # Restore parameters
-        self.experimental_params.physical_constants.chi = state["chi"]
-        self.experimental_params.physical_constants.photon_cavity_coupling = state["gamma"]
-        self.experimental_params.physical_constants.qubit_interactions = state["qubit_interactions"]
-
-        # Regenerate Hamiltonian and clear solver caches
-        self._generate_hamiltonian()
-        self._cached_solvers.clear()
-
-    # def _update_chi_gamma(self, chi: Union[float, list], gamma: float, qubit_interactions: Optional[List] = None) -> None:
-    #     """
-    #     Temporarily update chi, gamma, and optionally qubit interactions for parameter sweeps.
-
-    #     This method efficiently updates dispersive coupling, cavity decay, and qubit-qubit interactions
-    #     without regenerating operators or initial state.
-
-    #     Args:
-    #         chi: Dispersive coupling constant(s)
-    #         gamma: Photon-cavity coupling (cavity decay rate)
-    #         qubit_interactions: Optional list of QubitInteraction objects
-    #     """
-    #     # Update parameters
-    #     self.experimental_params.physical_constants.chi = chi
-    #     self.experimental_params.physical_constants.photon_cavity_coupling = gamma
-    #     if qubit_interactions is not None:
-    #         self.experimental_params.physical_constants.qubit_interactions = qubit_interactions
-
-    #     # Regenerate Hamiltonian with new parameters
-    #     self._generate_hamiltonian()
-
-    #     # Clear solver caches (they depend on Hamiltonian)
-    #     self._cached_solvers.clear()
 
     def _generate_operators(self) -> None:
         """
@@ -937,8 +879,8 @@ class Experiment:
 
         Args:
             batch_size: Number of random realizations to average over for measurement
-                       uncertainty (default: 1). Each realization uses a different
-                       random shift in measurement times based on initial_time_uncertainty.
+                       uncertainty (default: 1). Each realization draws a different timing
+                       offset (collective shift + per-measurement jitter) from the protocol.
             measurement_times: Optional measurement times instead of the ones determined by the experimental parameters.
             detection_states: Whether to return the probabilities of the final quantum states (default: False)
             debug: Whether to enable detailed timing debug output (default: False)
@@ -980,17 +922,13 @@ class Experiment:
                 raise TypeError(f"measurement_times must be list, np.ndarray, or jnp.ndarray, got {type(measurement_times)}")
 
             if measurement_times.shape[0] < 2:
-                raise ValueError(f"measurement_times must be at least of lenght 2, with a starting time and a final time, got lenght {measurement_times.shape}")
-            measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(batch_size, base_times=measurement_times)
+                raise ValueError(f"measurement_times must have at least 2 entries (a start and a measurement), got length {measurement_times.shape}")
+            # explicit override: used as the deterministic timestamp sequence [t_start, *measurements]
+            measurement_sequences = [measurement_times]
         else:
-            measurement_times_batch = self.experimental_params.get_measurement_times_with_uncertainty(
-                batch_size
-            )
-        
-        if measurement_times_batch.ndim == 1:
-            measurement_sequences = [measurement_times_batch]
-        else:
-            measurement_sequences = [measurement_times_batch[i, :] for i in range(batch_size)]
+            # timestamps from the protocol, with the configured uncertainty applied over the batch
+            timestamps = self.experimental_params.get_timestamps(batch_size)
+            measurement_sequences = [timestamps[i] for i in range(timestamps.shape[0])]
 
         if detection_states and len(measurement_sequences[0]) != 2:
             raise ValueError("detection_states=True is only supported for single measurements")
@@ -1040,10 +978,11 @@ class Experiment:
             if detection_states:
                 batch_for_prob.append(rho_lists)
 
-            metric_value, (detection_dict, validation_value) = self.detection_metric(rho_lists)
+            weights = self.experimental_params.measurement.measurement_weights(measurement_times[1:])
+            metric_value, (detection_dict, validation_value) = self.detection_metric(rho_lists, weights=weights)
 
-            batch_metric.append(metric_value)          
-            batch_validation.append(validation_value)  
+            batch_metric.append(metric_value)
+            batch_validation.append(validation_value)
             for name, value in detection_dict.items():
                 batch_detect[name].append(float(value))
 
@@ -1145,91 +1084,6 @@ class Experiment:
 
         return callback
 
-    def run_simulation_with_probabilities(
-        self, t_start: float = -5.0, t_end: float = 5.0
-    ) -> Dict[str, Union[Dict[str, float], float]]:
-        """
-        Run simulation and return all final state probabilities and detection metrics.
-
-        This method computes final state probabilities after evolution, then uses
-        the configured metric to compute detection measures and the metric.
-        Useful for parameter sweeps and reproducing notebook experiments.
-
-        Args:
-            t_start: Evolution start time (default: -5.0)
-            t_end: Evolution end time (default: 5.0)
-
-        Returns:
-            Dictionary containing:
-                - 'probs_with': probability of finding the qubit in excited state with photon interaction
-                - 'probs_without': probability of finding the qubit in excited state without photon interaction
-                - 'detection_with': Detection measure with photon
-                - 'detection_without': Detection measure without photon
-                - 'metric': Value of the configured optimization metric
-
-        Example:
-            >>> experiment = Experiment(exp_params)
-            >>> results = experiment.run_simulation_with_probabilities()
-            >>> print(f"P(11) with photon: {results['probs_with']['11']:.4f}")
-            >>> print(f"Metric: {results['metric']:.4f}")
-        """
-        # Get initial state and solvers
-        rho0 = self._cached_initial_state
-        if rho0 is None:
-            raise RuntimeError("Initial state cache is not initialized.")
-        solver_with = self.get_solver_with_interaction()
-        solver_without = self.get_solver_no_interaction()
-
-        # Prepare circuit unitaries as QuTiP objects
-        initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = self._prepare_circuit_unitaries()
-
-        # Compute final state with photon after evolution
-        rho_after_circuit = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
-        evolution_result_with = solver_with.run(rho_after_circuit, [t_start, t_end])
-        rho_evolved_with = evolution_result_with.states[-1]
-        rho_final_with = final_unitary * rho_evolved_with * final_unitary_dag  # type: ignore
-        probs_with = self.measure_all_states(rho_final_with)
-
-        # Compute final state without photon after evolution
-        rho_after_circuit = initial_unitary * rho0 * initial_unitary_dag  # type: ignore
-        evolution_result_without = solver_without.run(rho_after_circuit, [t_start, t_end])
-        rho_evolved_without = evolution_result_without.states[-1]
-        rho_final_without = final_unitary * rho_evolved_without * final_unitary_dag  # type: ignore
-        probs_without = self.measure_all_states(rho_final_without)
-
-        # Build detection inputs in the shape expected by the selected metric mode.
-        detection_name = self.detection_metric.detection_name
-        n_qubits = self.n_qubits
-
-        if detection_name in ["min fidelity", "max trace distance"]:
-            detection_with, detection_without = self.detection_metric.batching_logic(
-                [[rho_final_with]], [[rho_final_without]]
-            )
-        elif detection_name == "max computational distance":
-            all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
-            probs_with_vector = jnp.array([probs_with[state] for state in all_states], dtype=float)
-            probs_without_vector = jnp.array([probs_without[state] for state in all_states], dtype=float)
-            detection_with, detection_without = self.detection_metric.batching_logic(
-                [[probs_with_vector]], [[probs_without_vector]]
-            )
-        else:
-            detection_states = self.detection_metric.detection_states
-            detect_with_prob = float(sum(probs_with[state] for state in detection_states))
-            detect_without_prob = float(sum(probs_without[state] for state in detection_states))
-            detection_with, detection_without = self.detection_metric.batching_logic(
-                [detect_with_prob], [detect_without_prob]
-            )
-
-        metric = self.detection_metric.metric(detection_with, detection_without)
-
-        return {
-            "probs_with": probs_with,
-            "probs_without": probs_without,
-            "detection_with": float(detection_with),
-            "detection_without": float(detection_without),
-            "metric": float(metric),
-        }
-
     def time_evolution(
         self,
         n_points: int = 200,
@@ -1296,9 +1150,9 @@ class Experiment:
         if measurement_protocol is None:
             measurement_protocol = self.experimental_params.measurement
 
-        # Get measurement times from protocol
-        measurement_times = np.array(measurement_protocol.measurement_times)
-        # Use measurement times for start and end
+        # Deterministic full timestamp sequence [t_start, *measurements] (no offset, no jitter:
+        # time evolution never uses noise). t_start is the unmeasured simulation start.
+        measurement_times = np.asarray(self.experimental_params.get_timestamps(1, offset=False, jitter=False)[0], dtype=float)
         t_start = float(measurement_times[0])
         t_end = float(measurement_times[-1])
 
@@ -1387,8 +1241,9 @@ class Experiment:
 
                 # Measure detection with the configured metric
                 epoch_fraction = (seg_times[i] - t_start) / (t_end - t_start)
-                
-                metric_value, (detect_dict, _) = self.detection_metric(rho_meas, epoch_fraction)
+
+                weights = self.experimental_params.measurement.measurement_weights(seg_times[i:i + 1])
+                metric_value, (detect_dict, _) = self.detection_metric(rho_meas, epoch_fraction, weights=weights)
 
                 detection_lists.update((name, list + [float(detect_dict[name])]) for name, list in detection_lists.items())
 
@@ -1492,7 +1347,6 @@ class Experiment:
         ...     detection_metric=detection
         ... )
         """
-        import jax
         import optax
 
         start_time = t.time()
@@ -1598,8 +1452,8 @@ class Experiment:
 
         # Define objective function with explicit uncertainty input.
         # Signature order is kept future-proof for optional optimization over times.
-        def parallel_simulations(circuit_unitaries, measurement_times, measurement_noise, epoch_fraction: float):
-            """Single-realization of the two simulations with the same parameters and noise."""
+        def parallel_simulations(circuit_unitaries, timestamps, noise, epoch_fraction: float):
+            """Single-realization of all configuration simulations at the given (noisy) timestamps."""
 
             # Anneal ODE-solver tolerances loose -> tight over training (epoch_fraction is
             # unbatched here, so this sets one scalar tolerance per step; no recompilation).
@@ -1607,84 +1461,82 @@ class Experiment:
                 scale = _TOL_ANNEAL_FACTOR ** annealing_weight(epoch_fraction)
                 self._set_solver_tolerances(solvers, _SOLVER_ATOL * scale, _SOLVER_RTOL * scale)
 
-            noisy_measurement_times = measurement_times + measurement_noise
+            noisy_timestamps = timestamps + noise
 
             rho_dict = {config: self.simulation(
                 solvers[config],
                 rho0[config],
-                noisy_measurement_times,
+                noisy_timestamps,
                 precomputed_unitaries=circuit_unitaries,
             ) for config in self.config_names}
 
-            metric_value, (detection_dict, validation_value) = self.detection_metric(rho_dict, epoch_fraction)
+            weights = self.experimental_params.measurement.measurement_weights(noisy_timestamps[1:])
+            metric_value, (detection_dict, validation_value) = self.detection_metric(rho_dict, epoch_fraction, weights=weights)
 
             return metric_value, detection_dict, validation_value
 
-
         static_args = []  # initialize objective_function static args list
-        time_uncertainty = float(self.experimental_params.initial_time_uncertainty)
+        mp = self.experimental_params.measurement
+        has_uncertainty = bool(mp.max_measurements_offset) or (mp.per_measurement_jitter is not None)
+        # deterministic base timestamps [t_start, *measurements]; uncertainty enters only as the noise.
+        base_timestamps = np.asarray(self.experimental_params.get_timestamps(1, offset=False, jitter=False)[0], dtype=float)
 
         if not optimize_measurement_times:
-            static_args.append(1)  # add objective_function static arg: measurement_times
-            base_measurement_times = tuple(
-                float(x) for x in np.asarray(self.experimental_params.measurement_times, dtype=float)
-            )
+            static_args.append(1)  # add objective_function static arg: timestamps
+            timestamps_arg = tuple(float(x) for x in base_timestamps)
         else:
-            base_measurement_times = jnp.asarray(self.experimental_params.measurement_times, dtype=float)
+            timestamps_arg = jnp.asarray(base_timestamps, dtype=float)
 
-        if time_uncertainty == 0:
+        if not has_uncertainty:
 
             if batch_size != 1:
                 if verbose:
                     warnings.warn(f"Batch size > 1 has no effect when there is no measurement uncertainty. Setting batch size to 1.")
                 batch_size = 1
 
-            static_args.append(2)  # objective_function arg: measurement_noise_batch
+            static_args.append(2)  # objective_function arg: noise_batch
             zero_uncertainty_batch = 0.0
 
             def get_noise_batch():
                     return zero_uncertainty_batch
 
-            def objective_function(circuit_params, measurement_times, measurement_noise_batch, epoch_fraction: float):
+            def objective_function(circuit_params, timestamps, noise_batch, epoch_fraction: float):
                 """Objective with no uncertainty."""
 
-                measurement_times = np.asarray(measurement_times, dtype=float)
+                timestamps = np.asarray(timestamps, dtype=float)
 
                 # Compute circuit unitaries
                 self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                metric, detect_dict, validation = parallel_simulations(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
+                metric, detect_dict, validation = parallel_simulations(circuit_unitaries, timestamps, noise_batch, epoch_fraction)
 
                 return -metric, (detect_dict, metric, validation)
 
         else:
-            
+
             if batch_size < 16 and verbose:
                 warnings.warn(f"Using a small batch size of {batch_size} for optimization with measurement uncertainty may lead to noisy gradients and slow convergence. Consider increasing the batch size for better performance.")
 
             def get_noise_batch():
-                measurement_uncertainty_batch = jnp.asarray(
-                    np.random.uniform(-time_uncertainty, time_uncertainty, size=batch_size),
-                    dtype=float,
-                )
-                return measurement_uncertainty_batch
-            
-            def objective_function(circuit_params, measurement_times, measurement_noise_batch, epoch_fraction: float):
+                # guarded timing uncertainties (batch_size, M+1), sampled independently of the base
+                # timestamps so the base times stay free to be optimized.
+                return jnp.asarray(self.experimental_params.get_measurement_uncertainties(batch_size), dtype=float)
+
+            vmapped_simulations = jax.vmap(parallel_simulations, in_axes=(None, None, 0, None))
+
+            def objective_function(circuit_params, timestamps, noise_batch, epoch_fraction: float):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
 
-                measurement_times = jnp.asarray(measurement_times, dtype=float)
+                timestamps = jnp.asarray(timestamps, dtype=float)
 
                 # Compute circuit unitaries
                 self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
                 self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
-                batch_metric, batch_detect_dict, batch_validation = jax.vmap(
-                    parallel_simulations,
-                    in_axes=(None, None, 0, None),
-                )(circuit_unitaries, measurement_times, measurement_noise_batch, epoch_fraction)
+                batch_metric, batch_detect_dict, batch_validation = vmapped_simulations(circuit_unitaries, timestamps, noise_batch, epoch_fraction)
 
                 mean_metric = jnp.mean(batch_metric)
                 mean_detect_dict = {name: jnp.mean(batch) for name, batch in batch_detect_dict.items()}
@@ -1722,10 +1574,12 @@ class Experiment:
                     circuit_type = "reset"
                     print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
 
-            if time_uncertainty > 0:
-                spec = self.experimental_params.initial_time_uncertainty_spec
-                extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
-                print(f"    Measurement uncertainty: ±{time_uncertainty:.3f}{extra}")
+            if has_uncertainty:
+                offset_desc = "off" if not mp.max_measurements_offset else (
+                    "custom" if callable(mp.max_measurements_offset) else f"uniform(-{mp.collective_offset_width():.3g}, 0)")
+                jitter = mp.per_measurement_jitter
+                jit_desc = "off" if jitter is None else ("custom" if callable(jitter) else f"Gaussian std {float(jitter):.3g}")
+                print(f"    Measurement uncertainty: collective offset {offset_desc}, per-measurement jitter {jit_desc}")
 
             # Build header based on number of parameters (up to 4 each)
             header_parts = [f"{'Step':<6}"]
@@ -1752,11 +1606,11 @@ class Experiment:
 
         for step in range(start_step, num_steps):
 
-            measurement_uncertainty_batch = get_noise_batch()
+            noise_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
             grads, (detection_dict, step_metric, step_validation) = jitted_grad(
-                params, base_measurement_times, measurement_uncertainty_batch, step / tot_steps
+                params, timestamps_arg, noise_batch, step / tot_steps
             )
 
             step_metric_value = float(step_metric)
@@ -1831,11 +1685,13 @@ class Experiment:
             self._set_solver_tolerances(solvers, _SOLVER_ATOL, _SOLVER_RTOL)
 
         # Run simulation to get probabilities for each state with the best parameters
-        if time_uncertainty != 0 and batch_size < 16:
+        if has_uncertainty and batch_size < 16:
+            if verbose:
+                warnings.warn(f"Temporarily raising batch size from {batch_size} to 16 for the final evaluation to reduce uncertainty noise in the reported probabilities.")
             batch_size = 16 # Use a larger batch size for final evaluation to reduce noise in results when uncertainty is present
 
-        final_results_callback = self.run_simulation(batch_size=batch_size, 
-                                            measurement_times=[base_measurement_times[0], base_measurement_times[-1]], # run_simulation only accepts 1 measurement
+        final_results_callback = self.run_simulation(batch_size=batch_size,
+                                            measurement_times=[base_timestamps[0], base_timestamps[-1]], # run_simulation only accepts 1 measurement
                                             detection_states=True,
                                             debug=False
                                             )
@@ -1868,608 +1724,213 @@ class Experiment:
         return callback
 
 
-    def optimize_measurement_times(
-        self,
-        resolution: Optional[int] = None,
-        mode: str = "continuous",
-        batch_size: int = 1,
-        verbose: bool = True,
-        min_interval: Optional[float] = None,
-        max_interval: Optional[float] = None,
-    ) -> Dict[str, Union[np.ndarray, float, str, int]]:
-        """Optimize measurement interval via landscape search.
+    # ---------------------------- generic N-dimensional sweep ----------------------------
 
-        This helper uses the :meth:`compute_time_interval_landscape` method
-        and applies the best-performing interval to the experiment configuration.
-        Current rotation angles from circuits are used automatically.
+    def _sweep_key_types(self) -> Dict[str, Any]:
+        """Map every global-arg key to its interaction type."""
+        types: Dict[str, Any] = {}
 
-        Args:
-            resolution: Number of interval samples to evaluate (minimum 2).
-                Default: 50 if None.
-            mode: Interval sampling mode, ``'continuous'`` or ``'discrete'``.
-            batch_size: Number of uncertainty realizations per interval.
-            verbose: Print progress feedback when True.
-            min_interval: Optional lower bound on the interval sweep. If None,
-                uses total_time/100 for continuous mode or total_time/resolution
-                for discrete mode.
-            max_interval: Optional upper bound on the interval sweep. If None,
-                uses total evolution time.
+        def add(interactions, prefix):
+            for inter in interactions:
+                params = inter.parameters if isinstance(inter.parameters, dict) else {}
+                for p in params:
+                    types[f"{prefix}{inter._interaction_context()}__{p}"] = inter.interaction_type
 
-        Returns:
-            Dictionary returned by :meth:`compute_time_interval_landscape` with additional keys:
-                - ``'best_interval'``: Interval delivering the highest metric.
-                - ``'best_metric'``: Maximum metric observed.
-                - ``'best_index'``: Index of the optimal interval in the sampled array.
+        add(self.experimental_params.interactions, "BaseModel_")
+        for cfg in self.experimental_params.configuration_set:
+            add(cfg.interactions, f"Conf:{cfg.name}_")
+        return types
 
-        Example:
-            >>> # Optimize measurement interval with current rotation angles
-            >>> time_callback = experiment.optimize_measurement_times(
-            ...     resolution=30,
-            ...     mode='discrete',
-            ...     batch_size=10
-            ... )
-            >>> print(f"Best interval: {time_callback['best_interval']:.3f}")
-            >>> print(f"Best metric: {time_callback['best_metric']:.6f}")
+    def _resolve_sweep_keys(self, name: str) -> List[str]:
+        """A full global-arg key, or a short parameter name matching every key ending in __<name>."""
+        if name in self.global_args:
+            return [name]
+        matches = [k for k in self.global_args if k.endswith(f"__{name}")]
+        if not matches:
+            params = sorted({k.split("__")[-1] for k in self.global_args})
+            raise ValueError(f"Unknown sweep parameter {name!r}; available: {params} (or pass a full global-arg key)")
+        return matches
+
+    def _is_baked(self, key: str) -> bool:
+        """True if ``key`` is baked into an operator matrix (needs a solver rebuild to sweep), False
+        if it only feeds a time-dependent coefficient (sweepable via args). Builds the operators at
+        two values and compares them at identical args, so only matrix-baking shows up."""
+        H1, _, ga = self._build_hamiltonian(overrides={key: 1.0})
+        H2, _, _ = self._build_hamiltonian(overrides={key: 2.0})
+        probe = {**ga, key: 1.0}
+        for cfg in H1:
+            for tt in (0.0, 1.0):
+                if not np.allclose(np.asarray(H1[cfg](tt, **probe).full()),
+                                   np.asarray(H2[cfg](tt, **probe).full())):
+                    return True
+        return False
+
+    def _classify_sweep_axis(self, name: str, key_types: Dict[str, Any]):
+        """Return (lane, keys). Lanes: 'measurement' (time_interval), 'promote' (baked + promotable
+        -> args-coefficient), 'rebuild' (baked + non-promotable), 'coeff' (already a coefficient)."""
+        if name == "time_interval":
+            return "measurement", []
+        keys = self._resolve_sweep_keys(name)
+        if {key_types[k] for k in keys} <= self._PROMOTABLE_TYPES:
+            return "promote", keys
+        return ("rebuild" if any(self._is_baked(k) for k in keys) else "coeff"), keys
+
+    def _adaptive_map(self, fn, grid, verbose):
+        """Run ``fn`` over ``grid``'s leading axis, starting fully parallel (batch_size = all) and
+        halving the batch on GPU OOM down to sequential (batch_size = 1). No GPU -> just runs."""
+        grid = jnp.asarray(grid)
+        bs = int(grid.shape[0])
+        while True:
+            try:
+                out = jax.lax.map(fn, grid, batch_size=bs)
+                jax.block_until_ready(out)
+                return out
+            except Exception as e:
+                msg = str(e).lower()
+                if bs <= 1 or ("resource_exhausted" not in msg and "out of memory" not in msg):
+                    raise
+                bs = max(1, bs // 2)
+                if verbose:
+                    print(f"  GPU OOM -> retrying with batch_size={bs}")
+
+    def sweep(self, param_grid: Dict[str, Any], *, measurement_protocol=None, batch_size: int = 1,
+              verbose: bool = True) -> SweepResults:
+        """N-dimensional sweep over global-arg parameters and/or the measurement ``time_interval``.
+
+        ``param_grid`` maps each name (a parameter name, a full global-arg key, or 'time_interval')
+        to a 1D array of values; the metric and per-configuration detections are evaluated at every
+        grid combination and returned as N-D arrays in a :class:`SweepResults`. When the measurement
+        protocol defines uncertainty (collective offset and/or per-measurement jitter) each grid point
+        is averaged over ``batch_size`` jittered realizations.
         """
+        import itertools, inspect
 
-        # Set default resolution
-        resolved_resolution = resolution if resolution is not None else 50
-        resolved_resolution = int(resolved_resolution)
+        if not param_grid:
+            raise ValueError("param_grid must be a non-empty {name: 1D values} mapping")
 
-        # Resolve min/max intervals
-        resolved_min_interval = float(min_interval) if min_interval is not None else None
-        resolved_max_interval = float(max_interval) if max_interval is not None else None
+        names = list(param_grid)
+        vals = [np.asarray(param_grid[n], dtype=float).reshape(-1) for n in names]
+        protocol = measurement_protocol if measurement_protocol is not None else self.experimental_params.measurement
+        has_uncertainty = bool(protocol.max_measurements_offset) or (protocol.per_measurement_jitter is not None)
+        jitter = protocol.per_measurement_jitter
+        if has_uncertainty and callable(jitter) and len(inspect.signature(jitter).parameters) >= 1:
+            raise ValueError("per_measurement_jitter as a time-dependent f(t) is not supported in sweeps "
+                             "(swept times make a pre-drawn noise batch inconsistent);"
+                             "Use a float for a gaussian jitter or a custom non time-dependent distribution f().")
+        if not has_uncertainty and batch_size != 1:
+            batch_size = 1  # no uncertainty -> a batch would just repeat the same point
+        if has_uncertainty and batch_size < 16:
+            warnings.warn(f"batch_size={batch_size} is too small to average measurement uncertainty "
+                          f"consistently; using 16 instead.")
+            batch_size = 16
+        key_types = self._sweep_key_types()
 
-        if (
-            resolved_min_interval is not None
-            and resolved_max_interval is not None
-            and resolved_min_interval > resolved_max_interval
-        ):
-            resolved_min_interval, resolved_max_interval = (
-                resolved_max_interval,
-                resolved_min_interval,
-            )
-
-        # Compute landscape using the class method
-        results = self.compute_time_interval_landscape(
-            resolution=resolved_resolution,
-            mode=mode,
-            batch_size=batch_size,
-            verbose=verbose,
-            min_interval=resolved_min_interval,
-            max_interval=resolved_max_interval,
-        )
-
-        # Find best interval
-        metric_vals_np = np.asarray(results["metric_vals"], dtype=float)
-        interval_vals_np = np.asarray(results["interval_vals"], dtype=float)
-        best_index = int(np.argmax(metric_vals_np))
-        best_interval = float(interval_vals_np[best_index])
-        best_metric = float(metric_vals_np[best_index])
-
-        # Apply best interval to experimental parameters
-        self.experimental_params.measurement.time_interval = best_interval
-        self.experimental_params.measurement.measurement_times = None
-        self.experimental_params._update_measurement_times()
-
-        # Add best results to output
-        results_with_best = dict(results)
-        results_with_best["best_interval"] = best_interval
-        results_with_best["best_metric"] = best_metric
-        results_with_best["best_index"] = best_index
+        lanes, keys_per = [], []
+        for n in names:
+            lane, ks = self._classify_sweep_axis(n, key_types)
+            lanes.append(lane)
+            keys_per.append(ks)
 
         if verbose:
-            n_measurements = np.asarray(results["n_measurements"], dtype=int)
-            print(f"\nOptimization complete:")
-            print(f"  Best interval: {best_interval:.4f}")
-            print(f"  Best metric: {best_metric:.6f}")
-            print(f"  Number of measurements: {n_measurements[best_index]}")
+            total = int(np.prod([len(v) for v in vals]))
+            unc = f"uncertainty on, {batch_size} realizations/point" if has_uncertainty else "deterministic"
+            print(f"Sweeping {len(names)} axes over {total} grid points ({unc}):")
+            for n, v, lane, ks in zip(names, vals, lanes, keys_per):
+                tgt = "measurement times" if lane == "measurement" else ", ".join(ks)
+                print(f"  - {n}: {len(v)} pts in [{v.min():.3g}, {v.max():.3g}]  lane={lane}  ({tgt})")
 
-        return results_with_best
+        # measurement lane (time_interval): M measurements fixed, with the unmeasured sim start first.
+        M = len(self.experimental_params.measurement_times)
+        t0 = float(self.experimental_params.t_simulation_start)
+        meas_axes = [i for i, l in enumerate(lanes) if l == "measurement"]
+        if meas_axes and protocol.window_start is not None:
+            need = float(protocol.window_end - t0)  # lead + window_length
+            for i in meas_axes:
+                span = M * float(np.min(vals[i]))
+                if span < need:
+                    raise ValueError(
+                        f"time_interval sweep: n_measurements*min(time_interval)={span:.3g} < "
+                        f"window_end-initial_time={need:.3g}; increase M, the smallest interval, or shrink the window.")
 
-    def compute_time_interval_landscape(
-        self,
-        resolution: int = 50,
-        mode: str = "continuous",
-        batch_size: int = 1,
-        verbose: bool = True,
-        min_interval: Optional[float] = None,
-        max_interval: Optional[float] = None,
-    ) -> Dict[str, Union[np.ndarray, float, str, int]]:
-        """
-        Compute detection metric landscape vs measurement time interval.
+        fast_idx = [i for i, l in enumerate(lanes) if l != "rebuild"]
+        loop_idx = [i for i, l in enumerate(lanes) if l == "rebuild"]
+        promote_keys = sorted({k for i in fast_idx if lanes[i] == "promote" for k in keys_per[i]}) or None
 
-        This method evaluates how the detection metric varies with the time interval
-        between measurements, keeping circuit parameters fixed. Two modes
-        are supported:
-
-        1. **Continuous mode**: Time interval varies continuously from a minimum
-           value to the full evolution time (final_time - initial_time).
-
-        2. **Discrete mode**: Time interval is restricted to integer fractions
-           of the full evolution time (e.g., T/2, T/3, T/4, ..., T/N).
-
-        The method supports batch averaging to account for initial_time_uncertainty,
-        providing more realistic simulations that include timing jitter effects.
-
-        Workflow for each time interval:
-            1. Set time_interval in experimental_params
-            2. Recompute measurement times based on initial_time, final_time, interval
-            3. Run quantum simulation with batch averaging (if batch_size > 1)
-            4. Calculate average metric value across realizations
-            5. Store results in 1D array
-
-        Args:
-            resolution: Number of time interval values to evaluate. Default: 50.
-            mode: Computation mode - either 'continuous' or 'discrete'.
-                - 'continuous': Linearly spaced intervals from min to max
-                - 'discrete': Integer fractions of total time (1/2, 1/3, ..., 1/N)
-                Default: 'continuous'.
-            batch_size: Number of random realizations to average over for
-                measurement uncertainty. Recommended: ≥10 for realistic results
-                when initial_time_uncertainty > 0. Default: 1.
-            verbose: Print progress information. Default: True.
-            min_interval: Minimum interval to consider.
-                - Continuous mode: defaults to total_time / 100 when None.
-                - Discrete mode: defaults to total_time / resolution when None.
-            max_interval: Maximum interval to consider.
-                Defaults to total_time when None. In discrete mode, constraints
-                are enforced by rounding up to the nearest valid measurement count.
-
-        Returns:
-            Dictionary containing:
-                - 'interval_vals': 1D array of time interval values (shape: [resolution])
-                - 'metric_vals': 1D array of metric values (shape: [resolution])
-                - 'detection_with': 1D array of detection measures with photon (shape: [resolution])
-                - 'detection_without': 1D array of detection measures without photon (shape: [resolution])
-                - 'n_measurements': 1D array of number of measurements per interval (shape: [resolution])
-                - 'mode': Computation mode used (str)
-                - 'batch_size': Batch size used (int)
-                - 'initial_time_uncertainty': Resolved uncertainty value from exp_params (float)
-                - 'initial_time_uncertainty_spec': Raw specification (float or str)
-
-        Raises:
-            ValueError: If mode is not 'continuous' or 'discrete'
-            ValueError: If resolution < 2
-
-        Example:
-            >>> # Create experiment with circuits
-            >>> from qsopt.core.circuit import create_ry_circuit_layer
-            >>> exp_params = ExperimentalParameters()
-            >>> exp_params.measurement.initial_time = -5.0
-            >>> exp_params.measurement.final_time = 5.0
-            >>> exp_params.measurement.initial_time_uncertainty = 0.1
-            >>>
-            >>> initial_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[np.pi/2])
-            >>> final_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[-np.pi/2])
-            >>> experiment = Experiment(exp_params, initial_circuit, final_circuit)
-            >>>
-            >>> # Continuous mode with uncertainty
-            >>> data = experiment.compute_time_interval_landscape(
-            ...     resolution=50,
-            ...     mode='continuous',
-            ...     batch_size=20  # Average over 20 realizations
-            ... )
-            >>>
-            >>> # Find optimal interval
-            >>> optimal_idx = np.argmax(data['metric_vals'])
-            >>> optimal_interval = data['interval_vals'][optimal_idx]
-            >>> print(f"Optimal interval: {optimal_interval:.4f}")
-
-        Notes:
-            - When batch_size > 1 and initial_time_uncertainty > 0, each simulation
-              point averages over multiple realizations with random timing shifts.
-            - The original measurement.time_interval is restored after computation.
-            - In discrete mode, intervals are chosen as T/N where N = 2, 3, ..., resolution+1
-            - In continuous mode, the minimum interval ensures at least 2 measurements
-        """
-        import time
-
-        # Validate inputs
-        if mode not in ["continuous", "discrete"]:
-            raise ValueError(f"mode must be 'continuous' or 'discrete', got '{mode}'")
-        if resolution < 2:
-            raise ValueError(f"resolution must be >= 2, got {resolution}")
-
-        # Get experimental parameters
-        exp_params = self.experimental_params
-
-        # Store original interval to restore later
-        original_interval = exp_params.measurement.time_interval
-
-        initial_time = exp_params.measurement.initial_time
-        final_time = exp_params.measurement.final_time
-        total_time = final_time - initial_time
-
-        if verbose:
-            # Get current circuit parameters for display
-            initial_params = self.initial_circuit.get_trainable_parameters()
-            final_params = self.final_circuit.get_trainable_parameters()
-
-            print(f"Computing time interval landscape (mode: {mode})...")
-            if len(initial_params) > 0 and len(final_params) > 0:
-                print(f"  Circuit parameters: θ_init={np.degrees(initial_params[0]):.1f}°, θ_final={np.degrees(final_params[0]):.1f}°")
-            print(f"  Resolution: {resolution} points")
-            print(f"  Batch size: {batch_size} realizations")
-            print(f"  Total evolution time: {total_time:.4f}")
-            if min_interval is not None or max_interval is not None:
-                print(
-                    "  Requested interval bounds: "
-                    f"[{(min_interval if min_interval is not None else 'default')}, "
-                    f"{(max_interval if max_interval is not None else 'default')}]"
-                )
-            uncertainty_val = exp_params.initial_time_uncertainty
-            if uncertainty_val > 0:
-                spec = exp_params.initial_time_uncertainty_spec
-                extra = f" (specified as '{spec}')" if isinstance(spec, str) else ""
-                print(f"  Initial time uncertainty: ±{uncertainty_val:.4f}{extra}")
-
-        # Generate time interval values based on mode
-        # Helper to select approximately uniform samples from a sorted array.
-        def _sample_uniform(values: np.ndarray, count: int) -> np.ndarray:
-            """Select ``count`` approximately uniform samples from ``values``."""
-            if values.size == 0:
-                raise ValueError("No candidate intervals available within the requested bounds")
-            if count == 1:
-                return np.array([values[values.size // 2]])
-            if values.size == 1:
-                return np.repeat(values, count)
-
-            positions = np.linspace(0, values.size - 1, count)
-            indices = np.round(positions).astype(int)
-            indices = np.clip(indices, 0, values.size - 1)
-            # Ensure non-decreasing indices to keep the sequence sorted
-            for idx in range(1, len(indices)):
-                if indices[idx] < indices[idx - 1]:
-                    indices[idx] = indices[idx - 1]
-            return values[indices]
-
-        if mode == "continuous":
-            min_val = total_time / 100.0 if min_interval is None else float(min_interval)
-            max_val = total_time if max_interval is None else float(max_interval)
-            if min_val <= 0:
-                raise ValueError(f"min_interval must be > 0, got {min_val}")
-            if max_val <= 0 or max_val > total_time:
-                raise ValueError(f"max_interval must be in (0, {total_time}], got {max_val}")
-            if min_val >= max_val:
-                raise ValueError(f"min_interval ({min_val}) must be less than max_interval ({max_val})")
-
-            # Generate ideal continuous targets and approximate using available spacing.
-            target_vals = np.linspace(min_val, max_val, resolution)
-
-            # Derive feasible intervals based on integer partitions of the total time
-            n_min = max(1, int(math.ceil(total_time / max_val)))
-            n_max = int(math.floor(total_time / min_val))
-            candidate_ns = np.arange(n_min, n_max + 1, dtype=int)
-            candidate_intervals = total_time / candidate_ns.astype(float)
-            candidate_intervals = np.sort(candidate_intervals)
-
-            if candidate_intervals.size == 0:
-                interval_vals = target_vals
-            else:
-                selected = np.empty_like(target_vals)
-                prev_idx = 0
-                for i, target in enumerate(target_vals):
-                    idx = int(np.abs(candidate_intervals - target).argmin())
-                    if i > 0 and idx < prev_idx:
-                        idx = prev_idx
-                    prev_idx = idx
-                    selected[i] = candidate_intervals[idx]
-                interval_vals = selected
-        else:  # mode == 'discrete'
-            max_val = total_time if max_interval is None else float(max_interval)
-            if max_val <= 0 or max_val > total_time:
-                raise ValueError(f"max_interval must be in (0, {total_time}], got {max_val}")
-
-            if min_interval is None:
-                min_val = total_time / float(resolution)
-            else:
-                min_val = float(min_interval)
-
-            if min_val <= 0:
-                raise ValueError(f"min_interval must be > 0, got {min_val}")
-            if min_val > max_val:
-                raise ValueError(
-                    f"min_interval ({min_val}) must be less than or equal to max_interval ({max_val})"
-                )
-
-            n_start = max(1, int(math.ceil(total_time / max_val)))
-            n_end = int(math.floor(total_time / min_val))
-
-            if n_end < n_start:
-                raise ValueError(
-                    "No discrete intervals satisfy the requested min/max bounds. "
-                    f"Computed n_start={n_start}, n_end={n_end}."
-                )
-
-            candidate_ns = np.arange(n_start, n_end + 1, dtype=int)
-            candidate_intervals = total_time / candidate_ns.astype(float)
-            candidate_intervals = np.sort(candidate_intervals)
-
-            interval_vals = _sample_uniform(candidate_intervals, resolution)
-
-        # Initialize result arrays
-        metric_vals = np.zeros(resolution)
-        detection_with = np.zeros(resolution)
-        detection_without = np.zeros(resolution)
-        n_measurements = np.zeros(resolution, dtype=int)
-
-        start_time = time.time()
-
-        # Evaluate each time interval
-        for i, interval in enumerate(interval_vals):
-            # Update time interval in exp_params
-            exp_params.measurement.time_interval = interval
-            exp_params.measurement.measurement_times = None  # Force recomputation
-            exp_params._update_measurement_times()
-
-            # Store number of measurements for this interval
-            meas_times_list = exp_params._measurement_times_list
-            n_measurements[i] = len(meas_times_list) if meas_times_list is not None else 0
-
-            # Run simulation with batch averaging
-            callback = self.run_simulation(batch_size=batch_size)
-
-            # Store results (averaged over batch)
-            # Clip values to ensure they're in valid ranges (handle numerical precision issues)
-            metric_vals[i] = np.clip(callback.history["metric"][-1], 0.0, 1.0)
-            detection_with[i] = np.clip(callback.history["detection_with"][-1], 0.0, 1.0)
-            detection_without[i] = np.clip(callback.history["detection_without"][-1], 0.0, 1.0)
-
-            # Progress update
-            if verbose:
-                progress = (i + 1) / resolution * 100
-                print(
-                    f"  Progress: {progress:.1f}% "
-                    f"(interval={interval:.4f}, n_meas={n_measurements[i]}, "
-                    f"metric={metric_vals[i]:.6f})",
-                    end="\r",
-                )
-
-        # Restore original time interval
-        exp_params.measurement.time_interval = original_interval
-        exp_params.measurement.measurement_times = None
-        exp_params._update_measurement_times()
-
-        if verbose:
-            elapsed = time.time() - start_time
-            print(f"\nCompleted in {elapsed:.1f}s " f"({elapsed/resolution:.3f}s per point)")
-
-            # Report optimal interval
-            optimal_idx = np.argmax(metric_vals)
-            optimal_interval = interval_vals[optimal_idx]
-            optimal_metric = metric_vals[optimal_idx]
-            optimal_n_meas = n_measurements[optimal_idx]
-            print(
-                f"  Optimal interval: {optimal_interval:.4f} "
-                f"(n_meas={optimal_n_meas}, metric={optimal_metric:.6f})"
-            )
-
-        return {
-            "interval_vals": interval_vals,
-            "metric_vals": metric_vals,
-            "detection_with": detection_with,
-            "detection_without": detection_without,
-            "n_measurements": n_measurements,
-            "mode": mode,
-            "batch_size": batch_size,
-            "initial_time_uncertainty": exp_params.initial_time_uncertainty,
-            "initial_time_uncertainty_spec": exp_params.initial_time_uncertainty_spec,
-        }
-
-    def sweep_chi_gamma(
-        self,
-        chi_interval: list = [0.1, 100.0],
-        gamma_interval: list = [1.0, 100.0],
-        resolution_chi: int = 20,
-        resolution_gamma: int = 20,
-        chi_scale: str = "linear",
-        gamma_scale: str = "linear",
-        batch_size: int = 1,
-        verbose: bool = True,
-    ) -> SweepResults:
-        """
-        Sweep over chi and gamma parameters for n-qubit system.
-
-        This method evaluates the sensing metric and detection measure across
-        a 2D grid of chi (dispersive coupling) and gamma (cavity decay rate)
-        values. The experiment instance is reused with temporary parameter
-        updates for efficiency, and the original state is restored after completion.
-
-        Args:
-            chi_interval: List [min, max] for chi values. Default: [0.1, 100.0].
-            gamma_interval: List [min, max] for gamma values. Default: [1.0, 100.0].
-            resolution_chi: Number of chi points. Default: 20.
-            resolution_gamma: Number of gamma points. Default: 20.
-            chi_scale: Scale type for chi: 'linear' or 'log'. Default: 'linear'.
-            gamma_scale: Scale type for gamma: 'linear' or 'log'. Default: 'linear'.
-            batch_size: Number of random realizations to average over. Default: 1.
-            verbose: Print progress information. Default: True.
-
-        Returns:
-            SweepResults object containing chi_vals, gamma_vals, metric_map,
-            detection_map, detection_without_map, and metadata.
-
-        Example:
-            >>> results = experiment.sweep_chi_gamma(
-            ...     chi_interval=[0.1, 50.0],
-            ...     resolution_chi=15,
-            ...     resolution_gamma=15,
-            ...     chi_scale='log'
-            ... )
-            >>> max_idx = np.unravel_index(
-            ...     np.argmax(results['metric_map']),
-            ...     results['metric_map'].shape
-            ... )
-            >>> print(f"Optimal chi: {results['chi_vals'][max_idx[1]]:.3f}")
-
-        Note:
-            For multi-qubit experiments, chi is set equal for all qubits.
-            For n_qubits >= 2, probability maps are stored for all computational
-            basis states using keys like ``p00``, ``p11`` (2 qubits) or
-            ``p000``, ``p001``, ... (n qubits).
-            Experiment state is automatically restored after the sweep.
-        """
-        import time
-
-        # Validate scale parameters
-        if chi_scale not in ["linear", "log"]:
-            raise ValueError(f"chi_scale must be 'linear' or 'log', got '{chi_scale}'")
-        if gamma_scale not in ["linear", "log"]:
-            raise ValueError(f"gamma_scale must be 'linear' or 'log', got '{gamma_scale}'")
-
-        if verbose:
-            print("Computing χ-γ parameter sweep...")
-            print(
-                f"  Resolution: {resolution_chi}×{resolution_gamma} = {resolution_chi * resolution_gamma} points"
-            )
-            print(f"  χ range: [{chi_interval[0]:.2f}, {chi_interval[1]:.2f}] ({chi_scale} scale)")
-            print(
-                f"  γ range: [{gamma_interval[0]:.2f}, {gamma_interval[1]:.2f}] ({gamma_scale} scale)"
-            )
-
-        # Create parameter grids with specified scales
-        if chi_scale == "log":
-            chi_vals = np.logspace(np.log10(chi_interval[0]), np.log10(chi_interval[1]), resolution_chi)
+        if fast_idx:
+            mesh = np.meshgrid(*[vals[i] for i in fast_idx], indexing="ij")
+            fast_grid = np.stack([m.ravel() for m in mesh], axis=1)
+            fast_shape = tuple(len(vals[i]) for i in fast_idx)
         else:
-            chi_vals = np.linspace(chi_interval[0], chi_interval[1], resolution_chi)
+            fast_grid = np.zeros((1, 0))
+            fast_shape = ()
 
-        if gamma_scale == "log":
-            gamma_vals = np.logspace(
-                np.log10(gamma_interval[0]), np.log10(gamma_interval[1]), resolution_gamma
-            )
-        else:
-            gamma_vals = np.linspace(gamma_interval[0], gamma_interval[1], resolution_gamma)
+        base_meas = jnp.asarray(self.experimental_params.timestamps, dtype=float)  # [t0, *measurements]
+        noise_batch = (jnp.asarray(self.experimental_params.get_measurement_uncertainties(batch_size), dtype=float)
+                       if has_uncertainty else None)
+        rho0 = self._cached_initial_states
+        unis = self._prepare_circuit_unitaries()
+        opts = {"method": "diffrax", "progress_bar": False, "normalize_output": False,
+                "stepsize_controller": diffrax.PIDController(atol=_SOLVER_ATOL, rtol=_SOLVER_RTOL)}
 
-        # Initialize result arrays
-        metric_map = np.zeros((resolution_gamma, resolution_chi))
-        detection_map = np.zeros((resolution_gamma, resolution_chi))
-        detection_without_map = np.zeros((resolution_gamma, resolution_chi))
+        shape = tuple(len(v) for v in vals)
+        res_metric = np.empty(shape)
+        res_val = np.empty(shape)
+        res_det = {c: np.empty(shape) for c in self.config_names}
 
-        # Determine number of qubits
-        n_qubits = self.n_qubits
-        store_state_prob_maps = n_qubits >= 2
-        all_states = [format(k, f"0{n_qubits}b") for k in range(2**n_qubits)]
-
-        # For n-qubit experiments (n >= 2), track probabilities for all basis states.
-        if store_state_prob_maps:
-            prob_maps = {
-                f"p{state}": np.zeros((resolution_gamma, resolution_chi))
-                for state in all_states
-            }
-
-        start_time = time.time()
-        total_points = resolution_chi * resolution_gamma
-
-        # Save current state
-        saved_state = self._save_sweep_state()
-
-        try:
-            # Compute sweep
-            for i, chi in enumerate(chi_vals):
-                for j, gamma_val in enumerate(gamma_vals):
-                    # Update physical constants with new chi and gamma
-                    chi_list = [chi] * n_qubits
-
-                    # Temporarily update experiment parameters
-                    self._update_chi_gamma(chi_list, gamma_val)
-
-                    # Run simulation
-                    if store_state_prob_maps:
-                        # For n >= 2 qubits, get full basis-state probability information.
-                        results = self.run_simulation_with_probabilities()
-
-                        # Store detection and metric results
-                        metric_map[j, i] = results["metric"]
-                        detection_map[j, i] = results["detection_with"]
-                        detection_without_map[j, i] = results["detection_without"]
-
-                        # Store individual probability maps for all basis states
-                        for state in all_states:
-                            prob_maps[f"p{state}"][j, i] = results["probs_with"][state]
+        def make_eval(solvers, base_args):
+            def evaluate_at(meas_t, args):
+                """Metric/detections/validation for one timestamp realization."""
+                rho = {c: self.simulation(solvers[c], rho0[c], meas_t, args=args, precomputed_unitaries=unis)
+                       for c in self.config_names}
+                weights = protocol.measurement_weights(meas_t[1:])
+                m, (det, val) = self.detection_metric(rho, weights=weights)
+                return m, jnp.array([det[c] for c in self.config_names]), val
+            def evaluate(point):
+                args = dict(base_args)
+                meas_t = base_meas
+                for j, i in enumerate(fast_idx):
+                    v = point[j]
+                    if lanes[i] == "measurement":
+                        meas_t = t0 + jnp.arange(M + 1, dtype=float) * v  # [t0, t0+v, ..., t0+M*v]
                     else:
-                        # Run simulation with batch averaging
-                        callback = self.run_simulation(batch_size=batch_size)
+                        for kk in keys_per[i]:
+                            args[kk] = v
+                if noise_batch is None:
+                    return evaluate_at(meas_t, args)
+                # average over the pre-drawn jittered realizations
+                m, det, val = jax.vmap(lambda nz: evaluate_at(meas_t + nz, args))(noise_batch)
+                return jnp.mean(m), jnp.mean(det, axis=0), jnp.mean(val)
+            return evaluate
 
-                        # Store results (j,i indexing for correct orientation in plots)
-                        metric_map[j, i] = callback.history["metric"][-1]
-                        detection_map[j, i] = callback.history["detection_with"][-1]
-                        detection_without_map[j, i] = callback.history["detection_without"][-1]
+        loop_ranges = [range(len(vals[i])) for i in loop_idx]
+        for loop_combo in (itertools.product(*loop_ranges) if loop_idx else [()]):
+            overrides = {k: float(vals[i][ix]) for i, ix in zip(loop_idx, loop_combo) for k in keys_per[i]} or None
+            H, L, ga = self._build_hamiltonian(overrides=overrides,
+                                               dynamic_keys=set(promote_keys) if promote_keys else None)
+            solvers = {c: qt.MESolver(H[c], L[c], options=opts) for c in self.config_names}
+            out_m, out_det, out_val = self._adaptive_map(make_eval(solvers, ga), fast_grid, verbose)
 
-                    # Progress indicator
-                    if verbose and (i * resolution_gamma + j + 1) % max(1, total_points // 10) == 0:
-                        elapsed = time.time() - start_time
-                        progress = (i * resolution_gamma + j + 1) / total_points
-                        print(f"  Progress: {progress*100:.1f}% | " f"Elapsed: {elapsed:.1f}s")
+            slc = [slice(None)] * len(names)
+            for i, ix in zip(loop_idx, loop_combo):
+                slc[i] = ix
+            slc = tuple(slc)
+            res_metric[slc] = np.asarray(out_m).reshape(fast_shape)
+            res_val[slc] = np.asarray(out_val).reshape(fast_shape)
+            out_det = np.asarray(out_det).reshape(fast_shape + (len(self.config_names),))
+            for ci, c in enumerate(self.config_names):
+                res_det[c][slc] = out_det[..., ci]
 
-        finally:
-            # Always restore original state
-            self._restore_sweep_state(saved_state)
-
+        results = {"metric": res_metric, "validation": res_val}
+        results.update({f"detection_{c}": res_det[c] for c in self.config_names})
+        best = np.unravel_index(int(np.nanargmax(res_metric)), shape)
+        metadata = {"best_index": best, "best_metric": float(res_metric[best]),
+                    "best_point": {n: float(vals[i][best[i]]) for i, n in enumerate(names)}}
         if verbose:
-            total_time = time.time() - start_time
-            print(f"Sweep completed in {total_time:.1f}s")
-            print(f"  Max metric: {np.max(metric_map):.6f}")
-            max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
-            print(f"  Optimal χ: {chi_vals[max_idx[1]]:.3f}")
-            print(f"  Optimal γ: {gamma_vals[max_idx[0]]:.3f}")
+            print(f"Best metric {metadata['best_metric']:.6g} at {metadata['best_point']}")
+        return SweepResults(axis_names=names, axis_vals=[np.asarray(v) for v in vals],
+                            axis_scales=["linear"] * len(names), results=results, metadata=metadata)
 
-        # Prepare results dictionary
-        results_dict = {
-            "metric_map": metric_map,
-            "detection_map": detection_map,
-            "detection_without_map": detection_without_map,
-        }
 
-        # Add probability maps for n-qubit experiments with n >= 2
-        if store_state_prob_maps:
-            results_dict.update(prob_maps)
-
-        # Prepare metadata
-        max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
-
-        # Get measurement times, handling None case
-        meas_times = self.experimental_params.measurement.measurement_times
-        n_measurements = len(meas_times) if meas_times is not None else 0
-
-        # Get noise rates (could be list or float)
-        depol = self.experimental_params.noise_model.depolarizing
-        depol_val = depol[0] if isinstance(depol, list) else depol
-        dephasing = self.experimental_params.noise_model.dephasing
-        dephasing_val = dephasing[0] if isinstance(dephasing, list) else dephasing
-        relax = self.experimental_params.noise_model.relaxation
-        relax_val = relax[0] if isinstance(relax, list) else relax
-
-        metadata = {
-            "optimal_chi": chi_vals[max_idx[1]],
-            "optimal_gamma": gamma_vals[max_idx[0]],
-            "max_metric": metric_map[max_idx],
-            "optimal_idx": max_idx,
-            # System characteristics
-            "n_qubits": n_qubits,
-            "cavity_levels": self.cavity_levels,
-            "qubit_levels": self.qubit_levels,
-            "field_levels": self.field_levels,
-            "n_measurements": n_measurements,
-            "measurement_times": meas_times,
-            "initial_time_uncertainty": self.experimental_params.measurement.initial_time_uncertainty,
-            "depolarizing_rate": depol_val,
-            "dephasing_rate": dephasing_val,
-            "relaxation_rate": relax_val,
-            "initial_state": self.experimental_params.initial_state.state_type.name,
-            "inverse_pulse_width": self.experimental_params.physical_constants.inverse_pulse_width,
-        }
-
-        return SweepResults(
-            param1_name="gamma",
-            param1_vals=gamma_vals,
-            param1_scale=gamma_scale,
-            param2_name="chi",
-            param2_vals=chi_vals,
-            param2_scale=chi_scale,
-            results=results_dict,
-            metadata=metadata,
-        )
 
     def measure_all_states(self, rho: qt.Qobj) -> Dict[str, float]:
         """

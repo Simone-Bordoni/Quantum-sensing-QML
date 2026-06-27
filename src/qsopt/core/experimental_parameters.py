@@ -17,6 +17,7 @@ import numpy as np
 import jax.numpy as jnp
 import qutip as qt
 import math
+import inspect
 
 # Import qutip_jax to enable JAX backend
 import qutip_jax  # pylint: disable=unused-import
@@ -819,6 +820,8 @@ class PhysicalModel:
     field_levels: int = 2  # Field mode truncation level
     qubit_levels: int = 2  # Qubit truncation level
     interactions: Optional[List[Interaction]] = None  # Subsystems' interactions
+    # Simulation start. None -> one interval before the first measurement (resolved in ExperimentalParameters).
+    t_simulation_start: Optional[float] = None
 
     def __post_init__(self):
         """Convert levels to list format if necessary and set default interactions."""
@@ -989,72 +992,67 @@ class MeasurementProtocol:
     Measurement protocol configuration.
 
     Two modes of operation:
-    1. List mode: Provide explicit list of measurement times
-    2. Interval mode: Provide initial_time, final_time, and time_interval
+    1. Mode A (explicit): give ``measurement_times`` (the measured times only; the unmeasured
+       simulation start is resolved separately as t_simulation_start).
+    2. Mode B (interval): give ``n_measurements`` and ``time_interval``.
 
     All time parameters are stored and used as absolute times (no normalization).
 
     Attributes:
-        measurement_times: Explicit list of measurement times (absolute time values).
-                          If None, will be computed from initial_time, final_time, time_interval.
-        initial_time: Initial time for interval mode (absolute time)
-        final_time: Final time for interval mode (absolute time)
-        time_interval: Time interval between measurements for interval mode (absolute time)
-        initial_time_uncertainty: Initial time uncertainty specification (absolute time).
-                 Can be a float or special string keywords (e.g., 'max_interval') that
-                 will be resolved dynamically. When numeric, represents the half-width of
-                 a uniform distribution [-initial_time_uncertainty, initial_time_uncertainty].
-        single_measurement_uncertainty: Function defining uncertainty at each measurement time
+        measurement_times: Mode A explicit list of measured times (absolute, ascending).
+        n_measurements: Mode B number of measurements.
+        time_interval: Mode B spacing between measurements (absolute time).
+        max_measurements_offset: Collective timing shift uniform(-Δt, 0) applied to all measurements
+                 (Δt = time_interval, else the first measurement gap). bool, or a callable sampled per
+                 realization. False disables it.
+        per_measurement_jitter: Independent per-measurement timing jitter: a Gaussian std (float) or a
+                 sampler callable f() / f(t). None disables it.
         window_start: Start of the measurement window for the double-sigmoid weight (absolute time).
                      Must be given together with window_end (or both omitted for uniform weights).
         window_end: End of the measurement window (absolute time, must be > window_start).
         window_slope: Slope of the sigmoid edges; defaults to 30.0 / (window_end - window_start).
     """
 
-    measurement_times: Optional[List[float]] = None
-    initial_time: float = -5.0
-    final_time: float = 5.0
-    time_interval: float = 1.0
-    initial_time_uncertainty: Union[float, str] = 0.0
-    single_measurement_uncertainty: Callable[[float], float] = lambda t: 0.0
+    measurement_times: Optional[List[float]] = None        # mode A: explicit times
+    n_measurements: Optional[int] = None                   # mode B: count ...
+    time_interval: Optional[float] = None                  # ... and spacing
+    max_measurements_offset: bool = False                  # collective shift uniform(-Δt, 0) of all measurements
+    per_measurement_jitter: Optional[Union[Callable, float]] = None  # Gaussian std (float) or sampler f() / f(t)
     window_start: Optional[float] = None
     window_end: Optional[float] = None
     window_slope: Optional[float] = None
 
     def __post_init__(self):
-        """Validate the measurement-time specification and uncertainty settings."""
-        if self.measurement_times is not None:
-            if len(self.measurement_times) < 2:
-                raise ValueError("At least two measurement times must be specified in measurement_times list")
-            if sorted(self.measurement_times) != self.measurement_times:
-                raise ValueError("Measurement times in measurement_times list must be in ascending order")
+        """Validate the measurement-time spec (mode A or B), uncertainty and window settings."""
+        explicit = self.measurement_times is not None
+        interval = self.n_measurements is not None or self.time_interval is not None
+        if explicit == interval:
+            raise ValueError("Specify either measurement_times, or n_measurements with time_interval (not both)")
+        if explicit:
+            if len(self.measurement_times) < 1:
+                raise ValueError("measurement_times must contain at least one measurement")
+            if list(self.measurement_times) != sorted(self.measurement_times):
+                raise ValueError("measurement_times must be in ascending order")
         else:
+            if self.n_measurements is None or self.time_interval is None:
+                raise ValueError("interval mode requires both n_measurements and time_interval")
+            if self.n_measurements < 1:
+                raise ValueError("n_measurements must be >= 1")
             if self.time_interval <= 0:
-                raise ValueError("Time interval must be positive for interval mode")
-            if self.final_time <= self.initial_time:
-                raise ValueError("Final time must be greater than initial time for interval mode")
-        if self.initial_time_uncertainty is not None:
-            if isinstance(self.initial_time_uncertainty, (int, float)):
-                if self.initial_time_uncertainty < 0:
-                    raise ValueError("Initial time uncertainty must be >= 0")
-            elif isinstance(self.initial_time_uncertainty, str):
-                if not self.initial_time_uncertainty.strip():
-                    raise ValueError("initial_time_uncertainty string specification cannot be empty")
-                # Supported keywords will be validated and resolved in ExperimentalParameters
-            else:
-                raise TypeError("initial_time_uncertainty must be a float or a supported string keyword")
-        if self.single_measurement_uncertainty is not None:
-            if not callable(self.single_measurement_uncertainty):
-                raise TypeError("single_measurement_uncertainty must be a callable function of time")
-            # Test the single_measurement_uncertainty function with a sample time value
-            try:
-                for _ in range(100):
-                    random_time = np.random.uniform(-10, 10)
-                    test_value = self.single_measurement_uncertainty(random_time)
-                    if not isinstance(test_value, (int, float)):
-                        raise ValueError(f"single_measurement_uncertainty function must return a numeric value. Got type: {type(test_value)}")
-            except Exception as e:
-                raise ValueError("single_measurement_uncertainty function got an error during testing:") from e
+                raise ValueError("time_interval must be positive")
+
+        jit = self.per_measurement_jitter
+        if jit is not None:
+            if callable(jit):
+                n_args = len(inspect.signature(jit).parameters)
+                if n_args not in (0, 1):
+                    raise TypeError("per_measurement_jitter callable must take no argument (f()) or a single time (f(t))")
+                try:
+                    float(jit() if n_args == 0 else jit(0.0))
+                except Exception as e:
+                    raise TypeError("per_measurement_jitter callable must be callable as f()/f(t) and return a float") from e
+            elif not isinstance(jit, (int, float)) or jit < 0:
+                raise TypeError("per_measurement_jitter must be a non-negative float (Gaussian std) or a callable f()/f(t)")
 
         # Measurement window: double-sigmoid weight over measurement time. window_start/window_end
         # must be given together (or not at all -> uniform weights); window_slope defaults to
@@ -1088,6 +1086,24 @@ class MeasurementProtocol:
             return jnp.ones_like(t)
         a, b, s = self.window_start, self.window_end, self.resolved_window_slope
         return 1.0 / (1.0 + jnp.exp(-s * (t - a))) * 1.0 / (1.0 + jnp.exp(s * (t - b)))
+
+    def collective_offset_width(self) -> float:
+        """Width Δt of the collective shift: time_interval (mode B), else the first measurement gap."""
+        if self.time_interval is not None:
+            return float(self.time_interval)
+        t = self.measurement_times
+        return float(t[1] - t[0]) if t is not None and len(t) >= 2 else 0.0
+
+    def sample_jitter(self, batch_size: int, times: np.ndarray) -> np.ndarray:
+        """(batch_size, M) per-measurement offsets from per_measurement_jitter: a Gaussian of the given
+        std (float) or independent concrete samples of the callable f()/f(t)."""
+        jit = self.per_measurement_jitter
+        M = len(times)
+        if isinstance(jit, (int, float)):
+            return np.random.normal(0.0, float(jit), (batch_size, M))
+        if len(inspect.signature(jit).parameters) == 0:
+            return np.array([[float(jit()) for _ in range(M)] for _ in range(batch_size)])
+        return np.array([[float(jit(float(t))) for t in times] for _ in range(batch_size)])
 
 
 @dataclass
@@ -1152,6 +1168,7 @@ class SubsystemState:
 
     # custom_amplitudes: Optional[Dict[Tuple[int, int, int], complex]] = None
 
+
 @dataclass
 class NoiseModel:
     """
@@ -1207,7 +1224,8 @@ class NoiseModel:
             relaxation=copy.deepcopy(self.relaxation),
             custom_operators=copy.deepcopy(self.custom_operators),
         )
-        
+
+
 @dataclass
 class SystemConfiguration:
     """
@@ -1316,7 +1334,6 @@ class SystemConfiguration:
         
 
 
-
 class ExperimentalParameters:
     """
     Complete experimental configuration for quantum sensing protocols.
@@ -1371,119 +1388,73 @@ class ExperimentalParameters:
         # Validation
         self._validate_experimental_parameters()
 
-    def _compute_measurement_times_from_interval(self) -> List[float]:
-        """
-        Compute measurement times from initial_time, final_time, and time_interval.
-
-        Returns:
-            List of measurement times (absolute time values)
-        """
-        initial = self.measurement.initial_time
-        final = self.measurement.final_time
-        interval = self.measurement.time_interval
-
-        # Generate times using arange and ensure final time is included
-        grid = np.arange(initial, final + interval / 2, interval, dtype=float)
-        times = [float(t) for t in grid]
-
-        return times
+    def _resolve_t_start(self) -> float:
+        """Simulation start: explicit PhysicalModel.t_simulation_start, else one interval before the
+        first measurement (the time_interval in mode B, else the first measurement gap)."""
+        explicit = self.physical_model.t_simulation_start
+        if explicit is not None:
+            return float(explicit)
+        mp = self.measurement
+        if mp.time_interval is not None:   # mode B: measurements are generated relative to start=0
+            return 0.0
+        times = mp.measurement_times       # mode A
+        if len(times) < 2:
+            raise ValueError("t_simulation_start must be set for a single-measurement explicit protocol")
+        return float(times[0] - (times[1] - times[0]))
 
     def _update_measurement_times(self) -> None:
-        """
-        Update measurement times based on the measurement protocol.
+        """Resolve and cache the start and the measured times. measurement_times are measured-only;
+        the full solver sequence is ``timestamps`` = [t_start] + measurement_times. Mode A uses the
+        explicit list; mode B generates t_start + k*time_interval for k=1..n_measurements."""
+        mp = self.measurement
+        t_start = self._resolve_t_start()
+        if mp.measurement_times is not None:   # mode A
+            times = [float(t) for t in mp.measurement_times]
+        else:                                  # mode B
+            times = [t_start + k * mp.time_interval for k in range(1, mp.n_measurements + 1)]
+        if times and times[0] < t_start:
+            raise ValueError(f"first measurement ({times[0]:.3g}) is before t_simulation_start ({t_start:.3g})")
+        self._t_start = t_start
+        self._measurement_times_list = times
 
-        If measurement_times is provided as a list, use it directly.
-        Otherwise, compute from initial_time, final_time, and time_interval.
-        """
-        if self.measurement.measurement_times is not None:
-            self._measurement_times_list = [float(t) for t in self.measurement.measurement_times]
-            self.measurement.measurement_times = self._measurement_times_list
-        else:
-            self._measurement_times_list = self._compute_measurement_times_from_interval()
-            self.measurement.measurement_times = self._measurement_times_list
+    @property
+    def t_simulation_start(self) -> float:
+        """Resolved simulation start time (the first, unmeasured, timestamp)."""
+        if self._measurement_times_list is None:
+            self._update_measurement_times()
+        return self._t_start
 
-    def _resolve_initial_time_uncertainty(self) -> float:
-        """Resolve the initial time uncertainty specification to a numeric value."""
-        spec = self.measurement.initial_time_uncertainty
+    @property
+    def timestamps(self) -> np.ndarray:
+        """Full solver sequence [t_simulation_start, *measurement_times] (start is unmeasured)."""
+        return np.concatenate([[self.t_simulation_start], self.measurement_times])
 
-        if isinstance(spec, str):
-            spec_stripped = spec.strip()
-            key = spec_stripped.lower()
-            if key in {"max_interval", "max_measurement_interval"}:
-                times = self.measurement_times
-                if times.size < 2:
-                    raise ValueError(
-                        "Cannot compute 'max_interval' initial_time_uncertainty with fewer than two measurement times"
-                    )
-                diffs = np.diff(np.sort(times))
-                if diffs.size == 0:
-                    return 0.0
-                value = float(np.max(diffs))
-            elif key in {"total_duration", "full_window"}:
-                times = self.measurement_times
-                if times.size == 0:
-                    return 0.0
-                value = float(np.max(times) - np.min(times))
-            else:
-                try:
-                    value = float(spec_stripped)
-                except ValueError as exc:
-                    raise ValueError(
-                        "Unsupported initial_time_uncertainty specification "
-                        f"'{spec}'. Supported keywords: 'max_interval', 'max_measurement_interval', "
-                        "'total_duration', 'full_window'."
-                    ) from exc
-        else:
-            try:
-                value = float(spec)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "initial_time_uncertainty must be a float or supported string keyword"
-                ) from exc
+    def get_measurement_uncertainties(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
+        """(batch_size, M+1) stochastic timing uncertainties to add to the timestamps: 0 at the unmeasured
+        start, then per-measurement collective shift uniform(-Δt, 0) (``offset``) and jitter (``jitter``),
+        with a before-start correction (whole time_intervals in mode B) so no measurement ever lands at or
+        before t_start. Sampled concretely with numpy (a static array that can be vmapped over)."""
+        mp = self.measurement
+        base = self.measurement_times
+        t_start = self.t_simulation_start
+        out = np.zeros((batch_size, base.size))
+        if offset and mp.max_measurements_offset:
+            out += np.random.uniform(-mp.collective_offset_width(), 0.0, size=(batch_size, 1))
+        if jitter and mp.per_measurement_jitter is not None:
+            out = out + mp.sample_jitter(batch_size, base)
+        eps = (mp.collective_offset_width() or 1.0) * 1e-3
+        correction = np.maximum(0.0, t_start + eps - np.min(base[None, :] + out, axis=1))
+        if mp.time_interval is not None:
+            correction = np.ceil(correction / mp.time_interval) * mp.time_interval
+        return np.concatenate([np.zeros((batch_size, 1)), out + correction[:, None]], axis=1)
 
-        return value
+    def get_timestamps(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
+        """Timestamps [t_start, *measurements] with the selected uncertainties applied; shape
+        (batch_size, M+1). offset=jitter=False -> deterministic. The uncertainty (and its before-start
+        guard) comes from get_measurement_uncertainties."""
+        base_full = np.concatenate([[self.t_simulation_start], self.measurement_times])
+        return base_full[None, :] + self.get_measurement_uncertainties(batch_size, offset, jitter)
 
-    def get_measurement_times_with_uncertainty(self, batch_size: int = 1, base_times: np.ndarray = None) -> np.ndarray:
-        """
-        Get measurement times with random shift due to initial time uncertainty.
-
-        The entire measurement sequence is shifted by a random value uniformly
-        distributed in [-initial_time_uncertainty, initial_time_uncertainty].
-
-        Uses the random_seed set during initialization for reproducibility.
-
-        Args:
-            batch_size: Number of independent realizations to generate (default: 1).
-                       If batch_size=1, returns 1D array of shape (n_times,).
-                       If batch_size>1, returns 2D array of shape (batch_size, n_times).
-
-        Returns:
-            Array of measurement times with uncertainty shift applied:
-            - batch_size=1: 1D array of shape (n_times,)
-            - batch_size>1: 2D array of shape (batch_size, n_times)
-        """
-        # Get base measurement times (absolute time values)
-        if base_times is None:
-            base_times = self.measurement_times
-        uncertainty = self._resolve_initial_time_uncertainty()
-
-        if batch_size == 1:
-            # Single realization: return 1D array
-            if uncertainty > 0:
-                shift = np.random.uniform(-uncertainty, uncertainty)
-                return base_times + shift
-            return base_times
-
-        # Multiple realizations: return 2D array (batch_size, n_times)
-        if uncertainty > 0:
-            # Generate batch_size random shifts
-            shifts = np.random.uniform(-uncertainty, uncertainty, size=batch_size)
-            # Broadcasting: (batch_size, 1) + (n_times,) -> (batch_size, n_times)
-            return base_times[np.newaxis, :] + shifts[:, np.newaxis]
-
-        # No uncertainty: tile the same times batch_size times
-        return np.tile(base_times, (batch_size, 1))
-        
 
     def _validate_experimental_parameters(self) -> None:
         """Validate parameter consistency and physical constraints."""
@@ -1503,9 +1474,6 @@ class ExperimentalParameters:
             self._update_measurement_times()
         if self._measurement_times_list is None:
             raise ValueError("Measurement times could not be computed")
-
-        # Resolve initial time uncertainty to ensure specification is valid
-        _ = self._resolve_initial_time_uncertainty()
 
         # Validate configuration set
         if not isinstance(self.configuration_set, (list, set)) or len(self.configuration_set) <= 1:
@@ -1781,62 +1749,6 @@ class ExperimentalParameters:
         self._update_measurement_times()
 
     @property
-    def initial_time(self) -> float:
-        """Direct access to initial time (absolute time)."""
-        return self.measurement.initial_time
-
-    @initial_time.setter
-    def initial_time(self, value: float) -> None:
-        """
-        Set initial time and recompute measurement times.
-
-        Args:
-            value: New initial time (absolute time)
-        """
-        self.measurement.initial_time = value
-        # Clear explicit measurement times to use interval mode
-        self.measurement.measurement_times = None
-        self._update_measurement_times()
-
-    @property
-    def final_time(self) -> float:
-        """Direct access to final time (absolute time)."""
-        return self.measurement.final_time
-
-    @final_time.setter
-    def final_time(self, value: float) -> None:
-        """
-        Set final time and recompute measurement times.
-
-        Args:
-            value: New final time (absolute time)
-        """
-        self.measurement.final_time = value
-        # Clear explicit measurement times to use interval mode
-        self.measurement.measurement_times = None
-        self._update_measurement_times()
-
-    @property
-    def initial_time_uncertainty(self) -> float:
-        """Resolved initial time uncertainty (absolute time)."""
-        return self._resolve_initial_time_uncertainty()
-
-    @initial_time_uncertainty.setter
-    def initial_time_uncertainty(self, value: Union[float, str]) -> None:
-        """
-        Set initial time uncertainty specification.
-
-        Args:
-            value: Initial time uncertainty specification (absolute time or keyword)
-        """
-        self.measurement.initial_time_uncertainty = value
-
-    @property
-    def initial_time_uncertainty_spec(self) -> Union[float, str]:
-        """Return the raw initial time uncertainty specification."""
-        return self.measurement.initial_time_uncertainty
-
-    @property
     def seed(self) -> Optional[int]:
         """Direct access to random seed."""
         return self.random_seed
@@ -1981,11 +1893,10 @@ class ExperimentalParameters:
                     if self.measurement.measurement_times
                     else None
                 ),
-                initial_time=self.measurement.initial_time,
-                final_time=self.measurement.final_time,
+                n_measurements=self.measurement.n_measurements,
                 time_interval=self.measurement.time_interval,
-                initial_time_uncertainty=self.measurement.initial_time_uncertainty,
-                single_measurement_uncertainty=self.measurement.single_measurement_uncertainty,
+                max_measurements_offset=self.measurement.max_measurements_offset,
+                per_measurement_jitter=self.measurement.per_measurement_jitter,
                 window_start=self.measurement.window_start,
                 window_end=self.measurement.window_end,
                 window_slope=self.measurement.window_slope,
@@ -2215,21 +2126,14 @@ class ExperimentalParameters:
             lines.append(f"  Measurement times:    {times_list}")
         else:
             lines.append("  Mode:                 Interval-based")
-            lines.append(f"  Initial time:         {self.measurement.initial_time:>8.4f}")
-            lines.append(f"  Final time:           {self.measurement.final_time:>8.4f}")
+            lines.append(f"  Start time:           {self.t_simulation_start:>8.4f}")
             lines.append(f"  Time interval:        {self.measurement.time_interval:>8.4f}")
             n_measurements = len(times_list)
             lines.append(f"  Number of measurements: {n_measurements:>6}")
             lines.append(f"  Computed times:       {times_list}")
 
-        uncertainty_value = self.initial_time_uncertainty
-        if uncertainty_value > 0:
-            lines.append(f"  Initial time uncertainty: {uncertainty_value:>8.4f}")
-            if isinstance(self.measurement.initial_time_uncertainty, str):
-                lines.append(f"    (specified as '{self.measurement.initial_time_uncertainty}')")
-        lines.append(
-            f"  Single measurement uncertainty: {describe_uncertainty(self.measurement.single_measurement_uncertainty)}"
-        )
+        lines.append(f"  Collective offset:    {'on (uniform(-Δt, 0))' if self.measurement.max_measurements_offset else 'off'}")
+        lines.append(f"  Per-measurement jitter: {describe_uncertainty(self.measurement.per_measurement_jitter)}")
         if self.measurement.window_start is not None:
             slope = self.measurement.resolved_window_slope
             lines.append(f"  Measurement window:   [{self.measurement.window_start}, {self.measurement.window_end}]  slope={slope:.4g}")

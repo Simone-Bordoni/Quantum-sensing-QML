@@ -20,17 +20,6 @@ import random
 import warnings
 import copy
 
-# 3-tuple protocol for aggregating a sequence of per-measurement values into a single scalar:
-#   (initial_value,
-#    aggregation_fn(acc, step_value, epoch_fraction) -> acc,
-#    post_aggregation_fn(acc, epoch_fraction) -> result)
-# epoch_fraction (0 at the first step, ->1 at the last) lets the aggregation anneal over training.
-Aggregator: TypeAlias = Tuple[
-    Optional[Union[float, Array]],
-    Optional[Callable[[Union[float, Array], Union[float, Array], float], Union[float, Array]]],
-    Optional[Callable[[Union[float, Array], float], Union[float, Array]]],
-]
-
 _AGG_EPS = 1e-7
 
 
@@ -66,11 +55,18 @@ class MeasurementAggregator:
         "AND":     (lambda y, f: jnp.log(y + _AGG_EPS),         lambda s, f: jnp.exp(s)),
     }
 
-    def __init__(self, transform, post, init=0.0, name="custom"):
+    # presets that must always be count-normalized (bounded only when divided by Σw)
+    _ALWAYS_NORMALIZED = {"softmax", "softmin"}
+
+    def __init__(self, transform, post, init=0.0, name="custom", always_normalized=False):
+        if not callable(transform) or not callable(post):
+            raise TypeError("MeasurementAggregator: transform(value, f) and post(acc, f) must be callables.")
         self.transform = transform
         self.post = post
         self.init = init
         self.name = name
+        # if True, the caller normalizes by Σw regardless of perturbation_type
+        self.always_normalized = always_normalized
 
     @classmethod
     def from_preset(cls, preset):
@@ -78,7 +74,7 @@ class MeasurementAggregator:
         if preset not in cls._PRESETS:
             raise ValueError(f"Unknown aggregator preset {preset!r}; choose from {sorted(cls._PRESETS)}")
         transform, post = cls._PRESETS[preset]
-        return cls(transform, post, name=preset)
+        return cls(transform, post, name=preset, always_normalized=preset in cls._ALWAYS_NORMALIZED)
 
     def init_acc(self):
         return self.init
@@ -108,9 +104,9 @@ class MeasurementAggregator:
                           for y_extra in (random.random(), 1.0)]
             except Exception as e:
                 raise ValueError(f"Aggregator {self.name!r} raised an error while aggregating measurements: {e}") from e
-            if not bool(jnp.isfinite(r1)):
+            if jnp.ndim(r1) != 0 or not bool(jnp.isfinite(r1)):
                 raise ValueError(
-                    f"Aggregator {self.name!r} produced a non-finite result ({float(r1)}) on valid inputs.")
+                    f"Aggregator {self.name!r} must produce a finite scalar on valid inputs; got {r1!r}.")
             for y_extra, r2 in extras:
                 if not bool(jnp.allclose(r1, r2)):
                     raise ValueError(
@@ -155,14 +151,9 @@ class DetectionMetric:
         Number of qubits in the system.
     config_names: List[str]
         List of configuration names for the states
-    metric : Callable, optional
-        Optional metric whose signature depends on detection_criterion:
-        - state-detection criteria: a per-configuration transform metric(detection_probability, epoch_fraction)
-          applied to each configuration's true-positive detection probability before the soft-min
-          aggregation (default: identity, i.e. maximise every configuration's detection);
-        - 'max computational distance' / 'custom matrix distance': a pairwise metric(x, y, epoch_fraction)
-          (see detection_criterion);
-        - 'min fidelity' / 'max trace distance': ignored.
+    perturbation_type : str
+        'transient' (event localized in time; measurements accumulate) or 'persistent'
+        (always-present perturbation; count-invariant detection rate).
     detection_criterion : str, optional
         Criterion of detection, each criterion uses differently detection_param:
 
@@ -200,37 +191,29 @@ class DetectionMetric:
 
     detection_param : Union[int, List[str], List[int], Tuple[Callable[[Array, Array], Array], float]], optional
         Parameter for the detection criterion, defaults to None
-    multiple_measurement_logic: Optional[Aggregator]
-        Protocol that aggregates detection measures over the sequential measurements: a 3-tuple of
-        (initialization value, aggregation function (acc, value, epoch_fraction)->acc,
-        post-aggregation function (acc, epoch_fraction)->result). epoch_fraction lets the aggregation
-        anneal over training. If None, defaults to an OR over measurements for the state-detection
-        criteria and a temperature-annealed soft-max for the matrix-distance criteria.
-    batching_logic: Callable[...,Tuple[float]], optional
-        Protocol that aggregates detection measures from different batches. Takes as input the list of detection measures for the batches and outputs the aggregated detection measure.
-        If None, defaults to average over batch.
-    protocol_name: str, optional
-    metric_name : str, optional
-    multiple_measurement_name: str, optional
-    batching_name: str, optional
+    metric : Callable, optional
+        Optional metric whose signature depends on detection_criterion:
+        - state-detection criteria: a per-configuration transform metric(detection_probability, epoch_fraction)
+          applied to each configuration's true-positive detection probability before the soft-min
+          aggregation (default: identity, i.e. maximise every configuration's detection);
+        - 'max computational distance' / 'custom matrix distance': a pairwise metric(x, y, epoch_fraction)
+          (see detection_criterion);
+        - 'min fidelity' / 'max trace distance': ignored.
+    measurement_aggregator : Union[str, MeasurementAggregator], optional
+        How per-measurement scores are combined: a preset name ('softmax', 'softmin', 'average',
+        'OR', 'AND') or a MeasurementAggregator. If None, defaults to 'OR' for the state-detection
+        criteria and 'softmax' for the matrix-distance criteria.
+    config_aggregation_strength : float, optional
+        Inverse temperature of the soft-min over configurations/pairs (default 0.3): larger
+        emphasises the worst-separated configuration, smaller tends to the mean.
+    name : str, optional
+        Override the auto-generated metric name.
 
-
-    Examples (for 2 qubits)
+    Examples
     --------
-    >>> # Default: detect anything except |00⟩ with contrast metric
-    >>> detector = DetectionMetric(n_qubits=2)
-    >>> # Simulate measurement: 90% excited state detected with photon, 30% without
-    >>> contrast = detector(measure_with_photon=0.9, measure_without_photon=0.3)
-    >>> contrast
-    0.6
-
-    >>> # Custom: detect only |11⟩ state
-    >>> detector = DetectionMetric(n_qubits=2, detection_criterion='custom states', detection_param=['11'])
-    >>> detector(measure_with_photon=0.4, measure_without_photon=0.1)
-    0.3
-
-    >>> # Minimize fidelity between with/without photon density matrices
-    >>> detector = DetectionMetric(n_qubits=2, detection_criterion='min fidelity')
+    >>> dm = DetectionMetric(n_cavities=0, n_fields=0, n_qubits=2, config_names=['off', 'on'],
+    ...                      perturbation_type='transient', detection_criterion='num excited')
+    >>> # An Experiment then calls dm(rho_dict, epoch_fraction, weights) during the evolution.
     """
 
 
@@ -302,17 +285,23 @@ class DetectionMetric:
             self.name = name
 
 
-    def __call__(self, rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float=1.0)\
+    def __call__(self, rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float = 1.0,
+                 weights: Optional[Array] = None, normalizer: Optional[Union[float, Array]] = None)\
                      -> Tuple[float, Tuple[Dict[str, float], float]]:
         """
         Compute loss from detection probability.
 
         Parameters
         ----------
-        rho_lists : Dict[str, List[qt.Qobj]]
+        rho_dict : Dict[str, List[qt.Qobj]]
             Dictionary of density matrices from different simulations.
         epoch_fraction : Optional[float]
             Fraction of the epoch for which to compute the detection metric.
+        weights : Optional[Array]
+            Per-measurement window weights (default: all ones).
+        normalizer : Optional[Union[float, Array]]
+            Aggregation normalizer; pass it precomputed for the optimizer hot path. Defaults to
+            Σweights for 'persistent', 1 for 'transient'.
 
         Returns
         -------
@@ -321,10 +310,14 @@ class DetectionMetric:
         tuple of dict and float
             detection measures for different simulations if applicable (dict), and validation metric (float).
         """
+        # `is None` resolves at trace time (under jit), so these defaults cost nothing at runtime.
+        if weights is None:
+            weights = jnp.ones(len(rho_dict[self.config_names[0]]))
+        if normalizer is None:
+            normalize = self.perturbation_type == "persistent" or self.measurement_aggregator.always_normalized
+            normalizer = jnp.sum(weights) if normalize else 1.0
 
-        metric, (detection_dict, validation) = self.callable_detection(rho_dict, epoch_fraction)
-
-        return metric, (detection_dict, validation)
+        return self.callable_detection(rho_dict, epoch_fraction, weights, normalizer)
 
     def init_detection(self, criterion, parameter, metric, measurement_aggregator \
                         ) -> Tuple[Callable[[List[qt.Qobj], List[qt.Qobj]], Tuple[float, Tuple[float, float]]], str]:
@@ -339,8 +332,8 @@ class DetectionMetric:
             Parameters to customize the criterion
         metric : callable
             Function to compute the detection metric
-        measurement_logic : tuple
-            Logic for aggregating measurements
+        measurement_aggregator : None | str | MeasurementAggregator
+            How per-measurement scores are combined (see DetectionMetric).
 
         Returns
         -------
@@ -389,6 +382,7 @@ class DetectionMetric:
 
             # Default aggregator 'OR' for state-detection criteria
             aggregator = _resolve_aggregator(measurement_aggregator, "OR")
+            self.measurement_aggregator = aggregator
 
             # Per-config transform applied to each configuration's true-positive probability.
             if metric is None:
@@ -420,6 +414,7 @@ class DetectionMetric:
 
             # default aggregator for matrix-distance criteria
             aggregator = _resolve_aggregator(measurement_aggregator, "softmax")
+            self.measurement_aggregator = aggregator
 
             if criterion in ['min fidelity', 'max trace distance']:
 
@@ -719,41 +714,6 @@ def _validate_callable(fn, args_factory, error_msg):
             raise ValueError(f"{error_msg}\nError from test:\noutput: {out}")
 
 
-def _resolve_measurement_aggregation(multi_measurement_logic, default):
-    """Validate a multiple_measurement_logic 3-tuple, or fall back to ``default``.
-
-    Returns (aggregate_init, measurement_aggregation, post_aggregation, is_custom), where
-    is_custom is True iff a user-supplied tuple was used. The aggregation folds each
-    measurement's value into a running accumulator, then post-processes it (see DetectionMetric).
-    """
-    if multi_measurement_logic is None:
-        init, agg, post = default
-        return init, agg, post, False
-
-    if not isinstance(multi_measurement_logic[0], number):
-        raise ValueError(f"multiple_measurement_logic expects the first element of the tuple to be a float (the initialization value for the aggregation). Value given: {multi_measurement_logic[0]}")
-    if not callable(multi_measurement_logic[1]):
-        raise ValueError(f"multiple_measurement_logic expects the second element of the tuple to be a callable (acc, value, epoch_fraction)->acc (the aggregation function for multiple measurements). Value given: {multi_measurement_logic[1]}")
-    if not callable(multi_measurement_logic[2]):
-        raise ValueError(f"multiple_measurement_logic expects the third element of the tuple to be a callable (acc, epoch_fraction)->result (the post-aggregation function for multiple measurements). Value given: {multi_measurement_logic[2]}")
-
-    error_msg = f"multiple_measurement_logic contains invalid elements:\n\
-                            2nd element: The aggregation function must take (accumulator, value, epoch_fraction) (three floats) and output a float.\n\
-                            3rd element: The post-aggregation function must take (accumulator, epoch_fraction) (two floats) and output a float."
-    try:
-        for i in range(100):
-            test_agg = multi_measurement_logic[0]
-            for j in range(10):
-                test_agg = multi_measurement_logic[1](test_agg, random.random(), random.random())
-            test_post_agg = multi_measurement_logic[2](test_agg, random.random())
-            if not isinstance(test_post_agg, number):
-                raise ValueError(error_msg + f"\nError from test:\naggregation function output: {test_agg}, post-aggregation function output: {test_post_agg}")
-    except Exception as e:
-        raise ValueError(error_msg + f"\nError from test: {e}")
-
-    return multi_measurement_logic[0], multi_measurement_logic[1], multi_measurement_logic[2], True
-
-
 def _make_state_detection_builder(detection_states, metric, aggregator):
     """Return the projector-builder for the state-detection criteria.
 
@@ -860,11 +820,12 @@ def _make_matrix_distance_builder(make_prepare, pair_metric, pair_validation, ag
         detection_tot = {name: 0 for name in config_names}
         prepare = make_prepare(p_all)
 
-        def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float)\
+        def callable_detection(rho_dict: Dict[str, List[qt.Qobj]], epoch_fraction: float,
+                               weights: Array, normalizer: Union[float, Array])\
                 -> Tuple[float, Tuple[Dict[str, float], float]]:
 
-            metric_tot = aggregate_init
-            validation_tot = aggregate_init
+            metric_tot = aggregator.init_acc()
+            validation_tot = aggregator.init_acc()
 
             for meas in range(len(rho_dict[config_names_0])):
 
@@ -874,7 +835,8 @@ def _make_matrix_distance_builder(make_prepare, pair_metric, pair_validation, ag
                 metric_pairs = jnp.stack([pair_metric(prepared[config1], prepared[config2], epoch_fraction)
                                           for config1, config2 in config_pairs])
                 temp_metric = -inv_beta * (logsumexp(neg_beta * metric_pairs) - log_n_config_pairs)
-                metric_tot = measurement_aggregation(metric_tot, temp_metric, epoch_fraction)
+                w = weights[meas]
+                metric_tot = aggregator.step(metric_tot, temp_metric, w, epoch_fraction)
 
                 if separate_validation:
                     # Validation is aggregated at f=1.0 (the fully hardened soft-max) regardless of
@@ -882,10 +844,10 @@ def _make_matrix_distance_builder(make_prepare, pair_metric, pair_validation, ag
                     validation_pairs = jnp.stack([pair_validation(prepared[config1], prepared[config2])
                                                   for config1, config2 in config_pairs])
                     temp_validation = -inv_beta * (logsumexp(neg_beta * validation_pairs) - log_n_config_pairs)
-                    validation_tot = measurement_aggregation(validation_tot, temp_validation, 1.0)
+                    validation_tot = aggregator.step(validation_tot, temp_validation, w, 1.0)
 
-            metric_tot = post_aggregation(metric_tot, epoch_fraction)
-            validation_tot = post_aggregation(validation_tot, 1.0) if separate_validation else metric_tot
+            metric_tot = aggregator.result(metric_tot, normalizer, epoch_fraction)
+            validation_tot = aggregator.result(validation_tot, normalizer, 1.0) if separate_validation else metric_tot
 
             return metric_tot, (detection_tot, validation_tot)
 
