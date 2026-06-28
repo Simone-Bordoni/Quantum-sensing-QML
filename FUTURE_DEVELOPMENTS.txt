@@ -2,12 +2,22 @@ Sweep:
 - rendere possibile sul rumore
 - test
 
+Generale:
+- permettere di avere rumore anche su inizio sim
+
 Optimization:
 - on measurement time
 - speedup
 - custom precision annealing
 - riparare metriche finali matrici di confusione
 - TEST
+- run experiment alla fine non usa rumore, correggere correggendo le simulazioni per usare qualsiasi measurement protocol
+
+Run experiment:
+- per far usare measurement protocol usare aggregazione per capire cosa far vedere:
+    media per esperimento continuato
+    massimo per singolo evento
+    matrice confusione misurata con (prod(c_ii))^{1/n} dove c_ii sono elementi diagonali (ma matrice di confusione non +è ancora formata???)
 
 Visualization:
 - Time evolution where various subsystems and observables can be choosen and toggled
