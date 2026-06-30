@@ -802,6 +802,9 @@ class PhysicalModel:
     Physical model dimensions and interactions for the quantum system.
 
     Attributes:
+        perturbation_type: str
+        'transient' (event localized in time; measurements accumulate) or 'persistent'
+        (always-present perturbation; count-invariant detection rate).
         n_cavities: Number of resonator cavities (typically 1 for single-mode systems)
         n_fields: Number of input field modes
         n_qubits: Number of qubits in the system
@@ -813,6 +816,7 @@ class PhysicalModel:
             Interactions for specific configurations should be specified in the SystemConfiguration class.
     """
 
+    perturbation_type: str # Type of perturbation: transient or persistent
     n_cavities: int = 1  # Number of resonator cavities
     n_fields: int = 1  # Number of input field modes
     n_qubits: int = 1  # Number of qubits
@@ -957,6 +961,7 @@ class PhysicalModel:
         """
         # Start with current values
         params = {
+            "perturbation_type": self.perturbation_type,
             "n_cavities": self.n_cavities,
             "n_fields": self.n_fields,
             "n_qubits": self.n_qubits,
@@ -1344,6 +1349,13 @@ class ExperimentalParameters:
 
     The parameters are organized into logical groups and provide validation
     and consistency checking for the experimental configuration.
+
+    Args:
+            physical_model: Physical model
+            noise_model: Noise model 
+            measurement: Measurement protocol 
+            configuration_set: Set or list of system configurations to be simulated (e.g., different initial states, noise levels, interactions)
+            random_seed: Random seed for reproducibility of uncertainty calculations
     """
 
     def __init__(
@@ -1356,13 +1368,6 @@ class ExperimentalParameters:
     ):
         """
         Initialize experimental parameters.
-
-        Args:
-            physical_model: Physical model configuration
-            noise_model: Noise model configuration
-            measurement: Measurement protocol configuration
-            configuration_set: Set or list of system configurations to be simulated (e.g., different initial states, noise levels, interactions)
-            random_seed: Random seed for reproducibility of uncertainty calculations
         """
         self.physical_model = physical_model or PhysicalModel()
         self.noise_model = noise_model or NoiseModel()
@@ -1652,6 +1657,11 @@ class ExperimentalParameters:
             raise ValueError("All SystemConfiguration instances in configuration_set must have unique names")
 
     # Direct access to commonly used parameters for easier integration
+
+    @property
+    def perturbation_type(self) -> str:
+        """Direct access to the type of perturbation"""
+        return self.physical_model.perturbation_type
 
     @property
     def n_cavities(self) -> int:

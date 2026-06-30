@@ -19,6 +19,7 @@ import equinox
 import diffrax
 from jax import jit, lax
 import copy
+from collections import namedtuple
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
@@ -30,7 +31,12 @@ from qsopt.core.experimental_parameters import (
     SystemConfiguration,
 )
 from qsopt.core.loss_functions import DetectionMetric
-from qsopt.core.functions_utils import annealing_weight
+from qsopt.core.functions_utils import (
+    adaptive_map,
+    annealing_weight,
+    classify_sweep_axis,
+    sweep_key_types,
+)
 from qsopt.utils.results import SweepResults
 
 if TYPE_CHECKING:
@@ -59,6 +65,10 @@ warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a
 _SOLVER_ATOL = 1e-8
 _SOLVER_RTOL = 1e-6
 _TOL_ANNEAL_FACTOR = 100.0  # start 100x (2 decades) looser than the tight tolerances
+
+# One additive term of an interaction: const * Πf(value[name]) * operator * (g(t) if modulated).
+# operator is a Qobj or a callable values->Qobj (structural param); params maps name -> transform f.
+Contribution = namedtuple("Contribution", ["kind", "operator", "const", "params", "modulated"])
 
 
 class Experiment:
@@ -126,15 +136,20 @@ class Experiment:
                                                     config_names=self.config_names,\
                                                     perturbation_type="transient")
         else:
+            # Validate the detection metric by making sure core parameters have been set to the same values
             if detection_metric.n_qubits != experimental_params.n_qubits or\
                 detection_metric.n_subsystems != (experimental_params.n_cavities + experimental_params.n_fields + experimental_params.n_qubits):
                 raise ValueError(
                     f"Detection metric n_qubits ({detection_metric.n_qubits}) must match experimental_params n_qubits ({experimental_params.n_qubits})"
                 )
-            # The detection metric uses config_names as keys to look up each configuration's
-            # density matrices (keyed by the experiment's configuration names). A mismatch would
-            # silently drop configurations or raise a KeyError at evaluation time, so require the
-            # exact same set of names.
+            
+            if detection_metric.perturbation_type != experimental_params.perturbation_type:
+                raise ValueError(
+                    f"Detection metric perturbation_type ({detection_metric.perturbation_type}) must match"
+                    f"the experiment's perturbation type ({experimental_params.perturbation_type})"
+                )
+
+
             if set(detection_metric.config_names) != set(self.config_names):
                 raise ValueError(
                     f"Detection metric config_names ({detection_metric.config_names}) must match "
@@ -247,11 +262,12 @@ class Experiment:
         """
         self.hamiltonians, self.lindblad_operators, self.global_args = self._build_hamiltonian()
 
-    # scalar(param)*operator types whose single parameter can be factored into an
-    # args-coefficient: term = [operator|param=1, coeff(args)] (see dynamic_keys).
+    # Types one parameter can be factored out of into an args-coefficient, so a sweep varies it
+    # via args without rebuilding (kappa enters as √kappa via the per-contribution transform).
     _PROMOTABLE_TYPES = frozenset({
         InteractionType.DISPERSIVE, InteractionType.DETUNING, InteractionType.COUPLING,
         InteractionType.XX, InteractionType.YY, InteractionType.ZZ,
+        InteractionType.DISSIPATION, InteractionType.INPUT_OUTPUT,
     })
 
     def _build_hamiltonian(self, overrides: Optional[Dict[str, Any]] = None,
@@ -278,10 +294,11 @@ class Experiment:
                 JAX value. The returned operators then become a (differentiable, vmappable)
                 function of those values. When ``None`` the configured values are used and
                 the result is identical to the previous behaviour.
-            dynamic_keys: Global keys emitted as ``[operator, args-coeff]`` instead of baked, so a
+            dynamic_keys: Global keys factored into an args-coefficient instead of baked, so a
                 sweep varies them via ``solver.run(args=...)`` with the solver built once. Sweeps
                 only (optimizer leaves it ``None`` → fast baked solver). Only
-                :data:`_PROMOTABLE_TYPES`; any existing ``time_modulation`` is kept in the coeff.
+                :data:`_PROMOTABLE_TYPES`; covers H and Lindblad, with ``time_modulation`` kept in
+                the coeff.
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
@@ -289,169 +306,103 @@ class Experiment:
         interaction_list = self.experimental_params.interactions
 
 
-        def generate_hamiltonian_term(interaction: Interaction, params: Optional[Dict[str, Any]] = None):
-            """
-            Generate Hamiltonian term for a given interaction.
+        _ID = lambda x: x  # noqa: E731  (linear parameter -> identity transform)
+
+        def build_hamiltonian_term(interaction: Interaction):
+            """Decompose an interaction into a list of :class:`Contribution`.
+
+            Operators are bare; the assembler applies the parameter values, baking them or
+            factoring a promoted one into an args-coefficient. All 'L' contributions form one
+            collapse operator. kappa enters as √kappa, others linearly.
+
+            A multiplicative parameter scales a fixed operator -> list it in ``params`` with its
+            transform (promotable). A structural parameter (e.g. inside a matrix exponential) is
+            non-multiplicative: pass a callable ``operator(values) -> Qobj`` instead; it is rebuilt
+            per sweep value and must stay out of :data:`_PROMOTABLE_TYPES`.
 
             Args:
-                interaction: Interaction object containing interaction_type, subsystems, parameters, and time modulation
-                params: Resolved parameter values to bake into the term (configured values
-                    merged with any sweep overrides). Falls back to ``interaction.parameters``
-                    when ``None``.
+                interaction: Interaction with its type, subsystems, parameters and time_modulation.
             Returns:
-                H_term: Hamiltonian term as a Qobj or QobjEvo
-                L_term: Lindblad operator term as a Qobj or QobjEvo (if applicable)
+                List of :class:`Contribution`, one per additive H/Lindblad term of the interaction.
             """
-
             int_type = interaction.interaction_type
-            system1 = interaction.subsystem1[0]
-            index1 = interaction.subsystem1[1]
-            # qutip-jax only accepts JAX-valued coefficients when the callable is a
-            # jitted PjitFunction (routed to JaxJitCoeff); a plain Python function is
-            # rejected by QuTiP's numbers.Number check. Jit here so user pulses can be
-            # written as ordinary (t, **kwargs) functions.
-            t_func = jit(interaction.time_modulation) if interaction.time_modulation is not None else None
-            args = params if params is not None else interaction.parameters
+            system1, index1 = interaction.subsystem1
+            # flag only; the pulse is jitted in _wrap_time_modulation (qutip-jax needs a jitted fn)
+            has_mod = interaction.time_modulation is not None
+            contribs = []
 
-            if args is None:
-                args = {}
-
-            H_term, L_term = None, None
+            def add(kind, operator, const=1.0, params=None, modulated=has_mod):
+                contribs.append(Contribution(kind, operator, complex(const), params or {}, modulated))
 
             if int_type == InteractionType.DETUNING:
-
-                delta = args["delta"]
-
                 if system1 == 'cavity':
-                    a = self.operators["a_c"][index1]
-                    a_dag = self.operators["a_c_dag"][index1]
-                    H_term = qt.Qobj(delta * a_dag * a)
-
+                    a, a_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
+                    add('H', a_dag * a, params={'delta': _ID})
                 elif system1 == 'field':
-                    a = self.operators["a_f"][index1]
-                    a_dag = self.operators["a_f_dag"][index1]
-                    H_term = qt.Qobj(delta * a_dag * a)
-
+                    a, a_dag = self.operators["a_f"][index1], self.operators["a_f_dag"][index1]
+                    add('H', a_dag * a, params={'delta': _ID})
                 elif system1 == 'qubit':
-                    sigma_z = self.operators["sigma_z"][index1]
-                    H_term = qt.Qobj(delta * sigma_z/2) 
+                    add('H', self.operators["sigma_z"][index1], const=0.5, params={'delta': _ID})
 
             elif int_type == InteractionType.DRIVE:
-
-                eps = args["amplitude"]
-
                 if system1 == 'cavity':
-                    a = self.operators["a_c"][index1]
-                    a_dag = self.operators["a_c_dag"][index1]
-
+                    a, a_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
                 elif system1 == 'field':
-                    a = self.operators["a_f"][index1]
-                    a_dag = self.operators["a_f_dag"][index1]
-
-                H_term = qt.Qobj(1j * (eps * a_dag - np.conj(eps) * a))
+                    a, a_dag = self.operators["a_f"][index1], self.operators["a_f_dag"][index1]
+                # 1j*(eps*a_dag - conj(eps)*a)
+                add('H', a_dag, const=1j, params={'amplitude': _ID})
+                add('H', a, const=-1j, params={'amplitude': jnp.conj})
 
             elif int_type == InteractionType.DISSIPATION:
-
-                k = args["kappa"]
-                a = self.operators["a_c"][index1]
-
-                if t_func is not None:
-                    L_term = qt.QobjEvo([np.sqrt(k) * a, t_func], args=args)
-                else:
-                    L_term = qt.Qobj(np.sqrt(k) * a)
+                add('L', self.operators["a_c"][index1], params={'kappa': jnp.sqrt})
 
             if interaction.subsystem2 is not None:
-                system2 = interaction.subsystem2[0]
-                index2 = interaction.subsystem2[1]
+                system2, index2 = interaction.subsystem2
 
             if int_type == InteractionType.COUPLING:
-
-                gm = args["gamma"]
-
-                a1 = self.operators["a_c"][index1]
-                a1_dag = self.operators["a_c_dag"][index1]
-                a2 = self.operators["a_c"][index2]
-                a2_dag = self.operators["a_c_dag"][index2]
-
-                H_term = qt.Qobj( gm * (a1_dag * a2 + a1 * a2_dag))
+                a1, a1_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
+                a2, a2_dag = self.operators["a_c"][index2], self.operators["a_c_dag"][index2]
+                add('H', a1_dag * a2 + a1 * a2_dag, params={'gamma': _ID})
 
             if int_type == InteractionType.INPUT_OUTPUT:
-
-                k = args["kappa"]
-                gm = args["gamma"]
-
                 if system2 == 'cavity':
                     system1, index1, system2, index2 = system2, index2, system1, index1
+                ac, ac_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
+                af, af_dag = self.operators["a_f"][index2], self.operators["a_f_dag"][index2]
+                add('H', af_dag * ac - af * ac_dag, const=1j/2, params={'kappa': jnp.sqrt, 'gamma': _ID})
+                # one collapse op gamma*g(t)*a_f + sqrt(kappa)*a_c; g(t) modulates only a_f
+                add('L', af, params={'gamma': _ID})
+                add('L', ac, params={'kappa': jnp.sqrt}, modulated=False)
 
-                ac = self.operators["a_c"][index1]
-                ac_dag = self.operators["a_c_dag"][index1]
-                af = self.operators["a_f"][index2]
-                af_dag = self.operators["a_f_dag"][index2]
-
-                H_term = qt.Qobj(1j/2 * np.sqrt(k) * gm * (af_dag * ac - af * ac_dag))
-                if t_func is not None:
-                    L_term = qt.QobjEvo([af*gm, t_func], args=args) + np.sqrt(k) * ac
-                else:
-                    L_term = qt.Qobj(af*gm + np.sqrt(k) * ac)
-            
             if int_type == InteractionType.DISPERSIVE:
-
-                chi = args['chi']
-
                 if system2 == 'cavity':
                     system1, index1, system2, index2 = system2, index2, system1, index1
-
-                ac = self.operators["a_c"][index1]
-                ac_dag = self.operators["a_c_dag"][index1]
+                ac, ac_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
                 sz = self.operators["sigma_z"][index2]
-
-                H_term = qt.Qobj(-chi * ac_dag * ac * sz)
+                add('H', ac_dag * ac * sz, const=-1.0, params={'chi': _ID})
 
             if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
-
-                chi = args['chi']
-
                 if system1 != 'qubit' or system2 != 'qubit':
                     raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
-
-                if int_type == InteractionType.XX:
-                    op1 = self.operators["sigma_x"][index1]
-                    op2 = self.operators["sigma_x"][index2]
-                elif int_type == InteractionType.YY:
-                    op1 = self.operators["sigma_y"][index1]
-                    op2 = self.operators["sigma_y"][index2]
-                elif int_type == InteractionType.ZZ:
-                    op1 = self.operators["sigma_z"][index1]
-                    op2 = self.operators["sigma_z"][index2]
-
-                H_term = qt.Qobj(chi/2 * op1 * op2)
+                pauli = {InteractionType.XX: "sigma_x", InteractionType.YY: "sigma_y", InteractionType.ZZ: "sigma_z"}[int_type]
+                add('H', self.operators[pauli][index1] * self.operators[pauli][index2], const=0.5, params={'chi': _ID})
 
             if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
-
-                # Composite tensor positions of the involved subsystem(s), in the
-                # canonical (cavity ⊗ field ⊗ qubits) ordering used for the operators.
+                # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
                 offsets = {'cavity': 0, 'field': self.n_cavities, 'qubit': self.n_cavities + self.n_fields}
                 positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
                 if interaction.subsystem2 is not None:
                     positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
-
-                # Per-subsystem identities in canonical order, then embed the custom matrix.
+                # embed the custom matrix at those positions
                 identities = (
                     list(self.operators["I_c"])
                     + list(self.operators["I_f"])
                     + list(self.operators["I_q"])
                 )
                 embedded = embed_operator(interaction.custom_matrix, positions, identities)
+                add('H' if int_type == InteractionType.CUSTOM_HAMILTONIAN else 'L', embedded)
 
-                if int_type == InteractionType.CUSTOM_HAMILTONIAN:
-                    H_term = embedded
-                else:  # CUSTOM_LINDBLAD
-                    if t_func is not None:
-                        L_term = qt.QobjEvo([embedded, t_func], args=args)
-                    else:
-                        L_term = embedded
-
-            return H_term, L_term, t_func, args
+            return contribs
 
         def _wrap_time_modulation(func, key_map):
             """Adapt a user time-modulation ``func(t, **local_params)`` to a jitted
@@ -825,14 +776,14 @@ class Experiment:
         detection_metric = self.detection_metric
 
         # Get reset operators (pre-zipped at construction; see generate_system_operators)
-        zipped_reset = self.operators['measure_reset_pairs']
+        reset_list = self.operators['measure_reset_pairs']
 
         # Get circuit unitaries
         if precomputed_unitaries is None:
             precomputed_unitaries = self._prepare_circuit_unitaries()
         initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
 
-        # Initial state
+        # Set initial state
         rho_current = rho
 
         # Initialise ouput list
@@ -856,7 +807,7 @@ class Experiment:
             rho_final = final_unitary * rho_evolved * final_unitary_dag  # type: ignore
 
             # Reset the qubit
-            rho_reset = [op * rho_final * op_dag for op,op_dag in zipped_reset]
+            rho_reset = [op * rho_final * op_dag for op,op_dag in reset_list]
             rho_current = sum(rho_reset)
             
             rho_list.append(rho_final)
@@ -1040,7 +991,7 @@ class Experiment:
             callback(
                 trainable_params_initial=self.trainable_params_initial,
                 trainable_params_final=self.trainable_params_final,
-                detection_dict=detection_dict,
+                detection_dict=mean_detect_dict,
                 metric=float(mean_metric),
                 validation=float(mean_validation),
                 state_probabilities=state_prob_dict,
@@ -1051,7 +1002,7 @@ class Experiment:
             callback(
                 trainable_params_initial=self.trainable_params_initial,
                 trainable_params_final=self.trainable_params_final,
-                detection_dict=detection_dict,
+                detection_dict=mean_detect_dict,
                 metric=float(mean_metric),
                 validation=float(mean_validation),
             )
@@ -1726,76 +1677,12 @@ class Experiment:
 
     # ---------------------------- generic N-dimensional sweep ----------------------------
 
-    def _sweep_key_types(self) -> Dict[str, Any]:
-        """Map every global-arg key to its interaction type."""
-        types: Dict[str, Any] = {}
-
-        def add(interactions, prefix):
-            for inter in interactions:
-                params = inter.parameters if isinstance(inter.parameters, dict) else {}
-                for p in params:
-                    types[f"{prefix}{inter._interaction_context()}__{p}"] = inter.interaction_type
-
-        add(self.experimental_params.interactions, "BaseModel_")
-        for cfg in self.experimental_params.configuration_set:
-            add(cfg.interactions, f"Conf:{cfg.name}_")
-        return types
-
-    def _resolve_sweep_keys(self, name: str) -> List[str]:
-        """A full global-arg key, or a short parameter name matching every key ending in __<name>."""
-        if name in self.global_args:
-            return [name]
-        matches = [k for k in self.global_args if k.endswith(f"__{name}")]
-        if not matches:
-            params = sorted({k.split("__")[-1] for k in self.global_args})
-            raise ValueError(f"Unknown sweep parameter {name!r}; available: {params} (or pass a full global-arg key)")
-        return matches
-
-    def _is_baked(self, key: str) -> bool:
-        """True if ``key`` is baked into an operator matrix (needs a solver rebuild to sweep), False
-        if it only feeds a time-dependent coefficient (sweepable via args). Builds the operators at
-        two values and compares them at identical args, so only matrix-baking shows up."""
-        H1, _, ga = self._build_hamiltonian(overrides={key: 1.0})
-        H2, _, _ = self._build_hamiltonian(overrides={key: 2.0})
-        probe = {**ga, key: 1.0}
-        for cfg in H1:
-            for tt in (0.0, 1.0):
-                if not np.allclose(np.asarray(H1[cfg](tt, **probe).full()),
-                                   np.asarray(H2[cfg](tt, **probe).full())):
-                    return True
-        return False
-
-    def _classify_sweep_axis(self, name: str, key_types: Dict[str, Any]):
-        """Return (lane, keys). Lanes: 'measurement' (time_interval), 'promote' (baked + promotable
-        -> args-coefficient), 'rebuild' (baked + non-promotable), 'coeff' (already a coefficient)."""
-        if name == "time_interval":
-            return "measurement", []
-        keys = self._resolve_sweep_keys(name)
-        if {key_types[k] for k in keys} <= self._PROMOTABLE_TYPES:
-            return "promote", keys
-        return ("rebuild" if any(self._is_baked(k) for k in keys) else "coeff"), keys
-
-    def _adaptive_map(self, fn, grid, verbose):
-        """Run ``fn`` over ``grid``'s leading axis, starting fully parallel (batch_size = all) and
-        halving the batch on GPU OOM down to sequential (batch_size = 1). No GPU -> just runs."""
-        grid = jnp.asarray(grid)
-        bs = int(grid.shape[0])
-        while True:
-            try:
-                out = jax.lax.map(fn, grid, batch_size=bs)
-                jax.block_until_ready(out)
-                return out
-            except Exception as e:
-                msg = str(e).lower()
-                if bs <= 1 or ("resource_exhausted" not in msg and "out of memory" not in msg):
-                    raise
-                bs = max(1, bs // 2)
-                if verbose:
-                    print(f"  GPU OOM -> retrying with batch_size={bs}")
-
     def sweep(self, param_grid: Dict[str, Any], *, measurement_protocol=None, batch_size: int = 1,
               verbose: bool = True) -> SweepResults:
         """N-dimensional sweep over global-arg parameters and/or the measurement ``time_interval``.
+
+        Args:
+
 
         ``param_grid`` maps each name (a parameter name, a full global-arg key, or 'time_interval')
         to a 1D array of values; the metric and per-configuration detections are evaluated at every
@@ -1823,11 +1710,11 @@ class Experiment:
             warnings.warn(f"batch_size={batch_size} is too small to average measurement uncertainty "
                           f"consistently; using 16 instead.")
             batch_size = 16
-        key_types = self._sweep_key_types()
+        key_types = sweep_key_types(self)
 
         lanes, keys_per = [], []
         for n in names:
-            lane, ks = self._classify_sweep_axis(n, key_types)
+            lane, ks = classify_sweep_axis(self, n, key_types)
             lanes.append(lane)
             keys_per.append(ks)
 
@@ -1908,7 +1795,7 @@ class Experiment:
             H, L, ga = self._build_hamiltonian(overrides=overrides,
                                                dynamic_keys=set(promote_keys) if promote_keys else None)
             solvers = {c: qt.MESolver(H[c], L[c], options=opts) for c in self.config_names}
-            out_m, out_det, out_val = self._adaptive_map(make_eval(solvers, ga), fast_grid, verbose)
+            out_m, out_det, out_val = adaptive_map(make_eval(solvers, ga), fast_grid, verbose)
 
             slc = [slice(None)] * len(names)
             for i, ix in zip(loop_idx, loop_combo):
@@ -1929,45 +1816,3 @@ class Experiment:
             print(f"Best metric {metadata['best_metric']:.6g} at {metadata['best_point']}")
         return SweepResults(axis_names=names, axis_vals=[np.asarray(v) for v in vals],
                             axis_scales=["linear"] * len(names), results=results, metadata=metadata)
-
-
-
-    def measure_all_states(self, rho: qt.Qobj) -> Dict[str, float]:
-        """
-        Measure probabilities for all computational-basis qubit states.
-
-        Convenience method to get all joint measurement outcomes at once for
-        an arbitrary number of qubits.
-
-        Args:
-            rho: State to measure
-
-        Returns:
-            Dictionary with probabilities for all $2^n$ basis states,
-            keyed by bitstrings like ``'0'``, ``'1'`` (1 qubit) or
-            ``'00'``, ``'01'``, ``'10'``, ``'11'`` (2 qubits), etc.
-
-        Example:
-            >>> probs = experiment.measure_all_states(rho)
-            >>> print(f"P(00) = {probs['00']:.4f}")
-        """
-        from .quantum_utils import measure_qubits_probability
-
-        field_levels = self.field_levels
-        cavity_levels = self.cavity_levels
-        qubit_levels = self.qubit_levels
-        n_qubits = self.n_qubits
-        all_states = [format(i, f"0{n_qubits}b") for i in range(2**n_qubits)]
-
-        return {
-            state: measure_qubits_probability(
-                rho,
-                "all",
-                self.operators,
-                state=state,
-                field_levels=field_levels,
-                cavity_levels=cavity_levels,
-                q_levels=qubit_levels,
-            )
-            for state in all_states
-        }

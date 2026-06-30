@@ -1,16 +1,19 @@
 Sweep:
-- rendere possibile sul rumore
-- test
++ rendere possibile sul rumore
++ test
+- auto-resolution
 
 Generale:
 - permettere di avere rumore anche su inizio sim
+- mettere modulazione temporale delle hamiltoniane insieme a quelle dei lindblad durante la creazione dei termini
+- spostare creazione hamiltoniana in quantum utils
 
 Optimization:
++ TEST
 - on measurement time
 - speedup
 - custom precision annealing
 - riparare metriche finali matrici di confusione
-- TEST
 - run experiment alla fine non usa rumore, correggere correggendo le simulazioni per usare qualsiasi measurement protocol
 
 Run experiment:
