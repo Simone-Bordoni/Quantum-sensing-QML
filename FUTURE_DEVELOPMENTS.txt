@@ -5,8 +5,8 @@ Sweep:
 
 Generale:
 - permettere di avere rumore anche su inizio sim
-- mettere modulazione temporale delle hamiltoniane insieme a quelle dei lindblad durante la creazione dei termini
-- spostare creazione hamiltoniana in quantum utils
++ mettere modulazione temporale delle hamiltoniane insieme a quelle dei lindblad durante la creazione dei termini
++ spostare creazione hamiltoniana in quantum utils
 
 Optimization:
 + TEST

@@ -9,12 +9,8 @@ quantum sensing experiments.
 from .callback import OptimizationCallback
 from .experiment import Experiment
 from .experiment.quantum_utils import (
-    apply_single_qubit_rotation,
-    create_measurement_projector,
     generate_initial_state,
     generate_system_operators,
-    measure_qubit_probability,
-    project_and_measure,
 )
 from .experimental_parameters import (
     ExperimentalParameters,

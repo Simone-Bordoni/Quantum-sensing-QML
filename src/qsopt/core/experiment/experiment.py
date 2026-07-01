@@ -11,31 +11,26 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
 import qutip as qt
-import math
 import time as t
 import jax
 import jax.numpy as jnp
-import equinox
 import diffrax
-from jax import jit, lax
-import copy
-from collections import namedtuple
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
-    InteractionType,
     MeasurementProtocol,
-    Interaction,
     SystemConfiguration,
 )
 from qsopt.core.loss_functions import DetectionMetric
-from qsopt.core.functions_utils import (
+from qsopt.core.core_utils import (
     adaptive_map,
     annealing_weight,
     classify_sweep_axis,
+    make_coefficient,
     sweep_key_types,
+    wrap_time_modulation,
 )
 from qsopt.utils.results import SweepResults
 
@@ -43,15 +38,12 @@ if TYPE_CHECKING:
     from qsopt.utils.results import TimeEvolutionResults
 
 from .quantum_utils import (
-    apply_qubit_rotation,
+    PROMOTABLE_TYPES,
+    build_hamiltonian_term,
     build_qubit_noise_operators,
     embed_circuit_unitary,
-    embed_operator,
     generate_initial_state,
     generate_system_operators,
-    gu,
-    measure_qubits_probability,
-    u0,
 )
 
 # Import qutip_jax to enable JAX backend
@@ -65,10 +57,6 @@ warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a
 _SOLVER_ATOL = 1e-8
 _SOLVER_RTOL = 1e-6
 _TOL_ANNEAL_FACTOR = 100.0  # start 100x (2 decades) looser than the tight tolerances
-
-# One additive term of an interaction: const * Πf(value[name]) * operator * (g(t) if modulated).
-# operator is a Qobj or a callable values->Qobj (structural param); params maps name -> transform f.
-Contribution = namedtuple("Contribution", ["kind", "operator", "const", "params", "modulated"])
 
 
 class Experiment:
@@ -262,160 +250,36 @@ class Experiment:
         """
         self.hamiltonians, self.lindblad_operators, self.global_args = self._build_hamiltonian()
 
-    # Types one parameter can be factored out of into an args-coefficient, so a sweep varies it
-    # via args without rebuilding (kappa enters as √kappa via the per-contribution transform).
-    _PROMOTABLE_TYPES = frozenset({
-        InteractionType.DISPERSIVE, InteractionType.DETUNING, InteractionType.COUPLING,
-        InteractionType.XX, InteractionType.YY, InteractionType.ZZ,
-        InteractionType.DISSIPATION, InteractionType.INPUT_OUTPUT,
-    })
-
     def _build_hamiltonian(self, overrides: Optional[Dict[str, Any]] = None,
                            dynamic_keys: Optional[set] = None) -> tuple:
-        """
-        Build the Hamiltonian and Lindblad operators for the system (pure).
+        """Build the per-configuration Hamiltonians and Lindblad operators (pure; no self mutation).
 
-        Returns ``(hamiltonians, lindblad_operators, global_args)`` and does NOT mutate
-        ``self``, so it is safe to call inside ``jax.vmap``/``jax.jit`` for parameter
-        sweeps. :meth:`_generate_hamiltonian` wraps it for the normal (cached) path.
-
-        Creates:
-        1. Time-dependent cavity-field coupling: H_cavity = (i/2)√γ (a_in† a - a_in a†) g(t)
-        2. Dispersive qubit-cavity interactions: H_dispersive = -Σᵢ (χᵢ/2) a† a σz_i
-        3. Lindblad operators for noise processes on each qubit
-
-        The Hamiltonian uses individual chi values for each qubit, allowing for
-        differential dispersive coupling strengths between qubits and the cavity.
+        Each interaction is decomposed into :class:`InteractionTerm` terms (``build_hamiltonian_term``)
+        and assembled by ``_interaction_terms``: parameters are baked into the operators, or, for
+        keys in ``dynamic_keys``, factored into an args-coefficient so a sweep varies them on a
+        prebuilt solver. Qubit-noise Lindblads are added per configuration. Being pure, it is safe
+        inside ``jax.vmap``/``jax.jit``; :meth:`_generate_hamiltonian` wraps it for the cached path.
 
         Args:
-            overrides: Optional ``{global_args_key: value}`` mapping. Any interaction
-                parameter whose global key (e.g. ``"BaseModel_dispersive(cavity0,qubit0)__chi"``)
-                appears here has its value replaced by the override, which may be a traced
-                JAX value. The returned operators then become a (differentiable, vmappable)
-                function of those values. When ``None`` the configured values are used and
-                the result is identical to the previous behaviour.
-            dynamic_keys: Global keys factored into an args-coefficient instead of baked, so a
-                sweep varies them via ``solver.run(args=...)`` with the solver built once. Sweeps
-                only (optimizer leaves it ``None`` → fast baked solver). Only
-                :data:`_PROMOTABLE_TYPES`; covers H and Lindblad, with ``time_modulation`` kept in
-                the coeff.
+            overrides (dict[str, Any] | None): ``{global_args_key: value}`` replacing configured
+                parameter values (e.g. ``"BaseModel_dispersive(cavity0,qubit0)__chi"``); values may
+                be traced JAX arrays, making the operators a differentiable/vmappable function of
+                them. None uses the configured values.
+            dynamic_keys (set | None): global keys factored into an args-coefficient instead of
+                baked, so a sweep varies them via ``solver.run(args=...)`` with the solver built
+                once. Only :data:`PROMOTABLE_TYPES`; covers H and Lindblad and keeps any
+                ``time_modulation``. None bakes everything (the optimizer path).
+        Returns:
+            tuple: ``(hamiltonians, lindblad_operators, global_args)`` where
+              - hamiltonians (dict[str, qt.QobjEvo]): 'base' plus each configuration name -> H.
+              - lindblad_operators (dict[str, list[qt.Qobj | qt.QobjEvo]]): same keys -> collapse operators.
+              - global_args (dict[str, Any]): resolved parameter values keyed by global key.
         """
         if self.operators is None:
             raise RuntimeError("Operators must be generated before Hamiltonian")
 
         interaction_list = self.experimental_params.interactions
 
-
-        _ID = lambda x: x  # noqa: E731  (linear parameter -> identity transform)
-
-        def build_hamiltonian_term(interaction: Interaction):
-            """Decompose an interaction into a list of :class:`Contribution`.
-
-            Operators are bare; the assembler applies the parameter values, baking them or
-            factoring a promoted one into an args-coefficient. All 'L' contributions form one
-            collapse operator. kappa enters as √kappa, others linearly.
-
-            A multiplicative parameter scales a fixed operator -> list it in ``params`` with its
-            transform (promotable). A structural parameter (e.g. inside a matrix exponential) is
-            non-multiplicative: pass a callable ``operator(values) -> Qobj`` instead; it is rebuilt
-            per sweep value and must stay out of :data:`_PROMOTABLE_TYPES`.
-
-            Args:
-                interaction: Interaction with its type, subsystems, parameters and time_modulation.
-            Returns:
-                List of :class:`Contribution`, one per additive H/Lindblad term of the interaction.
-            """
-            int_type = interaction.interaction_type
-            system1, index1 = interaction.subsystem1
-            # flag only; the pulse is jitted in _wrap_time_modulation (qutip-jax needs a jitted fn)
-            has_mod = interaction.time_modulation is not None
-            contribs = []
-
-            def add(kind, operator, const=1.0, params=None, modulated=has_mod):
-                contribs.append(Contribution(kind, operator, complex(const), params or {}, modulated))
-
-            if int_type == InteractionType.DETUNING:
-                if system1 == 'cavity':
-                    a, a_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
-                    add('H', a_dag * a, params={'delta': _ID})
-                elif system1 == 'field':
-                    a, a_dag = self.operators["a_f"][index1], self.operators["a_f_dag"][index1]
-                    add('H', a_dag * a, params={'delta': _ID})
-                elif system1 == 'qubit':
-                    add('H', self.operators["sigma_z"][index1], const=0.5, params={'delta': _ID})
-
-            elif int_type == InteractionType.DRIVE:
-                if system1 == 'cavity':
-                    a, a_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
-                elif system1 == 'field':
-                    a, a_dag = self.operators["a_f"][index1], self.operators["a_f_dag"][index1]
-                # 1j*(eps*a_dag - conj(eps)*a)
-                add('H', a_dag, const=1j, params={'amplitude': _ID})
-                add('H', a, const=-1j, params={'amplitude': jnp.conj})
-
-            elif int_type == InteractionType.DISSIPATION:
-                add('L', self.operators["a_c"][index1], params={'kappa': jnp.sqrt})
-
-            if interaction.subsystem2 is not None:
-                system2, index2 = interaction.subsystem2
-
-            if int_type == InteractionType.COUPLING:
-                a1, a1_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
-                a2, a2_dag = self.operators["a_c"][index2], self.operators["a_c_dag"][index2]
-                add('H', a1_dag * a2 + a1 * a2_dag, params={'gamma': _ID})
-
-            if int_type == InteractionType.INPUT_OUTPUT:
-                if system2 == 'cavity':
-                    system1, index1, system2, index2 = system2, index2, system1, index1
-                ac, ac_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
-                af, af_dag = self.operators["a_f"][index2], self.operators["a_f_dag"][index2]
-                add('H', af_dag * ac - af * ac_dag, const=1j/2, params={'kappa': jnp.sqrt, 'gamma': _ID})
-                # one collapse op gamma*g(t)*a_f + sqrt(kappa)*a_c; g(t) modulates only a_f
-                add('L', af, params={'gamma': _ID})
-                add('L', ac, params={'kappa': jnp.sqrt}, modulated=False)
-
-            if int_type == InteractionType.DISPERSIVE:
-                if system2 == 'cavity':
-                    system1, index1, system2, index2 = system2, index2, system1, index1
-                ac, ac_dag = self.operators["a_c"][index1], self.operators["a_c_dag"][index1]
-                sz = self.operators["sigma_z"][index2]
-                add('H', ac_dag * ac * sz, const=-1.0, params={'chi': _ID})
-
-            if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
-                if system1 != 'qubit' or system2 != 'qubit':
-                    raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
-                pauli = {InteractionType.XX: "sigma_x", InteractionType.YY: "sigma_y", InteractionType.ZZ: "sigma_z"}[int_type]
-                add('H', self.operators[pauli][index1] * self.operators[pauli][index2], const=0.5, params={'chi': _ID})
-
-            if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
-                # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
-                offsets = {'cavity': 0, 'field': self.n_cavities, 'qubit': self.n_cavities + self.n_fields}
-                positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
-                if interaction.subsystem2 is not None:
-                    positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
-                # embed the custom matrix at those positions
-                identities = (
-                    list(self.operators["I_c"])
-                    + list(self.operators["I_f"])
-                    + list(self.operators["I_q"])
-                )
-                embedded = embed_operator(interaction.custom_matrix, positions, identities)
-                add('H' if int_type == InteractionType.CUSTOM_HAMILTONIAN else 'L', embedded)
-
-            return contribs
-
-        def _wrap_time_modulation(func, key_map):
-            """Adapt a user time-modulation ``func(t, **local_params)`` to a jitted
-            ``coeff(t, **global_args)``.
-
-            Returns a jitted coefficient that picks this interaction's params out of the global
-            args dict (via ``key_map``: local name -> global key) and calls ``func``. Must be
-            jitted: qutip-jax only accepts JAX-valued coefficients from jitted PjitFunctions.
-            """
-            def wrapped(t, **all_args):
-                local = {k: all_args[v] for k, v in key_map.items()}
-                return func(t, **local)
-            return jit(wrapped)
 
         H_const = []
         H_time_dependent = []
@@ -445,49 +309,69 @@ class Experiment:
             return merged, key_map
 
         def _interaction_terms(interaction, prefix):
-            """Build one interaction's contribution as a ``(const_H, timedep_H, L)`` triple.
+            """Assemble an interaction from its contributions, baking or promoting each parameter.
 
-            Each entry is ``None`` when absent:
-              - const_H   : a constant ``Qobj``                  (time-independent H term)
-              - timedep_H : a ``[Qobj, coeff(t, **args)]`` pair   (time-dependent H term)
-              - L_term    : a ``Qobj`` / ``QobjEvo``             (Lindblad operator)
+            Parameters in ``dynamic_keys`` are factored into the coefficient as ``f(args[key])`` so
+            they can be swept via ``args``; others are baked (overrides applied), keeping ``g(t)``.
 
-            A parameter in ``dynamic_keys`` is pulled out of the matrix into the coefficient,
-            ``[operator|_{param=1}, lambda t: g(t)*args[key]]`` (any existing time-modulation
-            ``g(t)`` kept), so it can be swept via ``args``. Other parameters are baked in
-            (overrides applied).
+            Args:
+                interaction (Interaction): the interaction to assemble.
+                prefix (str): global-args key prefix ("BaseModel_" or "Conf:<name>_").
+            Returns:
+                tuple: ``(const_H, timedep_H, L_term)`` where
+                  - const_H (list[qt.Qobj]): constant Hamiltonian terms.
+                  - timedep_H (list[[qt.Qobj, callable]]): ``[operator, coeff(t, **args)]`` pairs.
+                  - L_term (qt.Qobj | qt.QobjEvo | None): the single Lindblad collapse operator.
             """
+            # resolve local params to global keys; find which ones this sweep promotes
             merged, key_map = _map_to_global_args(interaction, prefix)
-            dyn = [name for name, gkey in key_map.items() if dynamic_keys and gkey in dynamic_keys]
-
-            if not dyn:
-                H_term, L_term, t_func, _ = generate_hamiltonian_term(interaction, merged)
-                if H_term is not None and t_func is not None:
-                    return None, [H_term, _wrap_time_modulation(t_func, key_map)], L_term
-                return H_term, None, L_term
-
-            if interaction.interaction_type not in self._PROMOTABLE_TYPES:
+            promoted = {name for name, key in key_map.items() if dynamic_keys and key in dynamic_keys}
+            # promotion is only supported for the curated multiplicative types
+            if promoted and interaction.interaction_type not in PROMOTABLE_TYPES:
                 raise NotImplementedError(
-                    f"Cannot factor {dyn} of {interaction._interaction_context()} into an args-coefficient; "
-                    f"only {sorted(t.name for t in self._PROMOTABLE_TYPES)} support it. Sweep it via the rebuild path instead.")
-            if len(dyn) != 1:
-                raise NotImplementedError(f"{interaction._interaction_context()}: expected one promoted parameter, got {dyn}.")
+                    f"Cannot factor {sorted(promoted)} of {interaction._interaction_context()} into an args-coefficient; "
+                    f"only {sorted(t.name for t in PROMOTABLE_TYPES)} support it. Sweep it via the rebuild path instead.")
+            # the interaction's pulse g(t), wrapped to read global args (None if not modulated)
+            time_modulation = wrap_time_modulation(interaction.time_modulation, key_map) if interaction.time_modulation is not None else None
 
-            gkey = key_map[dyn[0]]
-            H_unit, _, t_func, _ = generate_hamiltonian_term(interaction, {**merged, dyn[0]: 1.0})
-            if t_func is not None:
-                mod = _wrap_time_modulation(t_func, key_map)
-                coeff = jit(lambda t, **a: mod(t, **a) * a[gkey])
+            const_H, timedep_H, L_const, L_timedep = [], [], [], []
+            for c in build_hamiltonian_term(interaction, self.operators, self.n_cavities, self.n_fields):
+                # structural (callable) operators are rebuilt from the resolved values
+                operator = c.operator(merged) if callable(c.operator) else c.operator
+                # bake non-promoted params into the prefactor; collect promoted ones as coeff factors
+                base = c.const
+                promoted_factors = []
+                for name, transform in c.params.items():
+                    if name in promoted:
+                        promoted_factors.append((transform, key_map[name]))
+                    else:
+                        base *= complex(transform(merged[name]))
+                term_modulation = time_modulation if c.modulated else None
+                # constant term, or an [operator, coeff] pair when time- or args-dependent
+                if not promoted_factors and term_modulation is None:
+                    part = base * operator
+                else:
+                    part = [operator, make_coefficient(base, promoted_factors, term_modulation)]
+                # route H vs L, constant vs time-dependent
+                is_pair = isinstance(part, list)
+                if c.kind == 'H':
+                    (timedep_H if is_pair else const_H).append(part)
+                else:
+                    (L_timedep if is_pair else L_const).append(part)
+
+            # all 'L' pieces are ONE collapse operator: keep them in a single QobjEvo (or Qobj)
+            if not L_const and not L_timedep:
+                L_term = None
+            elif not L_timedep:
+                L_term = sum(L_const)
             else:
-                coeff = jit(lambda t, **a: a[gkey])
-            return None, [H_unit, coeff], None
+                L_term = qt.QobjEvo(([sum(L_const)] if L_const else []) + L_timedep, args=global_args)
+            return const_H, timedep_H, L_term
 
         for interaction in interaction_list:
             const_H, timedep_H, L_term = _interaction_terms(interaction, "BaseModel_")
-            if const_H is not None:
-                H_const.append(const_H)
-            if timedep_H is not None:
-                H_time_dependent.append(timedep_H)
+            H_const.extend(const_H)
+            H_time_dependent.extend(timedep_H)
             if L_term is not None:
                 L_interaction.append(L_term)
 
@@ -1209,8 +1093,8 @@ class Experiment:
             rho0 = rho_meas
 
         times = np.array(all_times)
-        # Compute pulse shape using the same u0 function as visualization
-        pulse_shape = np.array([float(u0(t, sigma=args["sigma"])) for t in times])
+        # pulse shape plotting is outdated; to be reworked to plot the experiment's time modulations
+        pulse_shape = None
 
         # Turn lists into arrays
         detection_lists.update((name, np.array(list)) for name, list in detection_lists.items())

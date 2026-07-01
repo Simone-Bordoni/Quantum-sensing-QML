@@ -8,7 +8,7 @@ Designed to support both single and multi-qubit quantum sensing experiments.
 This module provides reusable components that can be composed for different experiment types.
 """
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, NamedTuple, Union
 import math
 import warnings
 
@@ -16,59 +16,43 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
-from jax.scipy.special import erfc
 
-from qsopt.core.experimental_parameters import State, SystemConfiguration
+from qsopt.core.experimental_parameters import (
+    Interaction,
+    InteractionType,
+    State,
+    SystemConfiguration,
+)
+
+# Types one parameter can be factored out of into an args-coefficient, so a sweep varies it
+# via args without rebuilding (kappa enters as √kappa via the per-contribution transform).
+PROMOTABLE_TYPES = frozenset({
+    InteractionType.DISPERSIVE, InteractionType.DETUNING, InteractionType.COUPLING,
+    InteractionType.XX, InteractionType.YY, InteractionType.ZZ,
+    InteractionType.DISSIPATION, InteractionType.INPUT_OUTPUT,
+})
+
+_ID = lambda x: x  # noqa: E731  (linear parameter -> identity transform)
 
 
-@jax.jit
-def gu(t, **kwargs):
+class InteractionTerm(NamedTuple):
+    """One additive term of an interaction's Hamiltonian or Lindblad operator.
+
+    Value of the term is ``const * Π transform(value[name]) * operator * (g(t) if modulated)``.
+
+    Attributes:
+        kind (str): 'H' for a Hamiltonian term, 'L' for a Lindblad collapse-operator term.
+        operator (qt.Qobj | Callable): bare operator matrix, or a callable ``values -> Qobj`` for a
+            structural (non-multiplicative) parameter that reshapes the matrix.
+        const (complex): constant numeric prefactor.
+        params (dict[str, Callable]): multiplicative parameter name -> transform f (identity, sqrt, ...).
+        modulated (bool): whether the time-modulation pulse g(t) multiplies this term.
     """
-    Time-dependent coupling function for input cavity transparency.
-
-    Args:
-        t: float or JAX array, time variable
-        **kwargs: Dictionary containing 'sigma' parameter (pulse bandwidth)
-
-    Returns:
-        JAX array: Normalized coupling strength g(t)
-    """
-    sigma = kwargs.get("sigma", 0.1)
-    dx = sigma * t
-    coupling = jnp.sqrt(2 * sigma / jnp.sqrt(jnp.pi) * jnp.exp(-(dx**2)) / erfc(dx))
-    return jnp.array(coupling, float)
-
-
-@jax.jit
-def u0(t, **kwargs):
-    """
-    Normalized Gaussian pulse envelope function.
-
-    This function represents the amplitude envelope of a Gaussian input pulse,
-    useful for visualizing the temporal shape of the input field. Unlike gu(),
-    this is a simple Gaussian without normalization factors.
-
-    Args:
-        t: float or JAX array, time variable(s)
-        **kwargs: Dictionary containing 'sigma' parameter (pulse bandwidth)
-
-    Returns:
-        JAX array: Gaussian pulse amplitude at time t
-
-    Example:
-        >>> import numpy as np
-        >>> t_vals = np.linspace(-5, 5, 100)
-        >>> sigma = 0.1
-        >>> pulse = u0(t_vals, sigma=sigma)
-        >>> # pulse has maximum value of 1.0 at t=0
-
-    Physical Interpretation:
-        Represents the unnormalized envelope of a Gaussian pulse centered at t=0.
-        The pulse width is determined by 1/sigma, where sigma is the inverse pulse width.
-    """
-    sigma = kwargs.get("sigma", 0.1)
-    dx = sigma * t
-    return jnp.exp(-(dx**2))
+    kind: str
+    operator: Union[qt.Qobj, Callable]
+    const: complex
+    params: Dict[str, Callable]
+    modulated: bool
 
 def generate_system_operators(
     n_cavities: int,\
@@ -443,6 +427,168 @@ def generate_initial_state(
         return qt.tensor(*state_matrix_list, qubits_ground)
 
 
+def build_hamiltonians(operators, experimental_params, n_cavities, n_fields, n_qubits,
+                       overrides=None, dynamic_keys=None):
+    """Build the per-configuration Hamiltonians and Lindblad operators (pure).
+
+    Each interaction is decomposed into :class:`InteractionTerm` terms and assembled by
+    ``_interaction_terms``: parameters are baked into the operators, or, for keys in
+    ``dynamic_keys``, factored into an args-coefficient so a sweep varies them on a prebuilt
+    solver. Qubit-noise Lindblads are added per configuration. Pure, so safe inside
+    ``jax.vmap``/``jax.jit``.
+
+    Args:
+        operators (dict): system operators from ``generate_system_operators``.
+        experimental_params (ExperimentalParameters): interactions, configurations and noise model.
+        n_cavities (int): number of cavity modes.
+        n_fields (int): number of field modes.
+        n_qubits (int): number of qubits.
+        overrides (dict[str, Any] | None): ``{global_args_key: value}`` replacing configured
+            parameter values; may be traced JAX arrays. None uses the configured values.
+        dynamic_keys (set | None): global keys factored into an args-coefficient instead of baked,
+            so a sweep varies them via ``solver.run(args=...)``. Only :data:`PROMOTABLE_TYPES`.
+    Returns:
+        tuple: ``(hamiltonians, lindblad_operators, global_args)`` where
+          - hamiltonians (dict[str, qt.QobjEvo]): 'base' plus each configuration name -> H.
+          - lindblad_operators (dict[str, list[qt.Qobj | qt.QobjEvo]]): same keys -> collapse operators.
+          - global_args (dict[str, Any]): resolved parameter values keyed by global key.
+    """
+    if operators is None:
+        raise RuntimeError("Operators must be generated before Hamiltonian")
+
+    H_const, H_time_dependent, L_interaction = [], [], []
+    global_args: Dict[str, Any] = {}
+
+    # base model: interactions common to every configuration
+    for interaction in experimental_params.interactions:
+        const_H, timedep_H, L_term = _interaction_terms(
+            interaction, "BaseModel_", operators, n_cavities, n_fields, overrides, global_args, dynamic_keys)
+        H_const.extend(const_H)
+        H_time_dependent.extend(timedep_H)
+        if L_term is not None:
+            L_interaction.append(L_term)
+
+    H_static = operators["identity"] if not H_const else sum(H_const)
+    H_base = qt.QobjEvo([H_static] + H_time_dependent, args=global_args)
+
+    L_base_noise = _qubit_noise(experimental_params.noise_model, operators, n_qubits)
+    hamiltonians = {'base': H_base}
+    lindblad_operators = {'base': L_interaction + L_base_noise}
+
+    # per-configuration extras on top of the base model
+    for configuration in experimental_params.configuration_set:
+        const_terms, time_dependent_terms, lindblad_terms = [], [], []
+        for interaction in configuration.interactions:
+            const_H, timedep_H, L_term = _interaction_terms(
+                interaction, f"Conf:{configuration.name}_", operators, n_cavities, n_fields, overrides, global_args, dynamic_keys)
+            const_terms.extend(const_H)
+            time_dependent_terms.extend(timedep_H)
+            if L_term is not None:
+                lindblad_terms.append(L_term)
+
+        noise_terms = _qubit_noise(configuration.noise_model, operators, n_qubits) if configuration.noise_model is not None else L_base_noise
+        conf_H_static = H_static.copy() if not const_terms else H_static + sum(const_terms)
+        conf_H_time = H_time_dependent + time_dependent_terms
+
+        hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=global_args)
+        lindblad_operators[configuration.name] = L_interaction + lindblad_terms + noise_terms
+
+    return hamiltonians, lindblad_operators, global_args
+
+
+def build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
+    """Decompose an interaction into a list of :class:`InteractionTerm` (bare-operator terms).
+
+    Operators carry no scalar prefactor; the assembler applies the parameter values, baking them
+    or factoring a promoted one into an args-coefficient. All 'L' contributions form one collapse
+    operator. kappa enters as √kappa, others linearly. A structural (non-multiplicative) parameter,
+    e.g. inside a matrix exponential, is passed as a callable ``operator(values) -> Qobj`` and must
+    stay out of :data:`PROMOTABLE_TYPES`.
+
+    Args:
+        interaction (Interaction): the interaction with its type, subsystems, parameters, time_modulation.
+        operators (dict): system operators from ``generate_system_operators``.
+        n_cavities (int): number of cavity modes (for custom-matrix tensor offsets).
+        n_fields (int): number of field modes (for custom-matrix tensor offsets).
+    Returns:
+        list[InteractionTerm]: one per additive H/Lindblad term of the interaction.
+    """
+    int_type = interaction.interaction_type
+    system1, index1 = interaction.subsystem1
+    # flag only; the pulse is jitted in wrap_time_modulation (qutip-jax needs a jitted fn)
+    has_mod = interaction.time_modulation is not None
+    terms = []
+
+    def add(kind, operator, const=1.0, params=None, modulated=has_mod):
+        terms.append(InteractionTerm(kind, operator, complex(const), params or {}, modulated))
+
+    if int_type == InteractionType.DETUNING:
+        if system1 == 'cavity':
+            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+            add('H', a_dag * a, params={'delta': _ID})
+        elif system1 == 'field':
+            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
+            add('H', a_dag * a, params={'delta': _ID})
+        elif system1 == 'qubit':
+            add('H', operators["sigma_z"][index1], const=0.5, params={'delta': _ID})
+
+    elif int_type == InteractionType.DRIVE:
+        if system1 == 'cavity':
+            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        elif system1 == 'field':
+            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
+        # 1j*(eps*a_dag - conj(eps)*a)
+        add('H', a_dag, const=1j, params={'amplitude': _ID})
+        add('H', a, const=-1j, params={'amplitude': jnp.conj})
+
+    elif int_type == InteractionType.DISSIPATION:
+        add('L', operators["a_c"][index1], params={'kappa': jnp.sqrt})
+
+    if interaction.subsystem2 is not None:
+        system2, index2 = interaction.subsystem2
+
+    if int_type == InteractionType.COUPLING:
+        a1, a1_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        a2, a2_dag = operators["a_c"][index2], operators["a_c_dag"][index2]
+        add('H', a1_dag * a2 + a1 * a2_dag, params={'gamma': _ID})
+
+    if int_type == InteractionType.INPUT_OUTPUT:
+        if system2 == 'cavity':
+            system1, index1, system2, index2 = system2, index2, system1, index1
+        ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        af, af_dag = operators["a_f"][index2], operators["a_f_dag"][index2]
+        add('H', af_dag * ac - af * ac_dag, const=1j/2, params={'kappa': jnp.sqrt, 'gamma': _ID})
+        # one collapse op gamma*g(t)*a_f + sqrt(kappa)*a_c; g(t) modulates only a_f
+        add('L', af, params={'gamma': _ID})
+        add('L', ac, params={'kappa': jnp.sqrt}, modulated=False)
+
+    if int_type == InteractionType.DISPERSIVE:
+        if system2 == 'cavity':
+            system1, index1, system2, index2 = system2, index2, system1, index1
+        ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        sz = operators["sigma_z"][index2]
+        add('H', ac_dag * ac * sz, const=-1.0, params={'chi': _ID})
+
+    if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
+        if system1 != 'qubit' or system2 != 'qubit':
+            raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
+        pauli = {InteractionType.XX: "sigma_x", InteractionType.YY: "sigma_y", InteractionType.ZZ: "sigma_z"}[int_type]
+        add('H', operators[pauli][index1] * operators[pauli][index2], const=0.5, params={'chi': _ID})
+
+    if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
+        # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
+        offsets = {'cavity': 0, 'field': n_cavities, 'qubit': n_cavities + n_fields}
+        positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
+        if interaction.subsystem2 is not None:
+            positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
+        # embed the custom matrix at those positions
+        identities = list(operators["I_c"]) + list(operators["I_f"]) + list(operators["I_q"])
+        embedded = embed_operator(interaction.custom_matrix, positions, identities)
+        add('H' if int_type == InteractionType.CUSTOM_HAMILTONIAN else 'L', embedded)
+
+    return terms
+
+
 # ==================== Private Helper Functions ====================
 
 
@@ -525,327 +671,159 @@ def _create_custom_state(levels: int, amplitudes: Union[List[complex], np.ndarra
     return psi * psi.dag()  # type: ignore
 
 
-def apply_single_qubit_rotation(
-    rho: qt.Qobj, theta: float, axis: str, I_field: qt.Qobj, I_cavity: qt.Qobj
-) -> qt.Qobj:
-    """
-    Apply rotation gate to qubit in composite space.
+def _map_to_global_args(interaction, prefix, overrides, global_args):
+    """Remap an interaction's local parameters to globally-unique keys.
 
-    Applies rotation only to qubit subsystem while preserving field and cavity states.
+    Builds ``f"{prefix}{context}__{name}"`` per local name and writes its value into
+    ``global_args`` (override if given, else configured).
 
     Args:
-        rho: Density matrix in composite space (field ⊗ cavity ⊗ qubit)
-        theta: Rotation angle in radians
-        axis: Rotation axis ('x', 'y', or 'z')
-        I_field: Identity operator for field subsystem
-        I_cavity: Identity operator for cavity subsystem
-
+        interaction (Interaction): the interaction whose parameters to remap.
+        prefix (str): global-args key prefix ("BaseModel_" or "Conf:<name>_").
+        overrides (dict[str, Any] | None): values replacing configured ones, keyed by global key.
+        global_args (dict[str, Any]): accumulator, updated in place with each global key's value.
     Returns:
-        Rotated density matrix
-
-    Raises:
-        ValueError: If axis is not 'x', 'y', or 'z'
-
-    Example:
-        >>> rho_rotated = apply_single_qubit_rotation(rho, np.pi/2, 'y', I_field, I_cavity)
+        tuple: ``(merged, key_map)`` with merged values and local name -> global key; a non-dict
+            ``parameters`` (bare scalar) is returned unchanged with an empty key_map.
     """
-    with qt.CoreOptions(default_dtype="jax"):
-        # Select Pauli matrix based on axis
-        if axis.lower() == "x":
-            pauli = qt.sigmax()
-        elif axis.lower() == "y":
-            pauli = qt.sigmay()
-        elif axis.lower() == "z":
-            pauli = qt.sigmaz()
+    params = interaction.parameters
+    if not isinstance(params, dict):
+        return params, {}
+    merged = dict(params)
+    key_map = {}
+    for key in params:
+        global_key = f"{prefix}{interaction._interaction_context()}__{key}"
+        key_map[key] = global_key
+        if overrides is not None and global_key in overrides:
+            merged[key] = overrides[global_key]
+        global_args[global_key] = merged[key]
+    return merged, key_map
+
+
+def _wrap_time_modulation(func, key_map):
+    """Adapt a user pulse ``func(t, **local_params)`` to a jitted ``coeff(t, **global_args)``.
+
+    Picks this interaction's params out of the global args dict and calls ``func``; jitted because
+    qutip-jax only accepts JAX-valued coefficients from jitted functions.
+
+    Args:
+        func (callable): user time-modulation g(t, **local_params).
+        key_map (dict[str, str]): local parameter name -> global-args key.
+    Returns:
+        callable: jitted coefficient g(t, **global_args).
+    """
+    def wrapped(t, **all_args):
+        local = {name: all_args[key] for name, key in key_map.items()}
+        return func(t, **local)
+    return jax.jit(wrapped)
+
+
+def _make_coefficient(base, promoted_factors, time_modulation):
+    """Build a jitted args-coefficient ``base * Π transform(args[key]) * g(t, **args)``.
+
+    Args:
+        base (complex): constant prefactor with baked (non-promoted) params folded in.
+        promoted_factors (list[tuple[callable, str]]): (transform, global key) per promoted param.
+        time_modulation (callable | None): wrapped pulse g(t, **args), or None if not modulated.
+    Returns:
+        callable: jitted coefficient; base times each promoted factor, times the pulse when present.
+    """
+    def coefficient(t, **args):
+        value = base
+        for transform, global_key in promoted_factors:   # one factor per promoted parameter
+            value = value * transform(args[global_key])
+        return value * time_modulation(t, **args) if time_modulation is not None else value
+    return jax.jit(coefficient)
+
+
+def _interaction_terms(interaction, prefix, operators, n_cavities, n_fields, overrides, global_args, dynamic_keys):
+    """Assemble an interaction from its terms, baking or promoting each parameter.
+
+    Parameters in ``dynamic_keys`` are factored into the coefficient as ``f(args[key])`` so they
+    can be swept via ``args``; others are baked (overrides applied), keeping ``g(t)``.
+
+    Args:
+        interaction (Interaction): the interaction to assemble.
+        prefix (str): global-args key prefix ("BaseModel_" or "Conf:<name>_").
+        operators (dict): system operators from ``generate_system_operators``.
+        n_cavities (int): number of cavity modes.
+        n_fields (int): number of field modes.
+        overrides (dict[str, Any] | None): values replacing configured ones, keyed by global key.
+        global_args (dict[str, Any]): accumulator of resolved values by global key.
+        dynamic_keys (set | None): global keys to promote into args-coefficients.
+    Returns:
+        tuple: ``(const_H, timedep_H, L_term)`` where
+          - const_H (list[qt.Qobj]): constant Hamiltonian terms.
+          - timedep_H (list[[qt.Qobj, callable]]): ``[operator, coeff(t, **args)]`` pairs.
+          - L_term (qt.Qobj | qt.QobjEvo | None): the single Lindblad collapse operator.
+    """
+    # resolve local params to global keys; find which ones this sweep promotes
+    merged, key_map = _map_to_global_args(interaction, prefix, overrides, global_args)
+    promoted = {name for name, key in key_map.items() if dynamic_keys and key in dynamic_keys}
+    # promotion is only supported for the curated multiplicative types
+    if promoted and interaction.interaction_type not in PROMOTABLE_TYPES:
+        raise NotImplementedError(
+            f"Cannot factor {sorted(promoted)} of {interaction._interaction_context()} into an args-coefficient; "
+            f"only {sorted(t.name for t in PROMOTABLE_TYPES)} support it. Sweep it via the rebuild path instead.")
+    # the interaction's pulse g(t), wrapped to read global args (None if not modulated)
+    time_modulation = _wrap_time_modulation(interaction.time_modulation, key_map) if interaction.time_modulation is not None else None
+
+    const_H, timedep_H, L_const, L_timedep = [], [], [], []
+    for term in build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
+        # structural (callable) operators are rebuilt from the resolved values
+        operator = term.operator(merged) if callable(term.operator) else term.operator
+        # bake non-promoted params into the prefactor; collect promoted ones as coeff factors
+        base = term.const
+        promoted_factors = []
+        for name, transform in term.params.items():
+            if name in promoted:
+                promoted_factors.append((transform, key_map[name]))
+            else:
+                base *= complex(transform(merged[name]))
+        term_modulation = time_modulation if term.modulated else None
+        # constant term, or an [operator, coeff] pair when time- or args-dependent
+        if not promoted_factors and term_modulation is None:
+            part = base * operator
         else:
-            raise ValueError(f"Invalid rotation axis: {axis}. Must be 'x', 'y', or 'z'.")
-
-        # Create rotation gate: exp(-i * σ * θ / 2)
-        rotation_gate = (-1j * pauli * theta / 2).expm()
-
-        # Embed in composite space
-        r = qt.tensor(I_field, I_cavity, rotation_gate)
-
-        # Apply rotation: R ρ R†
-        return r * rho * r.dag()  # type: ignore
-
-
-def create_measurement_projector(
-    outcome: int, field_levels: int, cavity_levels: int, qubit_levels: int
-) -> qt.Qobj:
-    """
-    Create measurement projector for qubit in composite space.
-
-    Args:
-        outcome: Measurement outcome (0 for ground state |0⟩, 1 for excited state |1⟩)
-        field_levels: Number of field levels
-        cavity_levels: Number of cavity levels
-        qubit_levels: Number of qubit levels
-
-    Returns:
-        Projector operator in composite space
-
-    Example:
-        >>> P0 = create_measurement_projector(0, 2, 2, 2)  # Project onto |0⟩
-        >>> P1 = create_measurement_projector(1, 2, 2, 2)  # Project onto |1⟩
-    """
-    with qt.CoreOptions(default_dtype="jax"):
-        I_field = qt.identity(field_levels)
-        I_cavity = qt.identity(cavity_levels)
-
-        if outcome == 0:
-            # Ground state projector |0⟩⟨0|
-            P = qt.Qobj([[1, 0], [0, 0]])
-        elif outcome == 1:
-            # Excited state projector |1⟩⟨1|
-            P = qt.Qobj([[0, 0], [0, 1]])
+            part = [operator, _make_coefficient(base, promoted_factors, term_modulation)]
+        # route H vs L, constant vs time-dependent
+        is_pair = isinstance(part, list)
+        if term.kind == 'H':
+            (timedep_H if is_pair else const_H).append(part)
         else:
-            raise ValueError(f"Invalid measurement outcome: {outcome}. Must be 0 or 1.")
+            (L_timedep if is_pair else L_const).append(part)
 
-        return qt.tensor(I_field, I_cavity, P)
-
-
-def project_and_measure(
-    rho: qt.Qobj, outcome: int, field_levels: int, cavity_levels: int, qubit_levels: int
-):
-    """
-    Project density matrix onto measurement outcome and calculate probability.
-
-    Performs a projective measurement on the qubit subsystem, returning both
-    the projected (unnormalized) state and the measurement probability.
-
-    Args:
-        rho: Density matrix in composite space (field ⊗ cavity ⊗ qubit)
-        outcome: Measurement outcome (0 or 1)
-        field_levels: Number of field levels
-        cavity_levels: Number of cavity levels
-        qubit_levels: Number of qubit levels
-
-    Returns:
-        Tuple of (projected_state, probability):
-            - projected_state: P|ψ⟩⟨ψ|P† (unnormalized)
-            - probability: Tr(Pρ) as JAX array (for autodiff compatibility)
-
-    Note:
-        Returns JAX array for probability to maintain autodiff compatibility.
-        Convert to float outside JAX-traced functions if needed.
-
-    Example:
-        >>> rho_proj, prob = project_and_measure(rho, 0, 2, 2, 2)
-        >>> rho_normalized = rho_proj / rho_proj.tr()  # Normalize for next step
-    """
-    import jax.numpy as jnp
-
-    P = create_measurement_projector(outcome, field_levels, cavity_levels, qubit_levels)
-    rho_projected = P * rho * P.dag()  # type: ignore
-    probability = jnp.real(rho_projected.tr())
-
-    return rho_projected, probability
-
-
-def measure_qubit_probability(
-    rho: qt.Qobj, outcome: int, field_levels: int, cavity_levels: int, qubit_levels: int
-):
-    """
-    Calculate probability of measuring qubit in specified state.
-
-    Computes Tr(P_outcome ρ) where P_outcome is the projector onto |outcome⟩.
-
-    Args:
-        rho: Density matrix in composite space (field ⊗ cavity ⊗ qubit)
-        outcome: Measurement outcome (0 for |0⟩, 1 for |1⟩)
-        field_levels: Number of field levels
-        cavity_levels: Number of cavity levels
-        qubit_levels: Number of qubit levels
-
-    Returns:
-        Measurement probability ∈ [0,1] as JAX array (for autodiff compatibility)
-
-    Note:
-        Returns JAX array to maintain autodiff compatibility.
-        Convert to float outside JAX-traced functions if needed.
-
-    Example:
-        >>> prob0 = measure_qubit_probability(rho, 0, 2, 2, 2)
-        >>> prob1 = measure_qubit_probability(rho, 1, 2, 2, 2)
-        >>> assert abs(prob0 + prob1 - 1.0) < 1e-10  # Probabilities sum to 1
-    """
-    import jax.numpy as jnp
-
-    P = create_measurement_projector(outcome, field_levels, cavity_levels, qubit_levels)
-    probability = jnp.real((P * rho * P.dag()).tr())  # type: ignore
-
-    return probability
-
-
-def apply_qubit_rotation(
-    rho: qt.Qobj, theta: float, qubit_index: int, operators: Dict[str, qt.Qobj], axis: str = "y"
-) -> qt.Qobj:
-    """
-    Apply a rotation to a specific qubit in a multi-qubit composite system.
-
-    Generic function for rotating individual qubits in the composite Hilbert space
-    (cavity ⊗ field ⊗ qubits). Works for any number of cavities, fields and qubits.
-
-    Args:
-        rho: Density matrix in composite space
-        theta: Rotation angle in radians
-        qubit_index: Index of qubit to rotate (0-based)
-        operators: Dictionary of operators from generate_system_operators()
-        axis: Rotation axis ('x', 'y', or 'z')
-
-    Returns:
-        Rotated density matrix
-
-    Example:
-        >>> # For a two-qubit system (1 cavity, 1 field)
-        >>> ops = generate_system_operators(1, 1, 2, 2, 2, 2)
-        >>> rho_rotated = apply_qubit_rotation(rho, np.pi/4, qubit_index=0, operators=ops, axis='y')
-        >>> # Rotates the first qubit by π/4 around the Y-axis
-    """
-    # Per-mode identities ordered as in generate_system_operators: cavity ⊗ field ⊗ qubits
-    I_c = operators["I_c"]
-    I_f = operators["I_f"]
-    I_q = operators["I_q"]
-    n_qubits = len(I_q)
-
-    if not (0 <= qubit_index < n_qubits):
-        raise ValueError(f"qubit_index must be in [0, {n_qubits}), got {qubit_index}")
-
-    # Build single-qubit rotation matrix
-    with qt.CoreOptions(default_dtype="jax"):
-        if axis.lower() == "x":
-            pauli = qt.sigmax()
-        elif axis.lower() == "y":
-            pauli = qt.sigmay()
-        elif axis.lower() == "z":
-            pauli = qt.sigmaz()
-        else:
-            raise ValueError(f"Invalid rotation axis: {axis}. Must be 'x', 'y', or 'z'.")
-
-        rotation_single = (-1j * pauli * theta / 2).expm()
-
-        # Replace the identity acting on the target qubit with the rotation,
-        # then embed in the full composite space.
-        qubit_ops = list(I_q)
-        qubit_ops[qubit_index] = rotation_single
-        rotation_gate = qt.tensor(list(I_c) + list(I_f) + qubit_ops)
-
-    return rotation_gate * rho * rotation_gate.dag()  # type: ignore
-
-
-def measure_qubits_probability(
-    rho: qt.Qobj, qubit_indices: Union[int, str, List[int]], operators: Dict[str, qt.Qobj], state: str = "0",\
-    field_levels: Optional[int] = None, cavity_levels: Optional[int] = None, q_levels: Optional[List[int]] = None
-) -> float:
-    """
-    Measure probability for specific qubits in multi-qubit system.
-
-    Generic measurement function supporting:
-    - Single qubit measurement: qubit_indices=i measures qubit i
-    - Full multi-qubit measurement: qubit_indices='all' measures all qubits jointly
-    - Partial multi-qubit measurement: qubit_indices=list[i,j,...,k] measures qubits i,j,...,k jointly
-
-    Args:
-        rho: Density matrix in composite space
-        qubit_indices: List of qubit indices to measure (0-based)
-        operators: Dictionary of operators from generate_*_operators()
-        state: State to measure:
-                - For single qubit: '0' or '1'
-                - For multiple qubits: '00...0', '10...0', '01...0', ... , '11...1'
-
-    Returns:
-        Measurement probability ∈ [0,1]
-
-    Example:
-        >>> # Measure qubit 0 only
-        >>> p0_q0 = measure_qubits_probability(rho, 0, ops, state='0')
-        >>>
-        >>> # Measure multiple qubits jointly
-        >>> p000 = measure_qubits_probability(rho, 'all', ops, state='000')
-    """
-    import jax.numpy as jnp
-
-    n_qubits= len((operators['P1_q']))
-
-
-    if qubit_indices == 'all':
-        # Joint measurement - only all-ground state supported
-        if len(state) != n_qubits:
-            raise ValueError(
-                f"State string length ({len(state)}) must match the total number of qubits in the system {n_qubits}"
-            )
-        if state == '0' * n_qubits:
-            # All qubits in ground state
-            P = operators['P_all0']
-        else:
-            # For other states, construct the joint projector from the cached
-            # per-mode identities (cavity ⊗ field ⊗ qubits ordering).
-            I_c = operators["I_c"]
-            I_f = operators["I_f"]
-            if q_levels is None:
-                q_levels = [2]*n_qubits
-            elif isinstance(q_levels, int):
-                q_levels = [q_levels] * n_qubits
-
-            # Build projector for each qubit based on state string
-            qubit_projectors = []
-            for i, s in enumerate(state):
-                l = q_levels[i]
-                if s == '0':
-                    qubit_projectors.append(qt.Qobj([[1, 0] + [0]*(l-2)] + [[0]*l]*(l-1)))
-                elif s == '1':
-                    qubit_projectors.append(qt.Qobj([[0]*l] + [[0, 1] + [0]*(l-2)] + [[0]*l]*(l-2)))
-                else:
-                    raise ValueError(f"Invalid state character '{s}', must be '0' or '1'")
-
-            P = qt.tensor(list(I_c) + list(I_f) + qubit_projectors)
-
-    elif (isinstance(qubit_indices, list) and len(qubit_indices) == 1) or (isinstance(qubit_indices, int) and qubit_indices < n_qubits):
-        # Single qubit measurement
-        if isinstance(qubit_indices, list):
-            qubit_indices = qubit_indices[0]
-        projector_key = f"P{state}_q"
-        if projector_key not in operators:
-            raise ValueError(f"Projector {projector_key} not found in operators")
-        if len(state) != 1:
-            raise ValueError(f"In single qubit projections the state {state} must be either 0 or 1")
-        P = operators[projector_key][qubit_indices]
-
-    elif isinstance(qubit_indices, list) and (len(qubit_indices) <= n_qubits):
-        # Joint measurement
-        if len(state) != len(qubit_indices):
-            raise ValueError(f"Lenght of state string ({len(state)}) must match lenght of qubit_indices ({len(qubit_indices)})")
-        I_c = operators["I_c"]
-        I_f = operators["I_f"]
-        if q_levels is None:
-            q_levels = [2]*n_qubits
-        elif isinstance(q_levels, int):
-            q_levels = [q_levels] * n_qubits
-        elif len(q_levels) != n_qubits:
-            raise ValueError(f"q_levels were passed, but the lenght is different than the number of qubits ({n_qubits})")
-
-        #Generate the projector: (l is the number of qubit levels of a qubit)
-        # IF qubit is in the indices -> generates the matrix lxl that projects on the state at the same index
-        # ELSE -> generates the identity lxl
-        qubit_projector = [ \
-            qt.Qobj([[1 - int(state[qubit_indices.index(i)]), 0] + [0]*(l-2)] +\
-                [[0, 0 + int(state[qubit_indices.index(i)])] + [0]*(l-2)] +\
-                [[0]*l]*(l-2)) \
-            if i in qubit_indices \
-            else qt.identity(l) \
-            for i,l in enumerate(q_levels) \
-                ]
-        P = qt.tensor(list(I_c) + list(I_f) + qubit_projector)
-
+    # all 'L' pieces are ONE collapse operator: keep them in a single QobjEvo (or Qobj)
+    if not L_const and not L_timedep:
+        L_term = None
+    elif not L_timedep:
+        L_term = sum(L_const)
     else:
-        raise ValueError(f'qubit indices must either be:\n \
-        - int or list of int with lenght 1 ->   single qubit measurement in the interval [0,{n_qubits})\n\
-        - a string = "all" ->                   joint measurement on all qubits\n \
-        - a list of lenght between [2,{n_qubits}] ->     non cached measurement of non fixed number of qubits')
+        L_term = qt.QobjEvo(([sum(L_const)] if L_const else []) + L_timedep, args=global_args)
+    return const_H, timedep_H, L_term
 
-    probability = jnp.real((P * rho * P.dag()).tr())  # type: ignore
-    return float(probability)
+
+def _qubit_noise(noise_model, operators, n_qubits):
+    """Flatten the per-qubit Lindblad noise operators for a noise model.
+
+    Args:
+        noise_model (NoiseModel): rates + optional custom collapse operators.
+        operators (dict): system operators (for the qubit Pauli/lowering operators).
+        n_qubits (int): number of qubits.
+    Returns:
+        list[qt.Qobj | qt.QobjEvo]: noise collapse operators for all qubits.
+    """
+    per_qubit = [build_qubit_noise_operators(
+        sigma_x=operators["sigma_x"][i], sigma_y=operators["sigma_y"][i],
+        sigma_z=operators["sigma_z"][i], sigma_minus=operators["sigma_minus"][i],
+        depolarizing_rate=noise_model.depolarizing[i],
+        dephasing_rate=noise_model.dephasing[i],
+        relaxation_rate=noise_model.relaxation[i],
+    ) for i in range(n_qubits)]
+    noise_operators: List[Union[qt.Qobj, qt.QobjEvo]] = [op for qubit in per_qubit for op in qubit]
+    if noise_model.custom_operators is not None:
+        noise_operators.extend(noise_model.custom_operators)
+    return noise_operators
 
 
 def embed_circuit_unitary(
