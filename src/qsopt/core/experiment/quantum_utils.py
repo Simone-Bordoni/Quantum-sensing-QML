@@ -18,7 +18,6 @@ import numpy as np
 import qutip as qt
 
 from qsopt.core.experimental_parameters import (
-    Interaction,
     InteractionType,
     State,
     SystemConfiguration,
@@ -496,97 +495,50 @@ def build_hamiltonians(operators, experimental_params, n_cavities, n_fields, n_q
     return hamiltonians, lindblad_operators, global_args
 
 
-def build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
-    """Decompose an interaction into a list of :class:`InteractionTerm` (bare-operator terms).
+def embed_circuit_unitary(
+    circuit_unitary: jnp.ndarray,
+    field_levels: List[int],
+    cavity_levels: List[int],
+) -> jnp.ndarray:
+    """
+    Embed an n-qubit circuit unitary into the full composite Hilbert space using JAX.
 
-    Operators carry no scalar prefactor; the assembler applies the parameter values, baking them
-    or factoring a promoted one into an args-coefficient. All 'L' contributions form one collapse
-    operator. kappa enters as √kappa, others linearly. A structural (non-multiplicative) parameter,
-    e.g. inside a matrix exponential, is passed as a callable ``operator(values) -> Qobj`` and must
-    stay out of :data:`PROMOTABLE_TYPES`.
+    The composite space follows the canonical ordering
+    (cavity_1 ⊗ ... ⊗ cavity_C ⊗ field_1 ⊗ ... ⊗ field_F ⊗ qubit_1 ⊗ ... ⊗ qubit_n),
+    matching ``total_dims = cavity_levels + field_levels + qubit_levels``. The circuit
+    acts only on the trailing qubit subspace, so the embedding is
+    ``I_bosonic ⊗ circuit_unitary`` with the qubits as the least-significant factor.
+
+    Because every cavity and field factor is an identity, their tensor product collapses
+    to a single identity of size ``∏ cavity_levels · ∏ field_levels`` (identities commute,
+    so the cavity/field interleaving is irrelevant). The embedding is therefore a single
+    Kronecker product, which keeps the per-call cost minimal when circuits are recomputed.
 
     Args:
-        interaction (Interaction): the interaction with its type, subsystems, parameters, time_modulation.
-        operators (dict): system operators from ``generate_system_operators``.
-        n_cavities (int): number of cavity modes (for custom-matrix tensor offsets).
-        n_fields (int): number of field modes (for custom-matrix tensor offsets).
+        circuit_unitary: (∏ qubit_levels)×(∏ qubit_levels) unitary matrix (JAX array).
+        field_levels: Per-mode levels of the field subsystems, one entry per field mode.
+        cavity_levels: Per-mode levels of the cavity subsystems, one entry per cavity mode.
+
     Returns:
-        list[InteractionTerm]: one per additive H/Lindblad term of the interaction.
+        Full-space unitary as JAX array: ``I_{∏cavity·∏field} ⊗ circuit_unitary``.
+
+    Example:
+        >>> # 2-qubit circuit unitary (4x4) with 2 cavities (2,3) and 1 field (2)
+        >>> U_circuit = jnp.eye(4, dtype=jnp.complex128)
+        >>> U_full = embed_circuit_unitary(U_circuit, field_levels=[2], cavity_levels=[2, 3])
+        >>> # U_full shape: (2*3 * 2 * 4)×(...) = 48×48
     """
-    int_type = interaction.interaction_type
-    system1, index1 = interaction.subsystem1
-    # flag only; the pulse is jitted in wrap_time_modulation (qutip-jax needs a jitted fn)
-    has_mod = interaction.time_modulation is not None
-    terms = []
+    # Total dimension of all bosonic (cavity + field) modes; np.prod over the per-mode
+    # level lists (returns 1 for an empty list, i.e. no such modes).
+    bosonic_dim = int(np.prod(cavity_levels)) * int(np.prod(field_levels))
 
-    def add(kind, operator, const=1.0, params=None, modulated=has_mod):
-        terms.append(InteractionTerm(kind, operator, complex(const), params or {}, modulated))
+    # I_cavity ⊗ I_field == I_bosonic, so a single identity plus one Kronecker product
+    # suffices regardless of the number of cavity/field modes. Under jit the identity is
+    # a compile-time constant (folded by XLA), so it adds no per-call cost.
+    I_bosonic = jnp.eye(bosonic_dim, dtype=jnp.complex128)
+    U_full_jax = jnp.kron(I_bosonic, circuit_unitary)
 
-    if int_type == InteractionType.DETUNING:
-        if system1 == 'cavity':
-            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
-            add('H', a_dag * a, params={'delta': _ID})
-        elif system1 == 'field':
-            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
-            add('H', a_dag * a, params={'delta': _ID})
-        elif system1 == 'qubit':
-            add('H', operators["sigma_z"][index1], const=0.5, params={'delta': _ID})
-
-    elif int_type == InteractionType.DRIVE:
-        if system1 == 'cavity':
-            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
-        elif system1 == 'field':
-            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
-        # 1j*(eps*a_dag - conj(eps)*a)
-        add('H', a_dag, const=1j, params={'amplitude': _ID})
-        add('H', a, const=-1j, params={'amplitude': jnp.conj})
-
-    elif int_type == InteractionType.DISSIPATION:
-        add('L', operators["a_c"][index1], params={'kappa': jnp.sqrt})
-
-    if interaction.subsystem2 is not None:
-        system2, index2 = interaction.subsystem2
-
-    if int_type == InteractionType.COUPLING:
-        a1, a1_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
-        a2, a2_dag = operators["a_c"][index2], operators["a_c_dag"][index2]
-        add('H', a1_dag * a2 + a1 * a2_dag, params={'gamma': _ID})
-
-    if int_type == InteractionType.INPUT_OUTPUT:
-        if system2 == 'cavity':
-            system1, index1, system2, index2 = system2, index2, system1, index1
-        ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
-        af, af_dag = operators["a_f"][index2], operators["a_f_dag"][index2]
-        add('H', af_dag * ac - af * ac_dag, const=1j/2, params={'kappa': jnp.sqrt, 'gamma': _ID})
-        # one collapse op gamma*g(t)*a_f + sqrt(kappa)*a_c; g(t) modulates only a_f
-        add('L', af, params={'gamma': _ID})
-        add('L', ac, params={'kappa': jnp.sqrt}, modulated=False)
-
-    if int_type == InteractionType.DISPERSIVE:
-        if system2 == 'cavity':
-            system1, index1, system2, index2 = system2, index2, system1, index1
-        ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
-        sz = operators["sigma_z"][index2]
-        add('H', ac_dag * ac * sz, const=-1.0, params={'chi': _ID})
-
-    if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
-        if system1 != 'qubit' or system2 != 'qubit':
-            raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
-        pauli = {InteractionType.XX: "sigma_x", InteractionType.YY: "sigma_y", InteractionType.ZZ: "sigma_z"}[int_type]
-        add('H', operators[pauli][index1] * operators[pauli][index2], const=0.5, params={'chi': _ID})
-
-    if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
-        # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
-        offsets = {'cavity': 0, 'field': n_cavities, 'qubit': n_cavities + n_fields}
-        positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
-        if interaction.subsystem2 is not None:
-            positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
-        # embed the custom matrix at those positions
-        identities = list(operators["I_c"]) + list(operators["I_f"]) + list(operators["I_q"])
-        embedded = embed_operator(interaction.custom_matrix, positions, identities)
-        add('H' if int_type == InteractionType.CUSTOM_HAMILTONIAN else 'L', embedded)
-
-    return terms
+    return U_full_jax
 
 
 # ==================== Private Helper Functions ====================
@@ -718,6 +670,99 @@ def _wrap_time_modulation(func, key_map):
     return jax.jit(wrapped)
 
 
+def _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
+    """Decompose an interaction into a list of :class:`InteractionTerm` (bare-operator terms).
+
+    Operators carry no scalar prefactor; the assembler applies the parameter values, baking them
+    or factoring a promoted one into an args-coefficient. All 'L' contributions form one collapse
+    operator. kappa enters as √kappa, others linearly. A structural (non-multiplicative) parameter,
+    e.g. inside a matrix exponential, is passed as a callable ``operator(values) -> Qobj`` and must
+    stay out of :data:`PROMOTABLE_TYPES`.
+
+    Args:
+        interaction (Interaction): the interaction with its type, subsystems, parameters, time_modulation.
+        operators (dict): system operators from ``generate_system_operators``.
+        n_cavities (int): number of cavity modes (for custom-matrix tensor offsets).
+        n_fields (int): number of field modes (for custom-matrix tensor offsets).
+    Returns:
+        list[InteractionTerm]: one per additive H/Lindblad term of the interaction.
+    """
+    int_type = interaction.interaction_type
+    system1, index1 = interaction.subsystem1
+    # flag only; the pulse is jitted in _wrap_time_modulation (qutip-jax needs a jitted fn)
+    has_mod = interaction.time_modulation is not None
+    terms = []
+
+    def add(kind, operator, const=1.0, params=None, modulated=has_mod):
+        terms.append(InteractionTerm(kind, operator, complex(const), params or {}, modulated))
+
+    if int_type == InteractionType.DETUNING:
+        if system1 == 'cavity':
+            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+            add('H', a_dag * a, params={'delta': _ID})
+        elif system1 == 'field':
+            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
+            add('H', a_dag * a, params={'delta': _ID})
+        elif system1 == 'qubit':
+            add('H', operators["sigma_z"][index1], const=0.5, params={'delta': _ID})
+
+    elif int_type == InteractionType.DRIVE:
+        if system1 == 'cavity':
+            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        elif system1 == 'field':
+            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
+        # 1j*(eps*a_dag - conj(eps)*a)
+        add('H', a_dag, const=1j, params={'amplitude': _ID})
+        add('H', a, const=-1j, params={'amplitude': jnp.conj})
+
+    elif int_type == InteractionType.DISSIPATION:
+        add('L', operators["a_c"][index1], params={'kappa': jnp.sqrt})
+
+    if interaction.subsystem2 is not None:
+        system2, index2 = interaction.subsystem2
+
+    if int_type == InteractionType.COUPLING:
+        a1, a1_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        a2, a2_dag = operators["a_c"][index2], operators["a_c_dag"][index2]
+        add('H', a1_dag * a2 + a1 * a2_dag, params={'gamma': _ID})
+
+    if int_type == InteractionType.INPUT_OUTPUT:
+        if system2 == 'cavity':
+            system1, index1, system2, index2 = system2, index2, system1, index1
+        ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        af, af_dag = operators["a_f"][index2], operators["a_f_dag"][index2]
+        add('H', af_dag * ac - af * ac_dag, const=1j/2, params={'kappa': jnp.sqrt, 'gamma': _ID})
+        # one collapse op gamma*g(t)*a_f + sqrt(kappa)*a_c; g(t) modulates only a_f
+        add('L', af, params={'gamma': _ID})
+        add('L', ac, params={'kappa': jnp.sqrt}, modulated=False)
+
+    if int_type == InteractionType.DISPERSIVE:
+        if system2 == 'cavity':
+            system1, index1, system2, index2 = system2, index2, system1, index1
+        ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        sz = operators["sigma_z"][index2]
+        add('H', ac_dag * ac * sz, const=-1.0, params={'chi': _ID})
+
+    if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
+        if system1 != 'qubit' or system2 != 'qubit':
+            raise ValueError(f"Qubit-qubit interactions must be between qubits, got {system1} and {system2}")
+        pauli = {InteractionType.XX: "sigma_x", InteractionType.YY: "sigma_y", InteractionType.ZZ: "sigma_z"}[int_type]
+        add('H', operators[pauli][index1] * operators[pauli][index2], const=0.5, params={'chi': _ID})
+
+    if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
+        # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
+        offsets = {'cavity': 0, 'field': n_cavities, 'qubit': n_cavities + n_fields}
+        positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
+        if interaction.subsystem2 is not None:
+            positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
+        # embed the custom matrix at those positions
+        identities = list(operators["I_c"]) + list(operators["I_f"]) + list(operators["I_q"])
+        embedded = _embed_operator(interaction.custom_matrix, positions, identities)
+        add('H' if int_type == InteractionType.CUSTOM_HAMILTONIAN else 'L', embedded)
+
+    return terms
+
+
 def _make_coefficient(base, promoted_factors, time_modulation):
     """Build a jitted args-coefficient ``base * Π transform(args[key]) * g(t, **args)``.
 
@@ -769,9 +814,10 @@ def _interaction_terms(interaction, prefix, operators, n_cavities, n_fields, ove
     time_modulation = _wrap_time_modulation(interaction.time_modulation, key_map) if interaction.time_modulation is not None else None
 
     const_H, timedep_H, L_const, L_timedep = [], [], [], []
-    for term in build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
-        # structural (callable) operators are rebuilt from the resolved values
-        operator = term.operator(merged) if callable(term.operator) else term.operator
+    for term in _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
+        # a fixed Qobj is used as-is; a structural-parameter operator is a builder(values)->Qobj
+        # rebuilt from the resolved values (test Qobj, not callable(): Qobj defines __call__ too)
+        operator = term.operator if isinstance(term.operator, qt.Qobj) else term.operator(merged)
         # bake non-promoted params into the prefactor; collect promoted ones as coeff factors
         base = term.const
         promoted_factors = []
@@ -826,53 +872,7 @@ def _qubit_noise(noise_model, operators, n_qubits):
     return noise_operators
 
 
-def embed_circuit_unitary(
-    circuit_unitary: jnp.ndarray,
-    field_levels: List[int],
-    cavity_levels: List[int],
-) -> jnp.ndarray:
-    """
-    Embed an n-qubit circuit unitary into the full composite Hilbert space using JAX.
-
-    The composite space follows the canonical ordering
-    (cavity_1 ⊗ ... ⊗ cavity_C ⊗ field_1 ⊗ ... ⊗ field_F ⊗ qubit_1 ⊗ ... ⊗ qubit_n),
-    matching ``total_dims = cavity_levels + field_levels + qubit_levels``. The circuit
-    acts only on the trailing qubit subspace, so the embedding is
-    ``I_bosonic ⊗ circuit_unitary`` with the qubits as the least-significant factor.
-
-    Because every cavity and field factor is an identity, their tensor product collapses
-    to a single identity of size ``∏ cavity_levels · ∏ field_levels`` (identities commute,
-    so the cavity/field interleaving is irrelevant). The embedding is therefore a single
-    Kronecker product, which keeps the per-call cost minimal when circuits are recomputed.
-
-    Args:
-        circuit_unitary: (∏ qubit_levels)×(∏ qubit_levels) unitary matrix (JAX array).
-        field_levels: Per-mode levels of the field subsystems, one entry per field mode.
-        cavity_levels: Per-mode levels of the cavity subsystems, one entry per cavity mode.
-
-    Returns:
-        Full-space unitary as JAX array: ``I_{∏cavity·∏field} ⊗ circuit_unitary``.
-
-    Example:
-        >>> # 2-qubit circuit unitary (4x4) with 2 cavities (2,3) and 1 field (2)
-        >>> U_circuit = jnp.eye(4, dtype=jnp.complex128)
-        >>> U_full = embed_circuit_unitary(U_circuit, field_levels=[2], cavity_levels=[2, 3])
-        >>> # U_full shape: (2*3 * 2 * 4)×(...) = 48×48
-    """
-    # Total dimension of all bosonic (cavity + field) modes; np.prod over the per-mode
-    # level lists (returns 1 for an empty list, i.e. no such modes).
-    bosonic_dim = int(np.prod(cavity_levels)) * int(np.prod(field_levels))
-
-    # I_cavity ⊗ I_field == I_bosonic, so a single identity plus one Kronecker product
-    # suffices regardless of the number of cavity/field modes. Under jit the identity is
-    # a compile-time constant (folded by XLA), so it adds no per-call cost.
-    I_bosonic = jnp.eye(bosonic_dim, dtype=jnp.complex128)
-    U_full_jax = jnp.kron(I_bosonic, circuit_unitary)
-
-    return U_full_jax
-
-
-def embed_operator(
+def _embed_operator(
     operator: qt.Qobj,
     positions: List[int],
     identities: List[qt.Qobj],
@@ -911,7 +911,7 @@ def embed_operator(
         >>> ops = generate_system_operators(1, 1, 2, 2, 2, 2)
         >>> identities = list(ops["I_c"]) + list(ops["I_f"]) + list(ops["I_q"])
         >>> # Embed a custom cavity(0)-qubit(0) operator: composite positions 0 and 2
-        >>> H_full = embed_operator(custom_matrix, [0, 2], identities)
+        >>> H_full = _embed_operator(custom_matrix, [0, 2], identities)
     """
     n_subsystems = len(identities)
 

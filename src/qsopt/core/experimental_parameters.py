@@ -774,7 +774,11 @@ class Interaction:
         
 
     def copy(self) -> "Interaction":
-        """Return a copy with independent parameter storage."""
+        """Return a copy with independent ``parameters`` storage.
+
+        Returns:
+            - ``copy`` (Interaction): New Interaction with deep-copied ``parameters`` and ``custom_matrix``.
+        """
         return Interaction(
             subsystem1=self.subsystem1,
             subsystem2=self.subsystem2,
@@ -785,14 +789,25 @@ class Interaction:
         )
 
     def _interaction_context(self) -> str:
-        """Return a compact interaction label like 'dispersive(cavity1,qubit3)'."""
+        """Return a compact interaction label like 'dispersive(cavity1,qubit3)'.
+
+        Returns:
+            - ``label`` (str): Interaction type and its subsystem(s).
+        """
         parts = [f"{self.subsystem1[0]}{self.subsystem1[1]}"]
         if self.subsystem2 is not None:
             parts.append(f"{self.subsystem2[0]}{self.subsystem2[1]}")
         return f"{self.interaction_type.value}({','.join(parts)})"
 
     def _with_context(self, message: str) -> str:
-        """Prefix diagnostic messages with the interaction context label."""
+        """Prefix a diagnostic message with the interaction context label.
+
+        Args:
+            ``message`` (str): Diagnostic message to prefix.
+
+        Returns:
+            - ``labelled`` (str): Message prefixed with the interaction context.
+        """
         return f"{self._interaction_context()}: {message}"
 
 
@@ -904,7 +919,16 @@ class PhysicalModel:
                              Found interactions: {duplicates}")
 
     def _normalize_levels(self, levels: Union[int, List[int]], count: int, label: str) -> List[int]:
-        """Normalize levels to list format."""
+        """Normalize subsystem levels to a per-subsystem list.
+
+        Args:
+            ``levels`` (Union[int, List[int]]): Shared level, or one level per subsystem.
+            ``count`` (int): Number of subsystems of this kind.
+            ``label`` (str): Subsystem kind ('cavity', 'field' or 'qubit'), used in error messages.
+
+        Returns:
+            - ``levels`` (List[int]): One level per subsystem (empty list when ``count`` is 0).
+        """
         if label == 'cavity':
             plural = 'cavities'
         else:
@@ -925,7 +949,14 @@ class PhysicalModel:
             raise TypeError(f"{label.capitalize()} levels must be an integer or a list of integers")
 
     def _subsystem_dimension(self, subsystem: Tuple[str, int]) -> int:
-        """Return the Hilbert-space dimension (truncation level) of a subsystem."""
+        """Return the Hilbert-space dimension (truncation level) of a subsystem.
+
+        Args:
+            ``subsystem`` (Tuple[str, int]): Subsystem as (type, index).
+
+        Returns:
+            - ``dimension`` (int): Truncation level of that subsystem.
+        """
         stype, idx = subsystem
         if stype == 'cavity':
             return self.cavity_levels[idx]
@@ -937,26 +968,21 @@ class PhysicalModel:
 
 
     def copy(self, **updates) -> "PhysicalModel":
-        """
-        Create a copy of PhysicalModel with optional parameter updates.
-
-        This method creates a new PhysicalModel instance with all attributes
-        copied from the current instance. You can override specific attributes
-        by passing them as keyword arguments.
+        """Create a copy of PhysicalModel with optional parameter updates.
 
         Args:
-            **updates: Keyword arguments for attributes to update in the copy.
-                      Valid keys: n_cavities, n_fields, n_qubits, cavity_levels, qubit_levels, field_levels, interactions
+            **updates (Any): Attributes to override. Valid keys: perturbation_type,
+                n_cavities, n_fields, n_qubits, cavity_levels, field_levels, qubit_levels, interactions.
 
         Returns:
-            New PhysicalModel instance with updated values
+            - copy (PhysicalModel): New instance with the updates applied.
 
         Example:
             >>> original = PhysicalModel(n_cavities=2, n_fields=2, n_qubits=2)
-            >>> modified = original.copy(n_cavities=3)  # Keep all other params, change n_cavities
+            >>> modified = original.copy(n_cavities=3)
             >>> modified.n_cavities
             3
-            >>> modified.n_fields            
+            >>> modified.n_fields
             2
         """
         # Start with current values
@@ -1016,6 +1042,7 @@ class MeasurementProtocol:
                      Must be given together with window_end (or both omitted for uniform weights).
         window_end: End of the measurement window (absolute time, must be > window_start).
         window_slope: Slope of the sigmoid edges; defaults to 30.0 / (window_end - window_start).
+        noisy_simulation_start: applies the noise also to the simulation start
     """
 
     measurement_times: Optional[List[float]] = None        # mode A: explicit times
@@ -1026,6 +1053,7 @@ class MeasurementProtocol:
     window_start: Optional[float] = None
     window_end: Optional[float] = None
     window_slope: Optional[float] = None
+    noisy_simulation_start: bool = False
 
     def __post_init__(self):
         """Validate the measurement-time spec (mode A or B), uncertainty and window settings."""
@@ -1046,17 +1074,19 @@ class MeasurementProtocol:
             if self.time_interval <= 0:
                 raise ValueError("time_interval must be positive")
 
-        jit = self.per_measurement_jitter
-        if jit is not None:
-            if callable(jit):
-                n_args = len(inspect.signature(jit).parameters)
+        jitter = self.per_measurement_jitter
+        if jitter is not None:
+            if isinstance(jitter, (int, float)):
+                jitter = self.per_measurement_jitter = float(jitter)
+            if callable(jitter):
+                n_args = len(inspect.signature(jitter).parameters)
                 if n_args not in (0, 1):
                     raise TypeError("per_measurement_jitter callable must take no argument (f()) or a single time (f(t))")
                 try:
-                    float(jit() if n_args == 0 else jit(0.0))
+                    float(jitter() if n_args == 0 else jitter(0.0))
                 except Exception as e:
                     raise TypeError("per_measurement_jitter callable must be callable as f()/f(t) and return a float") from e
-            elif not isinstance(jit, (int, float)) or jit < 0:
+            elif not isinstance(jitter, float) or jitter < 0:
                 raise TypeError("per_measurement_jitter must be a non-negative float (Gaussian std) or a callable f()/f(t)")
 
         # Measurement window: double-sigmoid weight over measurement time. window_start/window_end
@@ -1069,10 +1099,56 @@ class MeasurementProtocol:
         if self.window_slope is not None and self.window_slope <= 0:
             raise ValueError("window_slope must be positive")
 
+        # Compile per_measurement_jitter into a single sampler + a time-dependence flag.
+        self._build_jitter_sampler()
+
+    def _build_jitter_sampler(self) -> None:
+        """Compile ``per_measurement_jitter`` into a single sampler used by :meth:`sample_jitter`.
+
+        Dispatches on the jitter kind once, at construction, instead of on every draw. Sets:
+        - ``_jitter_sampler``: fn(batch_size, times, shift) -> (batch_size, len(times)) offsets, where
+          ``shift`` is a per-realization collective time shift (length batch_size). No jitter gives an
+          all-zeros draw, so the sampler is always callable. The float case stays a vectorized numpy
+          draw; f()/f(t) are looped element-wise. Only a time-dependent f(t) uses ``shift``: it is
+          evaluated at the actually-shifted measurement time f(t + shift), so the collective offset
+          propagates into the jitter. The float/f() draws ignore ``shift`` (they don't depend on time).
+        - ``_jitter_time_dependent`` (bool): True only for an f(t) jitter. Read by sweeps via
+          :attr:`jitter_is_time_dependent` (a pre-drawn noise batch is invalid under swept times).
+        """
+        jitter = self.per_measurement_jitter
+        if jitter is None or (isinstance(jitter, float) and jitter == 0):
+            self._jitter_sampler = lambda batch_size, times, shift: np.zeros((batch_size, len(times)))
+            self._jitter_time_dependent = False
+        elif isinstance(jitter, float):
+            self._jitter_sampler = lambda batch_size, times, shift: np.random.normal(0.0, jitter, (batch_size, len(times)))
+            self._jitter_time_dependent = False
+        elif len(inspect.signature(jitter).parameters) == 0:
+            self._jitter_sampler = lambda batch_size, times, shift: np.array(
+                [[float(jitter()) for _ in range(len(times))] for _ in range(batch_size)]
+            )
+            self._jitter_time_dependent = False
+        else:
+            self._jitter_sampler = lambda batch_size, times, shift: np.array(
+                [[float(jitter(float(t) + float(s))) for t in times] for s in shift]
+            )
+            self._jitter_time_dependent = True
+
+    @property
+    def jitter_is_time_dependent(self) -> bool:
+        """Whether ``per_measurement_jitter`` varies with measurement time (an f(t) callable).
+
+        Returns:
+            - ``time_dependent`` (bool): True only for a time-dependent jitter.
+        """
+        return self._jitter_time_dependent
+
     @property
     def resolved_window_slope(self) -> Optional[float]:
         """Slope of the double-sigmoid window: ``window_slope`` if set, else auto from width.
-        None when no window is configured."""
+
+        Returns:
+            - ``slope`` (Optional[float]): Slope value, or None when no window is configured.
+        """
         if self.window_start is None:
             return None
         if self.window_slope is not None:
@@ -1080,11 +1156,17 @@ class MeasurementProtocol:
         return _WINDOW_SLOPE_FACTOR / (self.window_end - self.window_start)
 
     def measurement_weights(self, times):
-        """Per-measurement window weight w(t) in [0, 1] at the given times (JAX array).
+        """Per-measurement window weight w(t) in [0, 1] at the given ``times``.
 
-        Double sigmoid w(t) = sigmoid(s(t - a)) * sigmoid(-s(t - b)) with a=window_start,
-        b=window_end, s=resolved_window_slope: ~1 inside [a, b], ->0 outside. All ones when
+        Double sigmoid w(t) = sigmoid(s(t - a)) * sigmoid(-s(t - b)) with a=``window_start``,
+        b=``window_end``, s=``resolved_window_slope``: ~1 inside [a, b], ->0 outside. All ones when
         no window is configured.
+
+        Args:
+            ``times`` (array-like): Times at which to evaluate the weight.
+
+        Returns:
+            - ``weights`` (jnp.ndarray): Weight in [0, 1] for each time.
         """
         t = jnp.asarray(times, float)
         if self.window_start is None:
@@ -1093,22 +1175,40 @@ class MeasurementProtocol:
         return 1.0 / (1.0 + jnp.exp(-s * (t - a))) * 1.0 / (1.0 + jnp.exp(s * (t - b)))
 
     def collective_offset_width(self) -> float:
-        """Width Δt of the collective shift: time_interval (mode B), else the first measurement gap."""
+        """Width Δt of the collective shift: ``time_interval`` (mode B), else the first measurement gap.
+
+        Returns:
+            - ``width`` (float): Δt used for the collective offset uniform(-Δt, 0).
+        """
         if self.time_interval is not None:
             return float(self.time_interval)
         t = self.measurement_times
         return float(t[1] - t[0]) if t is not None and len(t) >= 2 else 0.0
 
-    def sample_jitter(self, batch_size: int, times: np.ndarray) -> np.ndarray:
-        """(batch_size, M) per-measurement offsets from per_measurement_jitter: a Gaussian of the given
-        std (float) or independent concrete samples of the callable f()/f(t)."""
-        jit = self.per_measurement_jitter
-        M = len(times)
-        if isinstance(jit, (int, float)):
-            return np.random.normal(0.0, float(jit), (batch_size, M))
-        if len(inspect.signature(jit).parameters) == 0:
-            return np.array([[float(jit()) for _ in range(M)] for _ in range(batch_size)])
-        return np.array([[float(jit(float(t))) for t in times] for _ in range(batch_size)])
+    def sample_jitter(self, batch_size: int, times: np.ndarray,
+                      shift: Optional[np.ndarray] = None) -> np.ndarray:
+        """Sample per-measurement timing offsets from ``per_measurement_jitter``.
+
+        Delegates to the sampler compiled at construction (see :meth:`_build_jitter_sampler`),
+        so no jitter yields an all-zeros draw. Returns a (``batch_size``, M) array for the M given
+        times only; the simulation-start jitter (when ``noisy_simulation_start`` is True) is handled
+        separately in :meth:`ExperimentalParameters.get_measurement_uncertainties`.
+
+        ``shift`` is a per-realization collective time offset added to the times before a
+        time-dependent f(t) jitter is evaluated (so f sees the actually-shifted time). It defaults
+        to zeros and is ignored by the float/f() samplers, which do not depend on time.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+            ``times`` (np.ndarray): Nominal measurement times (length M).
+            ``shift`` (Optional[np.ndarray]): Per-realization collective time shift (length batch_size);
+                None means no shift.
+
+        Returns:
+            - ``offsets`` (np.ndarray): Shape (``batch_size``, M) timing offsets.
+        """
+        shift = np.zeros(batch_size) if shift is None else np.asarray(shift, dtype=float)
+        return self._jitter_sampler(batch_size, times, shift)
 
 
 @dataclass
@@ -1167,7 +1267,11 @@ class SubsystemState:
             self.parameters["amplitudes"] = (amplitudes / norm).tolist()
 
     def copy(self) -> "SubsystemState":
-        """Return a copy with independent parameter storage."""
+        """Return a copy with independent ``parameters`` storage.
+
+        Returns:
+            - ``copy`` (SubsystemState): New instance with deep-copied ``parameters``.
+        """
         parameters = copy.deepcopy(self.parameters) if self.parameters is not None else None
         return SubsystemState(state_type=self.state_type, parameters=parameters)
 
@@ -1195,11 +1299,10 @@ class NoiseModel:
     custom_operators: Optional[List[Any]] = None  # Custom Lindblad operators
 
     def _normalize_noise_rates(self, n_qubits: int):
-        """
-        Normalize noise rates to list format.
+        """Normalize ``depolarizing``, ``dephasing``, ``relaxation`` to per-qubit lists.
 
         Args:
-            n_qubits: Number of qubits from PhysicalModel
+            ``n_qubits`` (int): Number of qubits from the ``PhysicalModel``.
         """
         for attr in ["depolarizing", "dephasing", "relaxation"]:
             value = getattr(self, attr)
@@ -1222,7 +1325,11 @@ class NoiseModel:
             setattr(self, attr, values)
 
     def copy(self) -> "NoiseModel":
-        """Return a copy with independent parameter storage."""
+        """Return a copy with independent rate storage.
+
+        Returns:
+            - ``copy`` (NoiseModel): New instance with deep-copied rates and ``custom_operators``.
+        """
         return NoiseModel(
             depolarizing=copy.deepcopy(self.depolarizing),
             dephasing=copy.deepcopy(self.dephasing),
@@ -1321,7 +1428,11 @@ class SystemConfiguration:
             self.interactions = []
 
     def copy(self) -> "SystemConfiguration":
-        """Return a copy with independent nested state."""
+        """Return a copy with independent nested state storage.
+
+        Returns:
+            - ``copy`` (SystemConfiguration): New instance with deep-copied states, ``noise_model``, and ``interactions``.
+        """
         init_cavity_states = None
         if self.init_cavity_states is not None:
             init_cavity_states = {idx: state.copy() for idx, state in self.init_cavity_states.items()}
@@ -1394,8 +1505,12 @@ class ExperimentalParameters:
         self._validate_experimental_parameters()
 
     def _resolve_t_start(self) -> float:
-        """Simulation start: explicit PhysicalModel.t_simulation_start, else one interval before the
-        first measurement (the time_interval in mode B, else the first measurement gap)."""
+        """Simulation start: explicit ``PhysicalModel.t_simulation_start``, else one interval before the
+        first measurement (``time_interval`` in mode B, else the first measurement gap).
+
+        Returns:
+            - ``t_start`` (float): Resolved simulation start time.
+        """
         explicit = self.physical_model.t_simulation_start
         if explicit is not None:
             return float(explicit)
@@ -1408,9 +1523,12 @@ class ExperimentalParameters:
         return float(times[0] - (times[1] - times[0]))
 
     def _update_measurement_times(self) -> None:
-        """Resolve and cache the start and the measured times. measurement_times are measured-only;
-        the full solver sequence is ``timestamps`` = [t_start] + measurement_times. Mode A uses the
-        explicit list; mode B generates t_start + k*time_interval for k=1..n_measurements."""
+        """Resolve and cache ``_t_start`` and ``_measurement_times_list``.
+
+        ``measurement_times`` are measured-only; the full solver sequence is
+        ``timestamps`` = [t_start] + measurement_times. Mode A uses the explicit list;
+        mode B generates t_start + k*``time_interval`` for k=1..``n_measurements``.
+        """
         mp = self.measurement
         t_start = self._resolve_t_start()
         if mp.measurement_times is not None:   # mode A
@@ -1424,39 +1542,83 @@ class ExperimentalParameters:
 
     @property
     def t_simulation_start(self) -> float:
-        """Resolved simulation start time (the first, unmeasured, timestamp)."""
+        """Resolved simulation start time (the first, unmeasured, timestamp).
+
+        Returns:
+            - ``t_start`` (float): Start time of the simulation.
+        """
         if self._measurement_times_list is None:
             self._update_measurement_times()
         return self._t_start
 
     @property
     def timestamps(self) -> np.ndarray:
-        """Full solver sequence [t_simulation_start, *measurement_times] (start is unmeasured)."""
+        """Full solver sequence [``t_simulation_start``, *``measurement_times``] (start is unmeasured).
+
+        Returns:
+            - ``timestamps`` (np.ndarray): 1-D array of shape (M+1,).
+        """
         return np.concatenate([[self.t_simulation_start], self.measurement_times])
 
     def get_measurement_uncertainties(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
-        """(batch_size, M+1) stochastic timing uncertainties to add to the timestamps: 0 at the unmeasured
-        start, then per-measurement collective shift uniform(-Δt, 0) (``offset``) and jitter (``jitter``),
-        with a before-start correction (whole time_intervals in mode B) so no measurement ever lands at or
-        before t_start. Sampled concretely with numpy (a static array that can be vmapped over)."""
+        """Sample stochastic timing uncertainties to add to ``timestamps``.
+
+        Returns a (``batch_size``, M+1) array: column 0 is the start-time offset (zero unless
+        ``noisy_simulation_start`` is True on the measurement protocol), columns 1..M are
+        per-measurement offsets. When ``noisy_simulation_start`` is True the same noise sources
+        (offset + jitter) are applied to the start column and the before-start guard uses the
+        noisy start as the lower bound.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+            ``offset`` (bool): Apply the collective offset uniform(-Δt, 0).
+            ``jitter`` (bool): Apply per-measurement jitter from ``per_measurement_jitter``.
+
+        Returns:
+            - ``uncertainties`` (np.ndarray): Shape (``batch_size``, M+1) timing offsets.
+        """
         mp = self.measurement
         base = self.measurement_times
         t_start = self.t_simulation_start
         out = np.zeros((batch_size, base.size))
+        start_noise = np.zeros((batch_size,))
+
+        # Draw collective shift once so it can be reused for the start column.
+        shift: Optional[np.ndarray] = None
         if offset and mp.max_measurements_offset:
-            out += np.random.uniform(-mp.collective_offset_width(), 0.0, size=(batch_size, 1))
-        if jitter and mp.per_measurement_jitter is not None:
-            out = out + mp.sample_jitter(batch_size, base)
+            shift = np.random.uniform(-mp.collective_offset_width(), 0.0, size=(batch_size,))
+            out += shift[:, None]
+        if jitter:
+            # shift is folded into the time argument so a time-dependent f(t) sees the shifted time.
+            out = out + mp.sample_jitter(batch_size, base, shift)
+
+        if mp.noisy_simulation_start:
+            if shift is not None:
+                start_noise += shift
+            if jitter:
+                # Reuse sample_jitter with t_start as a single-element array to get (batch_size, 1).
+                start_noise += mp.sample_jitter(batch_size, np.array([t_start]), shift)[:, 0]
+
         eps = (mp.collective_offset_width() or 1.0) * 1e-3
-        correction = np.maximum(0.0, t_start + eps - np.min(base[None, :] + out, axis=1))
+        correction = np.maximum(0.0, (t_start + start_noise) + eps - np.min(base[None, :] + out, axis=1))
         if mp.time_interval is not None:
             correction = np.ceil(correction / mp.time_interval) * mp.time_interval
-        return np.concatenate([np.zeros((batch_size, 1)), out + correction[:, None]], axis=1)
+        return np.concatenate([start_noise[:, None], out + correction[:, None]], axis=1)
 
     def get_timestamps(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
-        """Timestamps [t_start, *measurements] with the selected uncertainties applied; shape
-        (batch_size, M+1). offset=jitter=False -> deterministic. The uncertainty (and its before-start
-        guard) comes from get_measurement_uncertainties."""
+        """Return ``timestamps`` with stochastic uncertainties applied.
+
+        Shape (``batch_size``, M+1). ``offset=jitter=False`` gives deterministic timestamps.
+        Uncertainty (including before-start guard) comes from ``get_measurement_uncertainties``.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+            ``offset`` (bool): Apply the collective offset.
+            ``jitter`` (bool): Apply per-measurement jitter.
+
+        Returns:
+            - ``timestamps`` (np.ndarray): Shape (``batch_size``, M+1).
+        """
         base_full = np.concatenate([[self.t_simulation_start], self.measurement_times])
         return base_full[None, :] + self.get_measurement_uncertainties(batch_size, offset, jitter)
 
@@ -1717,13 +1879,10 @@ class ExperimentalParameters:
 
     @property
     def measurement_times(self) -> np.ndarray:
-        """
-        Direct access to measurement times.
-
-        Returns absolute time values with no normalization applied.
+        """Absolute measurement times with no normalization applied.
 
         Returns:
-            Array of measurement times (absolute time values)
+            - ``measurement_times`` (np.ndarray): 1-D array of shape (M,).
         """
         if self._measurement_times_list is None:
             self._update_measurement_times()
@@ -1731,11 +1890,10 @@ class ExperimentalParameters:
 
     @measurement_times.setter
     def measurement_times(self, value: Union[List[float], np.ndarray]) -> None:
-        """
-        Set measurement times explicitly (overrides interval mode).
+        """Set measurement times explicitly, switching to mode A (overrides interval mode).
 
         Args:
-            value: List or array of measurement times (absolute time values)
+            ``value`` (Union[List[float], np.ndarray]): Absolute measurement times.
         """
         self.measurement.measurement_times = list(np.array(value))
         self._update_measurement_times()
@@ -1747,11 +1905,10 @@ class ExperimentalParameters:
 
     @time_interval.setter
     def time_interval(self, value: float) -> None:
-        """
-        Set time interval and recompute measurement times.
+        """Set ``time_interval`` and recompute measurement times (switches to mode B).
 
         Args:
-            value: New time interval (absolute time)
+            ``value`` (float): New time interval (absolute time).
         """
         self.measurement.time_interval = value
         # Clear explicit measurement times to use interval mode
@@ -1765,36 +1922,33 @@ class ExperimentalParameters:
 
     @seed.setter
     def seed(self, value: Optional[int]) -> None:
-        """
-        Set random seed and reinitialize random number generator.
+        """Set ``random_seed`` and reinitialize the numpy RNG.
 
         Args:
-            value: New random seed (None for non-deterministic behavior)
+            ``value`` (Optional[int]): New seed, or None for non-deterministic behavior.
         """
         self.random_seed = value
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
 
     def add_interaction(self, interaction: Interaction) -> None:
-        """
-        Add a new interaction to the physical model.
+        """Append an ``Interaction`` to ``physical_model.interactions``.
 
         Args:
-            interaction: Interaction instance to add
+            ``interaction`` (Interaction): Interaction to add.
         """
         if not isinstance(interaction, Interaction):
             raise TypeError("interaction must be an Interaction instance")
         self.physical_model.interactions.append(interaction)
 
     def get_configuration(self, name: str) -> Optional[SystemConfiguration]:
-        """
-        Retrieve a system configuration by name from the configuration set.
+        """Retrieve a ``SystemConfiguration`` by ``name`` from ``configuration_set``.
 
         Args:
-            name: Name of the system configuration to retrieve
+            ``name`` (str): Name of the configuration to find.
 
         Returns:
-            SystemConfiguration instance or None if not found
+            - ``config`` (Optional[SystemConfiguration]): Matching configuration, or None if not found.
         """
 
         for config in self.configuration_set:
@@ -1802,34 +1956,31 @@ class ExperimentalParameters:
                 return config
     
     def get_configuration_names(self) -> List[str]:
-        """
-        Get a list of all configuration names in the configuration set.
+        """Return the names of all configurations in ``configuration_set``.
 
         Returns:
-            List of configuration names
+            - ``names`` (List[str]): Ordered list of configuration names.
         """
         return [config.name for config in self.configuration_set]
 
     def add_configuration(self, config: SystemConfiguration) -> None:
-        """
-        Add a new system configuration to the configuration set.
+        """Append a ``SystemConfiguration`` to ``configuration_set``.
 
         Args:
-            config: SystemConfiguration instance to add
+            ``config`` (SystemConfiguration): Configuration to add.
 
         Raises:
-            ValueError: If a configuration with the same name already exists
+            ValueError: If a configuration with the same ``name`` already exists.
         """
         if config.name in [cfg.name for cfg in self.configuration_set]:
             raise ValueError(f"Configuration with name '{config.name}' already exists")
         self.configuration_set.append(config)
 
     def remove_configuration(self, name: str) -> None:
-        """
-        Remove a system configuration from the configuration set by name.
+        """Remove the ``SystemConfiguration`` with the given ``name`` from ``configuration_set``.
 
         Args:
-            name: Name of the system configuration to remove
+            ``name`` (str): Name of the configuration to remove.
         """
         configuration_set = [cfg for cfg in self.configuration_set if cfg.name != name]
         if configuration_set == self.configuration_set:
@@ -1838,31 +1989,26 @@ class ExperimentalParameters:
             self.configuration_set = configuration_set
 
     def copy(self, **updates) -> "ExperimentalParameters":
-        """
-        Create a copy of ExperimentalParameters with optional updates.
+        """Create a copy of ``ExperimentalParameters`` with optional updates.
 
-        This method creates a new ExperimentalParameters instance with all
-        configuration copied. The nested objects (physical_model, measurement,
-        noise_model, configuration_set) are copied to avoid unintended sharing of mutable state.
+        All nested objects (``physical_model``, ``measurement``, ``noise_model``,
+        ``configuration_set``) are deep-copied to avoid sharing mutable state.
 
         Args:
-            **updates: Keyword arguments for attributes to update. Can be:
-                - physical_model: PhysicalModel instance or dict of updates
-                - noise_model: NoiseModel instance
-                - measurement: MeasurementProtocol instance
-                - configuration_set: Set or list of SystemConfiguration instances
-                - random_seed: int or None
+            **updates (Any): Attributes to override. Valid keys: ``physical_model``
+                (``PhysicalModel`` instance or dict of kwargs), ``noise_model``,
+                ``measurement``, ``configuration_set``, ``random_seed``.
 
         Returns:
-            New ExperimentalParameters instance with updated values
+            - ``copy`` (ExperimentalParameters): New instance with the updates applied.
 
         Example:
-            >>> # Copy and update the physical model
+            >>> # Pass a PhysicalModel instance
             >>> new_params = exp_params.copy(
             ...     physical_model=exp_params.physical_model.copy(n_cavities=2)
             ... )
             >>>
-            >>> # Or pass updates as dict (for convenience)
+            >>> # Or pass a dict of kwargs (convenience shorthand)
             >>> new_params = exp_params.copy(
             ...     physical_model={'n_cavities': 2, 'n_fields': 2}
             ... )
@@ -1931,11 +2077,10 @@ class ExperimentalParameters:
         )
 
     def __repr__(self) -> str:
-        """
-        Comprehensive string representation showing all parameters organized by groups.
+        """Human-readable summary of all parameters grouped by system, measurement, noise, and configurations.
 
-        This method provides a detailed display of all experimental
-        parameters, organized by their logical groups with validation status flags.
+        Returns:
+            - ``repr`` (str): Multi-line string with validation status at the end.
         """
         lines = []
         # System Dimensions Group
@@ -2229,5 +2374,5 @@ class ExperimentalParameters:
         return "\n".join(lines)
 
     def __str__(self) -> str:
-        """String representation (calls __repr__)."""
+        """String representation (delegates to ``__repr__``)."""
         return self.__repr__()

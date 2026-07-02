@@ -12,10 +12,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import qutip as qt
-from jax import Array, jit
+from jax import Array
 from jax.scipy.special import erfc
 
-from qsopt.core.experiment.quantum_utils import PROMOTABLE_TYPES
+from qsopt.core.experiment.quantum_utils import PROMOTABLE_TYPES, build_hamiltonians
 
 
 @jax.jit
@@ -55,45 +55,6 @@ def annealing_weight(
     k = jnp.log(span) / jnp.log((1.0 + v) / (1.0 - v + 1e-16))
     a = -(k / 2.0) * jnp.log(f / (1.0 - f))
     return (jnp.tanh(a) + 1.0) / 2.0
-
-
-# ------------------------- Hamiltonian/Lindblad coefficient helpers -------------------------
-
-
-def wrap_time_modulation(func, key_map):
-    """Adapt a user pulse ``func(t, **local_params)`` to a jitted ``coeff(t, **global_args)``.
-
-    Picks this interaction's params out of the global args dict and calls ``func``; jitted because
-    qutip-jax only accepts JAX-valued coefficients from jitted functions.
-
-    Args:
-        func (callable): user time-modulation g(t, **local_params).
-        key_map (dict[str, str]): local parameter name -> global-args key.
-    Returns:
-        callable: jitted coefficient g(t, **global_args).
-    """
-    def wrapped(t, **all_args):
-        local = {name: all_args[key] for name, key in key_map.items()}
-        return func(t, **local)
-    return jit(wrapped)
-
-
-def make_coefficient(base, promoted_factors, time_modulation):
-    """Build a jitted args-coefficient ``base * Π transform(args[key]) * g(t, **args)``.
-
-    Args:
-        base (complex): constant prefactor with baked (non-promoted) params folded in.
-        promoted_factors (list[tuple[callable, str]]): (transform, global key) per promoted param in the term.
-        time_modulation (callable | None): wrapped pulse g(t, **args), or None if not modulated.
-    Returns:
-        callable: jitted coefficient; base times each promoted factor, times the pulse when present.
-    """
-    def coefficient(t, **args):
-        value = base
-        for transform, global_key in promoted_factors:   # one factor per promoted parameter
-            value = value * transform(args[global_key])
-        return value * time_modulation(t, **args) if time_modulation is not None else value
-    return jit(coefficient)
 
 
 # ---------------------------- generic N-dimensional sweep helpers ----------------------------
@@ -136,14 +97,15 @@ def is_baked(exp, key: str) -> bool:
     collapse operator but absent from H (e.g. kappa in ``L = sqrt(kappa)*a``).
 
     Args:
-        exp (Experiment): the experiment providing ``_build_hamiltonian``.
+        exp (Experiment): the experiment providing the operators and parameters to build from.
         key (str): global-args key of the parameter to test.
     Returns:
         bool: True if a solver rebuild is needed to sweep it, False if it only feeds a coefficient.
     """
     # build at two values, but compare both evaluated at the SAME probe value (1.0)
-    H1, L1, global_args = exp._build_hamiltonian(overrides={key: 1.0})
-    H2, L2, _ = exp._build_hamiltonian(overrides={key: 2.0})
+    args = (exp.operators, exp.experimental_params, exp.n_cavities, exp.n_fields, exp.n_qubits)
+    H1, L1, global_args = build_hamiltonians(*args, overrides={key: 1.0})
+    H2, L2, _ = build_hamiltonians(*args, overrides={key: 2.0})
     probe_args = dict(global_args)
     probe_args[key] = 1.0
 

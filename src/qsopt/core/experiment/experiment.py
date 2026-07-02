@@ -28,9 +28,7 @@ from qsopt.core.core_utils import (
     adaptive_map,
     annealing_weight,
     classify_sweep_axis,
-    make_coefficient,
     sweep_key_types,
-    wrap_time_modulation,
 )
 from qsopt.utils.results import SweepResults
 
@@ -38,9 +36,7 @@ if TYPE_CHECKING:
     from qsopt.utils.results import TimeEvolutionResults
 
 from .quantum_utils import (
-    PROMOTABLE_TYPES,
-    build_hamiltonian_term,
-    build_qubit_noise_operators,
+    build_hamiltonians,
     embed_circuit_unitary,
     generate_initial_state,
     generate_system_operators,
@@ -241,249 +237,15 @@ class Experiment:
 
     def _generate_hamiltonian(self) -> None:
         """
-        Generate Hamiltonian for the system and store it on ``self``.
+        Generate Hamiltonians and Lindblad operators for the system and store them on ``self``.
 
-        Thin wrapper around :meth:`_build_hamiltonian`: builds the operators with the
-        configured parameter values and assigns ``self.hamiltonians``,
-        ``self.lindblad_operators`` and ``self.global_args``. The existing optimize/run
-        paths rely on these attributes being populated here.
+        Delegates to :func:`build_hamiltonians` with the configured parameter values, then assigns:
+        - self.hamiltonians: per-configuration ``QobjEvo`` Hamiltonians
+        - self.lindblad_operators: per-configuration collapse-operator lists
+        - self.global_args: resolved parameter values keyed by global key
         """
-        self.hamiltonians, self.lindblad_operators, self.global_args = self._build_hamiltonian()
-
-    def _build_hamiltonian(self, overrides: Optional[Dict[str, Any]] = None,
-                           dynamic_keys: Optional[set] = None) -> tuple:
-        """Build the per-configuration Hamiltonians and Lindblad operators (pure; no self mutation).
-
-        Each interaction is decomposed into :class:`InteractionTerm` terms (``build_hamiltonian_term``)
-        and assembled by ``_interaction_terms``: parameters are baked into the operators, or, for
-        keys in ``dynamic_keys``, factored into an args-coefficient so a sweep varies them on a
-        prebuilt solver. Qubit-noise Lindblads are added per configuration. Being pure, it is safe
-        inside ``jax.vmap``/``jax.jit``; :meth:`_generate_hamiltonian` wraps it for the cached path.
-
-        Args:
-            overrides (dict[str, Any] | None): ``{global_args_key: value}`` replacing configured
-                parameter values (e.g. ``"BaseModel_dispersive(cavity0,qubit0)__chi"``); values may
-                be traced JAX arrays, making the operators a differentiable/vmappable function of
-                them. None uses the configured values.
-            dynamic_keys (set | None): global keys factored into an args-coefficient instead of
-                baked, so a sweep varies them via ``solver.run(args=...)`` with the solver built
-                once. Only :data:`PROMOTABLE_TYPES`; covers H and Lindblad and keeps any
-                ``time_modulation``. None bakes everything (the optimizer path).
-        Returns:
-            tuple: ``(hamiltonians, lindblad_operators, global_args)`` where
-              - hamiltonians (dict[str, qt.QobjEvo]): 'base' plus each configuration name -> H.
-              - lindblad_operators (dict[str, list[qt.Qobj | qt.QobjEvo]]): same keys -> collapse operators.
-              - global_args (dict[str, Any]): resolved parameter values keyed by global key.
-        """
-        if self.operators is None:
-            raise RuntimeError("Operators must be generated before Hamiltonian")
-
-        interaction_list = self.experimental_params.interactions
-
-
-        H_const = []
-        H_time_dependent = []
-        L_interaction = []
-        global_args: Dict[str, Any] = {}
-
-        def _map_to_global_args(interaction, prefix):
-            """Remap this interaction's local parameters to globally-unique keys.
-
-            For each local name (e.g. ``'chi'``) builds the global key
-            ``f"{prefix}{context}__{name}"`` (e.g. ``'BaseModel_dispersive(cavity0,qubit0)__chi'``),
-            writes its value into ``global_args`` (override if given in ``overrides``, else the
-            configured value), and returns ``(params, key_map)`` with ``key_map`` mapping local
-            name -> global key. A non-dict ``parameters`` (a bare scalar) is returned unchanged.
-            """
-            params = interaction.parameters
-            if not isinstance(params, dict):
-                return params, {}
-            merged = dict(params)
-            key_map = {}
-            for key in params:
-                global_key = f"{prefix}{interaction._interaction_context()}__{key}"
-                key_map[key] = global_key
-                if overrides is not None and global_key in overrides:
-                    merged[key] = overrides[global_key]
-                global_args[global_key] = merged[key]
-            return merged, key_map
-
-        def _interaction_terms(interaction, prefix):
-            """Assemble an interaction from its contributions, baking or promoting each parameter.
-
-            Parameters in ``dynamic_keys`` are factored into the coefficient as ``f(args[key])`` so
-            they can be swept via ``args``; others are baked (overrides applied), keeping ``g(t)``.
-
-            Args:
-                interaction (Interaction): the interaction to assemble.
-                prefix (str): global-args key prefix ("BaseModel_" or "Conf:<name>_").
-            Returns:
-                tuple: ``(const_H, timedep_H, L_term)`` where
-                  - const_H (list[qt.Qobj]): constant Hamiltonian terms.
-                  - timedep_H (list[[qt.Qobj, callable]]): ``[operator, coeff(t, **args)]`` pairs.
-                  - L_term (qt.Qobj | qt.QobjEvo | None): the single Lindblad collapse operator.
-            """
-            # resolve local params to global keys; find which ones this sweep promotes
-            merged, key_map = _map_to_global_args(interaction, prefix)
-            promoted = {name for name, key in key_map.items() if dynamic_keys and key in dynamic_keys}
-            # promotion is only supported for the curated multiplicative types
-            if promoted and interaction.interaction_type not in PROMOTABLE_TYPES:
-                raise NotImplementedError(
-                    f"Cannot factor {sorted(promoted)} of {interaction._interaction_context()} into an args-coefficient; "
-                    f"only {sorted(t.name for t in PROMOTABLE_TYPES)} support it. Sweep it via the rebuild path instead.")
-            # the interaction's pulse g(t), wrapped to read global args (None if not modulated)
-            time_modulation = wrap_time_modulation(interaction.time_modulation, key_map) if interaction.time_modulation is not None else None
-
-            const_H, timedep_H, L_const, L_timedep = [], [], [], []
-            for c in build_hamiltonian_term(interaction, self.operators, self.n_cavities, self.n_fields):
-                # structural (callable) operators are rebuilt from the resolved values
-                operator = c.operator(merged) if callable(c.operator) else c.operator
-                # bake non-promoted params into the prefactor; collect promoted ones as coeff factors
-                base = c.const
-                promoted_factors = []
-                for name, transform in c.params.items():
-                    if name in promoted:
-                        promoted_factors.append((transform, key_map[name]))
-                    else:
-                        base *= complex(transform(merged[name]))
-                term_modulation = time_modulation if c.modulated else None
-                # constant term, or an [operator, coeff] pair when time- or args-dependent
-                if not promoted_factors and term_modulation is None:
-                    part = base * operator
-                else:
-                    part = [operator, make_coefficient(base, promoted_factors, term_modulation)]
-                # route H vs L, constant vs time-dependent
-                is_pair = isinstance(part, list)
-                if c.kind == 'H':
-                    (timedep_H if is_pair else const_H).append(part)
-                else:
-                    (L_timedep if is_pair else L_const).append(part)
-
-            # all 'L' pieces are ONE collapse operator: keep them in a single QobjEvo (or Qobj)
-            if not L_const and not L_timedep:
-                L_term = None
-            elif not L_timedep:
-                L_term = sum(L_const)
-            else:
-                L_term = qt.QobjEvo(([sum(L_const)] if L_const else []) + L_timedep, args=global_args)
-            return const_H, timedep_H, L_term
-
-        for interaction in interaction_list:
-            const_H, timedep_H, L_term = _interaction_terms(interaction, "BaseModel_")
-            H_const.extend(const_H)
-            H_time_dependent.extend(timedep_H)
-            if L_term is not None:
-                L_interaction.append(L_term)
-
-        if len(H_const) == 0:
-            H_static = self.operators["identity"]  # Identity operator if no constant terms
-        else:
-            H_static = sum(H_const)
-        H_base = qt.QobjEvo([H_static] + H_time_dependent, args=global_args)
-
-        # Noise model
-        noise_model = self.experimental_params.noise_model
-
-        # Extract noise rates for each qubit
-        depolarizing = noise_model.depolarizing
-        dephasing = noise_model.dephasing
-        relaxation = noise_model.relaxation
-
-        # Build Lindblad noise operators for each qubit using helper function
-
-        sigma_x = self.operators["sigma_x"]
-        sigma_y = self.operators["sigma_y"]
-        sigma_z = self.operators["sigma_z"]
-        sigma_minus = self.operators["sigma_minus"]
-        n_qubits = self.n_qubits
-
-        L_qb_noise = [build_qubit_noise_operators(
-            sigma_x=sigma_x[i],
-            sigma_y=sigma_y[i],
-            sigma_z=sigma_z[i],
-            sigma_minus=sigma_minus[i],
-            depolarizing_rate=depolarizing[i],
-            dephasing_rate=dephasing[i],
-            relaxation_rate=relaxation[i],
-        ) for i in range(n_qubits)]
-
-        # Combine noise operators for all qubits
-        # Flatten list: collect all operators from each qubit
-        L_base_noise: List[Union[qt.Qobj, qt.QobjEvo]] = [
-            op for i in range(n_qubits) for op in L_qb_noise[i]
-        ]
-
-        # Add custom Lindblad operators if provided
-        if noise_model.custom_operators is not None:
-            L_base_noise.extend(noise_model.custom_operators)
-
-        # Lindblad list
-        L_base = L_interaction + L_base_noise
-
-        # Generate base hamiltonian and lindblad operators and for each configuration
-        hamiltonians = {
-            'base': H_base,
-            }
-
-        lindblad_operators = {
-            'base': L_base,
-            }
-
-        for configuration in self.experimental_params.configuration_set:
-            
-            const_terms = []
-            time_dependent_terms = []
-            lindblad_terms = []
-            
-            for interaction in configuration.interactions:
-                const_H, timedep_H, L_term = _interaction_terms(interaction, f"Conf:{configuration.name}_")
-                if const_H is not None:
-                    const_terms.append(const_H)
-                if timedep_H is not None:
-                    time_dependent_terms.append(timedep_H)
-                if L_term is not None:
-                    lindblad_terms.append(L_term)
-            
-            if configuration.noise_model is not None:
-                
-                # Extract noise rates for each qubit
-                depolarizing = configuration.noise_model.depolarizing
-                dephasing = configuration.noise_model.dephasing
-                relaxation = configuration.noise_model.relaxation
-
-                qb_noise_terms = [build_qubit_noise_operators(
-                    sigma_x=sigma_x[i],
-                    sigma_y=sigma_y[i],
-                    sigma_z=sigma_z[i],
-                    sigma_minus=sigma_minus[i],
-                    depolarizing_rate=depolarizing[i],
-                    dephasing_rate=dephasing[i],
-                    relaxation_rate=relaxation[i],
-                ) for i in range(n_qubits)]
-
-                # Flatten list: collect all operators from each qubit
-                noise_terms: List[Union[qt.Qobj, qt.QobjEvo]] = [
-                    op for i in range(n_qubits) for op in qb_noise_terms[i]
-                ]
-
-                # Add custom Lindblad operators if provided
-                if configuration.noise_model.custom_operators is not None:
-                    noise_terms.extend(configuration.noise_model.custom_operators)
-
-            else:
-                noise_terms = L_base_noise
-
-            if len(const_terms) == 0:
-                conf_H_static = H_static.copy()
-            else:
-                conf_H_static = H_static + sum(const_terms)
-            conf_H_time = H_time_dependent + time_dependent_terms
-            conf_L_tot = L_interaction + lindblad_terms + noise_terms
-
-            hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=global_args)
-            lindblad_operators[configuration.name] = conf_L_tot
-
-        return hamiltonians, lindblad_operators, global_args
+        self.hamiltonians, self.lindblad_operators, self.global_args = build_hamiltonians(
+            self.operators, self.experimental_params, self.n_cavities, self.n_fields, self.n_qubits)
 
     def _initialize_initial_state(self, system_configuration: SystemConfiguration) -> qt.Qobj:
         """
@@ -1574,7 +1336,7 @@ class Experiment:
         protocol defines uncertainty (collective offset and/or per-measurement jitter) each grid point
         is averaged over ``batch_size`` jittered realizations.
         """
-        import itertools, inspect
+        import itertools
 
         if not param_grid:
             raise ValueError("param_grid must be a non-empty {name: 1D values} mapping")
@@ -1583,8 +1345,7 @@ class Experiment:
         vals = [np.asarray(param_grid[n], dtype=float).reshape(-1) for n in names]
         protocol = measurement_protocol if measurement_protocol is not None else self.experimental_params.measurement
         has_uncertainty = bool(protocol.max_measurements_offset) or (protocol.per_measurement_jitter is not None)
-        jitter = protocol.per_measurement_jitter
-        if has_uncertainty and callable(jitter) and len(inspect.signature(jitter).parameters) >= 1:
+        if has_uncertainty and protocol.jitter_is_time_dependent:
             raise ValueError("per_measurement_jitter as a time-dependent f(t) is not supported in sweeps "
                              "(swept times make a pre-drawn noise batch inconsistent);"
                              "Use a float for a gaussian jitter or a custom non time-dependent distribution f().")
@@ -1676,8 +1437,9 @@ class Experiment:
         loop_ranges = [range(len(vals[i])) for i in loop_idx]
         for loop_combo in (itertools.product(*loop_ranges) if loop_idx else [()]):
             overrides = {k: float(vals[i][ix]) for i, ix in zip(loop_idx, loop_combo) for k in keys_per[i]} or None
-            H, L, ga = self._build_hamiltonian(overrides=overrides,
-                                               dynamic_keys=set(promote_keys) if promote_keys else None)
+            H, L, ga = build_hamiltonians(
+                self.operators, self.experimental_params, self.n_cavities, self.n_fields, self.n_qubits,
+                overrides=overrides, dynamic_keys=set(promote_keys) if promote_keys else None)
             solvers = {c: qt.MESolver(H[c], L[c], options=opts) for c in self.config_names}
             out_m, out_det, out_val = adaptive_map(make_eval(solvers, ga), fast_grid, verbose)
 
