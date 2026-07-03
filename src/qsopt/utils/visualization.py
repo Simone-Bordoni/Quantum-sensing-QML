@@ -15,6 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 
 from qsopt.core.callback import OptimizationCallback
+from qsopt.core.core_utils import state_probs_to_dict
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.utils.results import SweepResults, TimeEvolutionResults
 
@@ -78,17 +79,18 @@ def plot_optimization_dashboard(
     """
     # Confusion-matrix summary panel is shown only if explicitly requested and the
     # callback carries at least one related piece of information. The multi-configuration
-    # API stores: state_probabilities (each configuration -> measurement-state probabilities),
-    # detection_states (each configuration -> states classified as it), and confusion_matrix
-    # ((true, predicted) configuration pair -> accumulated probability mass).
-    has_state_probabilities = bool(getattr(optimization_callback, "state_probabilities", None))
-    has_detection_protocol = bool(getattr(optimization_callback, "detection_states", None))
+    # API stores: state_probabilities ((n_configs, n_measurements, n_states) array),
+    # states_map (each configuration -> states classified as it), confusion_matrix
+    # ((true, predicted) configuration pair -> accumulated probability mass), and false_signal.
+    has_state_probabilities = getattr(optimization_callback, "state_probabilities", None) is not None
+    has_detection_protocol = bool(getattr(optimization_callback, "states_map", None))
     has_confusion_values = any(
         float(value) > 0.0
         for value in (getattr(optimization_callback, "confusion_matrix", {}) or {}).values()
     )
+    has_false_signal = bool(getattr(optimization_callback, "false_signal", None))
     show_confusion_summary_panel = show_confusion_matrix_summary and (
-        has_state_probabilities or has_detection_protocol or has_confusion_values
+        has_state_probabilities or has_detection_protocol or has_confusion_values or has_false_signal
     )
 
     # Count active plots to determine layout
@@ -422,18 +424,18 @@ def plot_optimization_dashboard(
         plot_idx += 1
 
         confusion_matrix = getattr(optimization_callback, "confusion_matrix", {}) or {}
-        detection_states = getattr(optimization_callback, "detection_states", {}) or {}
-        state_probabilities = getattr(optimization_callback, "state_probabilities", {}) or {}
+        states_map = getattr(optimization_callback, "states_map", {}) or {}
+        false_signal = getattr(optimization_callback, "false_signal", None)
+        state_probabilities = getattr(optimization_callback, "state_probabilities", None)
 
         # Ordered configuration names: prefer the confusion-matrix keys, then fall back to the
-        # detection-state / state-probability mappings so the panel still renders when only a
-        # subset of the data is present.
+        # states_map so the panel still renders when only a subset of the data is present.
         config_names_cm: List[str] = []
         for true_name, pred_name in confusion_matrix:
             for name in (true_name, pred_name):
                 if name not in config_names_cm:
                     config_names_cm.append(name)
-        for name in list(detection_states.keys()) + list(state_probabilities.keys()):
+        for name in states_map.keys():
             if name not in config_names_cm:
                 config_names_cm.append(name)
 
@@ -475,19 +477,32 @@ def plot_optimization_dashboard(
         if has_detection_protocol:
             summary_lines.append("Protocol (states per configuration):")
             for name in config_names_cm:
-                if name in detection_states:
-                    summary_lines.append(f"  {name}: {list(detection_states[name])}")
+                if name in states_map:
+                    summary_lines.append(f"  {name}: {list(states_map[name])}")
+
+        if has_false_signal and isinstance(false_signal, dict):
+            summary_lines.append("False signal (per measurement):")
+            for name in config_names_cm:
+                if name in false_signal:
+                    values = ", ".join(f"{float(v):.3f}" for v in false_signal[name])
+                    summary_lines.append(f"  {name}: [{values}]")
 
         if has_state_probabilities:
-            ordered_states = sorted({state for probs in state_probabilities.values() for state in probs})
+            # state_probabilities is (n_configs, n_measurements, n_states); render one table per measurement.
+            probs_array = np.asarray(state_probabilities)
+            sp_config_names = list(states_map.keys())
+            if len(sp_config_names) != probs_array.shape[0]:
+                sp_config_names = None
             summary_lines.append("State probabilities:")
-            summary_lines.append("  state | " + " | ".join(str(name) for name in config_names_cm))
-            for state in ordered_states:
-                row = " | ".join(
-                    f"{float(state_probabilities.get(name, {}).get(state, 0.0)):.3f}"
-                    for name in config_names_cm
-                )
-                summary_lines.append(f"  {state} | {row}")
+            for m in range(probs_array.shape[1]):
+                probs_m = state_probs_to_dict(probs_array[:, m], sp_config_names)
+                names_m = list(probs_m.keys())
+                ordered_states = sorted({state for probs in probs_m.values() for state in probs})
+                summary_lines.append(f"  measurement {m}:")
+                summary_lines.append("    state | " + " | ".join(str(name) for name in names_m))
+                for state in ordered_states:
+                    row = " | ".join(f"{float(probs_m[name].get(state, 0.0)):.3f}" for name in names_m)
+                    summary_lines.append(f"    {state} | {row}")
 
         if summary_lines:
             # Position the summary in figure coordinates to the right of the confusion

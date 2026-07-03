@@ -7,7 +7,8 @@ helpers used by :meth:`Experiment.sweep` (kept out of the class so only the main
 methods live in ``experiment.py``).
 """
 
-from typing import Any, Dict, List, Union
+from math import prod
+from typing import Any, Dict, List, Optional, Tuple, Union
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -55,6 +56,116 @@ def annealing_weight(
     k = jnp.log(span) / jnp.log((1.0 + v) / (1.0 - v + 1e-16))
     a = -(k / 2.0) * jnp.log(f / (1.0 - f))
     return (jnp.tanh(a) + 1.0) / 2.0
+
+def state_probs_to_dict(probs: np.ndarray, config_names: Optional[List[str]] = None) -> Dict[str, Dict[str, float]]:
+    """
+    Convert a (n_configs, n_states) probability array to the native per-config state-probability dict.
+
+    Used both to build the state-probability dicts stored on the callback and to accept array input in
+    :func:`make_confusion_matrix`.
+
+    Args:
+        - ``probs`` (np.ndarray): Array of shape (n_configs, n_states) of per-config state probabilities.
+        - ``config_names`` (Optional[List[str]]): Row names; defaults to 'config_1', 'config_2', ... .
+
+    Returns:
+        - ``state_probabilities`` (Dict[str, Dict[str, float]]): Per config, a map of binary state
+          string to probability.
+
+    Raises:
+        ValueError: If ``config_names`` is given but its length differs from the number of config rows.
+    """
+
+    n_configs, n_states = probs.shape
+    if config_names is None:
+        config_names = [f"config_{i + 1}" for i in range(n_configs)]
+    elif len(config_names) != n_configs:
+        raise ValueError(f"config_names has {len(config_names)} entries but probs has {n_configs} config rows.")
+
+    # n_states = 2**n_qubits computational basis states -> binary string labels.
+    n_qubits = n_states.bit_length() - 1
+    state_labels = [format(i, f"0{n_qubits}b") for i in range(n_states)]
+
+    return {name: dict(zip(state_labels, probs[c].tolist())) for c, name in enumerate(config_names)}
+
+
+def make_confusion_matrix(
+    state_probabilities: Union[Dict[str, Dict[str, float]], np.ndarray],
+    config_names: Optional[List[str]] = None,
+    states_map: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[Dict[Tuple[str, str], float], Dict[str, List[str]]]:
+    """
+    Build a soft confusion matrix (and a state->config map) from per-config state probabilities.
+
+    Each basis state is classified to a configuration and the confusion cell (A, B) then accumulates
+    config A's probability mass over the states classified as B. With no ``states_map`` the classifier
+    is argmax over configs and the resulting map is returned; with a ``states_map`` that fixed map is
+    used instead (no re-classification). States are binary strings, e.g. '000'..'111' for 3 qubits.
+
+    Args:
+        - ``state_probabilities`` (Union[Dict[str, Dict[str, float]], np.ndarray]): Either the native
+          per-config map of binary state string to probability, or a (n_configs, n_states) array.
+        - ``config_names`` (Optional[List[str]]): Names for the array rows; defaults to
+          'config_1', 'config_2', ... . Ignored when a dict is passed.
+        - ``states_map`` (Optional[Dict[str, List[str]]]): Fixed config -> owned states map to classify
+          by; if omitted, states are classified by argmax and a fresh map is built.
+
+    Returns:
+        - ``confusion_matrix`` (Dict[Tuple[str, str], float]): Soft confusion matrix mapping
+          (true, predicted) configuration pairs to the accumulated probability mass.
+        - ``states_map`` (Dict[str, List[str]]): Config -> owned states map (the passed one, or the
+          argmax map that was built).
+    """
+
+    # Accept a (n_configs, n_states) array; convert to the native dict and run one code path.
+    if isinstance(state_probabilities, np.ndarray):
+        state_probabilities = state_probs_to_dict(state_probabilities, config_names)
+
+    config_names = list(state_probabilities.keys())
+
+    # Classify by argmax (building a fresh map) unless a fixed map is supplied.
+    build_map = states_map is None
+    if build_map:
+        states_map = {name: [] for name in config_names}
+    else:
+        # Invert the fixed map to look up each state's predicted config.
+        state_to_config = {state: name for name, states in states_map.items() for state in states}
+
+    # (true, predicted) -> accumulated probability mass.
+    confusion_matrix = {(true, pred): 0.0 for true in config_names for pred in config_names}
+
+    for state in state_probabilities[config_names[0]].keys():
+        prob_state = {name: probs.get(state, 0.0) for name, probs in state_probabilities.items()}
+        if build_map:
+            predicted = max(prob_state, key=prob_state.get)
+            states_map[predicted].append(state)
+        else:
+            predicted = state_to_config[state]
+        # Add each config's probability for this state to its (config, predicted) cell.
+        for name in config_names:
+            confusion_matrix[(name, predicted)] += prob_state.get(name, 0.0)
+
+    return confusion_matrix, states_map
+
+def confusion_quality(confusion_matrix: Dict[Tuple[str, str], float]) -> float:
+    """
+    Score a confusion matrix by the geometric mean of its diagonal: ``(prod(c_ii))^(1/n)``.
+
+    Penalises imbalance: a single poorly classified configuration (c_ii near 0) collapses the score,
+    so it rewards matrices that discriminate every configuration well.
+
+    Args:
+        - ``confusion_matrix`` (Dict[Tuple[str, str], float]): Soft confusion matrix mapping
+          (true, predicted) configuration pairs to the accumulated probability mass.
+
+    Returns:
+        - ``quality`` (float): Geometric mean of the diagonal (correct-classification) entries.
+    """
+
+    # Diagonal entries c_ii = correct-classification mass per configuration.
+    diagonal = [value for (true, pred), value in confusion_matrix.items() if true == pred]
+
+    return pow(prod(diagonal), 1 / len(diagonal))
 
 
 # ---------------------------- generic N-dimensional sweep helpers ----------------------------

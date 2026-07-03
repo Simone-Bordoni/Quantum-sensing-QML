@@ -4,25 +4,42 @@ Sweep:
 - auto-resolution
 
 Generale:
-- permettere di avere rumore anche su inizio sim
 + mettere modulazione temporale delle hamiltoniane insieme a quelle dei lindblad durante la creazione dei termini
 + spostare creazione hamiltoniana in quantum utils
++ capire come gestire esperimenti transienti che potrebbero "attivare" la misura a tempi differenti
++ permettere di avere rumore anche su inizio sim
++ selezionare ground state
 
 Optimization:
 + TEST
++ riparare metriche finali matrici di confusione
++ run experiment alla fine non usa rumore, correggere le simulazioni per usare qualsiasi measurement protocol
 - on measurement time
 - speedup
 - custom precision annealing
-- riparare metriche finali matrici di confusione
-- run experiment alla fine non usa rumore, correggere correggendo le simulazioni per usare qualsiasi measurement protocol
 
 Run experiment:
-- per far usare measurement protocol usare aggregazione per capire cosa far vedere:
-    media per esperimento continuato
-    massimo per singolo evento
++ per far usare measurement protocol usare aggregazione per capire cosa far vedere:
+    media per esperimento persistente
+    massimo per evento transiente
     matrice confusione misurata con (prod(c_ii))^{1/n} dove c_ii sono elementi diagonali (ma matrice di confusione non +è ancora formata???)
++ alla fine dare matrici di confusione per ogni misura
++ calcolare la probabilità di falsi allarmi per ogni configurazione. 
+    (per la configurazione i la probabilità che almeno una volta non esca config_i o ground, quindi serve dare informazione su chi è ground state)
+
+TimeEvolution:
+- tiene traccia di operatore personalizzato
 
 Visualization:
 - Time evolution where various subsystems and observables can be choosen and toggled
 - multidimensional sweep visualization
 - clean and automize optimization dashboard (wheter or not detection metrics should be plotted and wheter or not visualization and metric should both be plotted)
+- aggiungere ground e perturbation_type al print di exp_params
+
+
+DetectionMetric:
+- rielaborare il MeasurementAggregator per poter avere metriche che massimizzano ottenere risultati positivi su k misure su n oppure k misure consecutive. 
+    Serve tener conto di un vettore di k successi e non basta un float.
+
+Callback:
+- salvare metadata dell'esperimento?

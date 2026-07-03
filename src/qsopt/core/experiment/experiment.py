@@ -29,6 +29,9 @@ from qsopt.core.core_utils import (
     annealing_weight,
     classify_sweep_axis,
     sweep_key_types,
+    make_confusion_matrix,
+    confusion_quality,
+    state_probs_to_dict
 )
 from qsopt.utils.results import SweepResults
 
@@ -118,7 +121,7 @@ class Experiment:
                                                     n_qubits=experimental_params.n_qubits,\
                                                     n_fields=experimental_params.n_fields,\
                                                     config_names=self.config_names,\
-                                                    perturbation_type="transient")
+                                                    perturbation_type=experimental_params.perturbation_type)
         else:
             # Validate the detection metric by making sure core parameters have been set to the same values
             if detection_metric.n_qubits != experimental_params.n_qubits or\
@@ -206,6 +209,11 @@ class Experiment:
     def qubit_levels(self) -> int:
         """Get the number of qubit levels in the experiment."""
         return self.experimental_params.qubit_levels
+    @property
+    def ground_config(self) -> int:
+        """Get the name of the ground config in the experiment."""
+        return self.experimental_params.ground
+    
 
 
     def _generate_operators(self) -> None:
@@ -527,9 +535,6 @@ class Experiment:
             timestamps = self.experimental_params.get_timestamps(batch_size)
             measurement_sequences = [timestamps[i] for i in range(timestamps.shape[0])]
 
-        if detection_states and len(measurement_sequences[0]) != 2:
-            raise ValueError("detection_states=True is only supported for single measurements")
-
         if debug:
             self.debug_times.append({ f'get_circuits' : t.time()})
  
@@ -539,17 +544,16 @@ class Experiment:
         # initialize batches
         batch_metric = []
         batch_detect = { config.name : [] for config in self.experimental_params.configuration_set }
-        batch_detect_with = []
-        batch_detect_without = []
         batch_validation = []
 
         if detection_states:
             batch_for_prob = []
+            batch_weights = []
 
         if debug:
             self.debug_times.append({ f'start_measurement_loop' : t.time()})
 
-        simulation_fn = self.debug_simulation if (debug or detection_states) else self.simulation
+        simulation_fn = self.simulation if not debug else self.debug_simulation
  
         for measurement_times in measurement_sequences:
             if debug:
@@ -572,11 +576,14 @@ class Experiment:
             if debug:
                 self.debug_times.append({ f'calculate_detection_metric{self.step}' : t.time()})
 
-            if detection_states:
-                batch_for_prob.append(rho_lists)
 
             weights = self.experimental_params.measurement.measurement_weights(measurement_times[1:])
             metric_value, (detection_dict, validation_value) = self.detection_metric(rho_lists, weights=weights)
+
+            if detection_states:
+                batch_for_prob.append(rho_lists)
+                batch_weights.append(weights)
+
 
             batch_metric.append(metric_value)
             batch_validation.append(validation_value)
@@ -599,33 +606,54 @@ class Experiment:
 
         if detection_states:
 
-            P_all = self.operators['P_all']
-            prob_dict = {}
-            avg_prob_dict = {}
+            # P_all[i] is a diagonal projector, so P(state i | rho) = Tr(P_i @ rho) = <diag(P_i), diag(rho)>.
+            # Stack the diagonals into (n_states, D): one mat-vec against diag(rho) gives the full prob vector.
+            # Real cast: qutip returns diagonals as complex128 and would otherwise promote the result.
+            proj_diags = np.real(np.stack([np.asarray(proj.diag()) for proj in self.operators['P_all']]))
 
+            config_names = self.experimental_params.get_configuration_names()
+            n_measurements = len(batch_for_prob[0][config_names[0]])
+            n_states = proj_diags.shape[0]
+            avg_weights = np.asarray(sum(batch_weights))
+
+            # Sum probability vectors over the batch, then divide once. Axes: (config, measurement, state).
+            prob_sum = np.zeros((len(config_names), n_measurements, n_states))
             for rho_lists in batch_for_prob:
-                
-                # We only compute probabilities for the first measurement in the sequence, as detection_states is only supported for single measurements
-                rho_list_restricted = {name: rho_list[0] for name, rho_list in rho_lists.items()}
+                for c, name in enumerate(config_names):
+                    for m, rho in enumerate(rho_lists[name]):
+                        prob_sum[c, m] += proj_diags @ np.real(rho.diag())
+            avg_probs = prob_sum / len(batch_for_prob)
 
-                for name, rho in rho_list_restricted.items():
-                    if name not in prob_dict:
-                        prob_dict[name] = []
-                    prob_dict[name].append([np.real((proj * rho * proj).tr()) for proj in P_all])
+            # Flatten to per-measurement, per-config {binary_state: prob} only at the boundary.
+            state_prob_data = [state_probs_to_dict(avg_probs[:,m], config_names) for m in range(n_measurements)]
 
-            # Shape before averaging:
-            #   prob -> (batch_size, n_states)
-            # Note: only first measurement is used (rho_list[0]), so no measurement axis.
-            # Average across the batch axis only.
-            for name, lists in prob_dict.items():
-                prob_dict[name] = np.array(lists)
-                # Resulting shape after mean(axis=0): (n_states,)
-                avg_prob_dict[name] = np.mean(prob_dict[name], axis=0).tolist()
+            if self.experimental_params.perturbation_type == 'persistent':
 
-            state_prob_dict = {name: \
-                                    {format(i, f"0{self.n_qubits}b"): avg_prob[i]   
-                                        for i in range(len(avg_prob))}     
-                                for name, avg_prob in avg_prob_dict.items()}
+                weighted_probs = (avg_probs * avg_weights[None, :, None]).sum(axis=1) / avg_weights.sum()
+
+                main_confusion_matrix, states_map = make_confusion_matrix(weighted_probs, config_names)
+
+            else: #transient
+
+                # Create a confusion matrix for each measurement
+                evaluation_matrices, states_maps = list(zip(*[make_confusion_matrix(measurement_probs)
+                                            for measurement_probs in state_prob_data]))
+
+                # Each matrix is evaluated and the highest is used to determine which map to use
+                confusion_scores = np.array([confusion_quality(matrix) for matrix in evaluation_matrices])*avg_weights
+                winning_map = np.argmax(confusion_scores)
+
+                main_confusion_matrix = evaluation_matrices[winning_map]
+                states_map = states_maps[winning_map]
+
+            confusion_matrices = [make_confusion_matrix(avg_probs[:, m], config_names, states_map)[0] for m in range(n_measurements)]
+            
+            false_signal_dict = {config:
+                                    [sum([matrix[(config,prediction)] for prediction in config_names if not prediction in [config, self.experimental_params.ground]])
+                                     for matrix in confusion_matrices]
+                                 for config in config_names}
+
+
         if debug:
             self.debug_times.append({ f'save_callback' : t.time()})
 
@@ -640,7 +668,10 @@ class Experiment:
                 detection_dict=mean_detect_dict,
                 metric=float(mean_metric),
                 validation=float(mean_validation),
-                state_probabilities=state_prob_dict,
+                state_probabilities=avg_probs,
+                states_map=states_map,
+                confusion_matrix=main_confusion_matrix,
+                false_signal=false_signal_dict
             )
 
         else:
@@ -781,9 +812,9 @@ class Experiment:
         else:
             raise TypeError("partial_configs must be a list of strings or None.")
 
-        if callback is None or not callback.detection_states:
-            if callback is not None and not callback.detection_states:
-                print("Warning: Callback provided without detection states. Creating new one.")
+        if callback is None or not callback.states_map:
+            if callback is not None and not callback.states_map:
+                print("Warning: Callback provided without a states map. Creating new one.")
             callback = self.run_simulation(measurement_times=(t_start, t_end), detection_states=True)
 
         
@@ -892,7 +923,8 @@ class Experiment:
         final_results: bool = True,
         hot_start: bool = False,
         tot_steps: Optional[int] = None,
-        anneal_tolerances: bool = True
+        anneal_tolerances: bool = True,
+        tollerances: Optional[Tuple[Optional[float], Optional[float]]] = None
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -917,6 +949,7 @@ class Experiment:
                     If False (0), does not renormalize the gradients.
             noisy_training: float, adds noise to the gradients during optimization.
                     If a float is given, it is used as the standard deviation relative to the average gradient. (default: None)
+            final_results: If True, stores the final optimization results in the callback. (default: True)
             hot_start: If True, continues optimization from the last parameters and optimizer state in the callback.
                     If either the optimizer or the params are given they override the hot start values. (default: False)
             tot_steps: Total number of optimization steps to run, it's used to give the epoch percentage to the detection metric.
@@ -926,7 +959,6 @@ class Experiment:
                     (fast, approximate gradients early) to the tight final tolerances (accurate near
                     convergence), following annealing_weight(epoch_fraction). Costs no recompilation.
                     (default: True)
-            final_results: If True, stores the final optimization results in the callback. (default: True)
 
         Returns:
             OptimizationCallback with full optimization history, including
@@ -951,7 +983,7 @@ class Experiment:
         # Use provided callback or default
         if callback is None:
             callback = self.callback
-                
+        
         loaded_grads = None
 
         # Reset callback only at start of new optimizations
@@ -1288,14 +1320,11 @@ class Experiment:
             batch_size = 16 # Use a larger batch size for final evaluation to reduce noise in results when uncertainty is present
 
         final_results_callback = self.run_simulation(batch_size=batch_size,
-                                            measurement_times=[base_timestamps[0], base_timestamps[-1]], # run_simulation only accepts 1 measurement
                                             detection_states=True,
                                             debug=False
                                             )
-
-        state_probs_dict = final_results_callback.state_probabilities
             
-        callback.set_measurement_protocol(state_probs_dict)
+        callback.set_measurement_protocol(*final_results_callback.get_measurement_protocol())
 
         if verbose:
             print("=" * (5+len(header)))

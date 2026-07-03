@@ -1364,6 +1364,7 @@ class SystemConfiguration:
     density_matrix: Optional[qt.Qobj] = None  # Overrides cavity/field states when provided
     noise_model: Optional[NoiseModel] = None
     interactions: Optional[List[Interaction]] = None
+    is_ground: bool = False
 
     def __post_init__(self):
         """Validate configuration data, including the initial-state specification."""
@@ -1818,6 +1819,16 @@ class ExperimentalParameters:
         if len(names) != len(set(names)):
             raise ValueError("All SystemConfiguration instances in configuration_set must have unique names")
 
+        # Exactly one configuration must be flagged as the ground (is_ground) configuration.
+        ground_configs = [config.name for config in self.configuration_set if config.is_ground]
+        if len(ground_configs) != 1:
+            raise ValueError(
+                f"Exactly one SystemConfiguration in configuration_set must have is_ground=True, "
+                f"but {len(ground_configs)} do: {ground_configs}"
+            )
+
+        self.ground = ground_configs[0]
+
     # Direct access to commonly used parameters for easier integration
 
     @property
@@ -1874,7 +1885,6 @@ class ExperimentalParameters:
     def interactions(self) -> List[Interaction]:
         """Return the list of interactions from the physical model."""
         return self.physical_model.interactions
-    
 
 
     @property

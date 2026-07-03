@@ -33,16 +33,16 @@ class OptimizationCallback:
         best_validation (float): Best validation value observed so far
         best_metrics (Optional[Dict]): Metrics at best parameters (epoch, metric,
             validation and per-configuration detection_dict)
-        state_probabilities (Optional[Dict[str, Dict[str, float]]]): Per-configuration
-            measurement-state probabilities, mapping configuration name to a dict of
-            binary state strings (e.g. '001', '010') to probabilities.
-        detection_states (Dict[str, List[str]]): Mapping of configuration name to the
-            list of binary state strings that are classified as that configuration
-            (i.e. the configuration that maximises the probability of the state).
-        confusion_matrix (Dict[Tuple[str, str], float]): Soft confusion matrix mapping
+        state_probabilities (Optional[np.ndarray]): Batch-averaged probabilities of shape
+            (n_configs, n_measurements, n_states); source for per-measurement confusion matrices.
+        states_map (Dict[str, List[str]]): Deployable map of configuration name to the list
+            of binary state strings classified as that configuration.
+        confusion_matrix (Dict[Tuple[str, str], float]): Main soft confusion matrix mapping
             (true_configuration, predicted_configuration) to the accumulated probability
             mass. Each true-configuration row sums to 1 when the input probabilities are
             normalised.
+        false_signal (Optional[Any]): Per-run false-signal information (e.g. per config, the
+            per-measurement mass misclassified as another non-ground configuration).
     """
 
     def __init__(self, save_every: int = 1, save_best: bool = True):
@@ -65,16 +65,18 @@ class OptimizationCallback:
         self.best_validation: float = -float("inf")
         self.best_metrics: Optional[Dict[str, Union[int, float, Dict[str, float]]]] = None
 
-        # Optional per-run state probabilities populated by experiment.run_simulation
-        self.state_probabilities: Optional[Dict[str, Dict[str, float]]] = None
-
         # Optimization completion info
         self.converged: bool = False
         self.final_grad_norm: Optional[float] = None
 
-        # Detection state tracking from set_measurement_protocol
-        self.detection_states: Dict[str, List[str]] = {}
+        # Per-run detection artifacts produced by the experiment (via set_measurement_protocol).
+        self.state_probabilities: Optional[np.ndarray] = None
+        self.states_map: Dict[str, List[str]] = {}
         self.confusion_matrix: Dict[Tuple[str, str], float] = {}
+        self.false_signal: Optional[Any] = None
+
+        # Per-measurement confusion matrices, computed on demand from state_probabilities + states_map.
+        self.measurement_confusion_matrices: Optional[List[Dict[Tuple[str, str], float]]] = None
 
     @staticmethod
     def _empty_history_template() -> Dict[str, List[Any]]:
@@ -105,7 +107,10 @@ class OptimizationCallback:
         validation: float = 0.0,
         optimizer_state: Any = None,
         grads: Any = None,
-        state_probabilities: Optional[Dict[str, Dict[str, float]]] = None,
+        state_probabilities: Optional[np.ndarray] = None,
+        states_map: Optional[Dict[str, List[str]]] = None,
+        confusion_matrix: Optional[Dict[Tuple[str, str], float]] = None,
+        false_signal: Optional[Any] = None,
     ) -> None:
         """
         Record metrics from current optimization step.
@@ -121,7 +126,10 @@ class OptimizationCallback:
             validation: Optimization validation metric value
             optimizer_state: Optimizer state
             grads: Gradients at current step
-            state_probabilities: Optional dict containing per configuration state probabilities
+            state_probabilities: Batch-averaged (n_configs, n_measurements, n_states) probability array
+            states_map: Deployable config -> owned states map
+            confusion_matrix: Main aggregated confusion matrix
+            false_signal: Per-run false-signal information
         """
         self.epoch += 1
         metric_value = float(metric)
@@ -165,54 +173,72 @@ class OptimizationCallback:
             }
 
         if state_probabilities is not None:
-            self.set_measurement_protocol(state_probabilities)
+            self.set_measurement_protocol(state_probabilities, states_map, confusion_matrix, false_signal)
 
-    def set_measurement_protocol(self, state_probabilities: Optional[Dict[str, Dict[str, float]]]) -> None:
+    def get_measurement_protocol(self) -> Tuple[Optional[np.ndarray], Dict[str, List[str]], Dict[Tuple[str, str], float], Any]:
         """
-        Set state probabilities for the current optimization step and classify detection states.
+        Return the stored per-run detection artifacts.
 
-        Classifies each measurement state to the configuration that maximises its
-        probability, building:
-        - detection_states: mapping each configuration name to the list of states it "wins".
-        - confusion_matrix: soft confusion matrix mapping (true, predicted) configuration
-          pairs to the accumulated probability mass.
+        Returns:
+            - ``state_probabilities`` (Optional[np.ndarray]): Batch-averaged (n_configs, n_measurements, n_states) array.
+            - ``states_map`` (Dict[str, List[str]]): Deployable config -> owned states map.
+            - ``confusion_matrix`` (Dict[Tuple[str, str], float]): Main aggregated confusion matrix.
+            - ``false_signal`` (Any): Per-run false-signal information.
+        """
+        return self.state_probabilities, self.states_map, self.confusion_matrix, self.false_signal
 
-        States are represented as binary strings, e.g., for 3 qubits: '000', '001', ..., '111'
-        formatted as format(i, f"0{n_qubits}b") for i in range(2**n_qubits).
-
-        This can be used to update the state probabilities at any point during optimization,
-        such as after a final evaluation run. Passing ``None`` or an empty mapping clears the
-        currently stored protocol.
+    def set_measurement_protocol(
+        self,
+        state_probabilities: Optional[np.ndarray] = None,
+        states_map: Optional[Dict[str, List[str]]] = None,
+        confusion_matrix: Optional[Dict[Tuple[str, str], float]] = None,
+        false_signal: Optional[Any] = None,
+    ) -> None:
+        """
+        Store the per-run detection artifacts produced by the experiment.
 
         Args:
-            state_probabilities: Dict mapping each configuration name to a dict of binary
-                state strings to the probability of measuring that state for the configuration.
+            - ``state_probabilities`` (Optional[np.ndarray]): Batch-averaged (n_configs, n_measurements, n_states) array.
+            - ``states_map`` (Optional[Dict[str, List[str]]]): Deployable config -> owned states map.
+            - ``confusion_matrix`` (Optional[Dict[Tuple[str, str], float]]): Main aggregated confusion matrix.
+            - ``false_signal`` (Optional[Any]): Per-run false-signal information.
         """
+        self.state_probabilities = state_probabilities
+        self.states_map = states_map if states_map is not None else {}
+        self.confusion_matrix = confusion_matrix if confusion_matrix is not None else {}
+        self.false_signal = false_signal
 
-        if not state_probabilities:
-            self.state_probabilities = None
-            self.detection_states = {}
-            self.confusion_matrix = {}
-            return
+    def compute_measurement_confusion(self) -> List[Dict[Tuple[str, str], float]]:
+        """
+        Build one confusion matrix per measurement from ``state_probabilities``, classified by ``states_map``.
 
-        self.state_probabilities = copy.deepcopy(state_probabilities)
-        config_names = list(state_probabilities.keys())
-        
-        # dictionary of binary strings where interaction is detected
-        self.detection_states = {name: [] for name in config_names}
+        Uses the stored map (no re-classification) and caches the result; the printout renders them when present.
 
-        # dictionary to hold probabilities for each state (True: name1, Predicted: name2)
-        self.confusion_matrix = {(name1, name2): 0.0 for name1 in config_names for name2 in config_names}
+        Returns:
+            - ``measurement_confusion_matrices`` (List[Dict[Tuple[str, str], float]]): One confusion matrix
+              per measurement.
 
-        for state in state_probabilities[config_names[0]].keys():
-            prob_state = {name: probs.get(state, 0.0) for name, probs in state_probabilities.items()}
-            max_config = max(prob_state, key=prob_state.get)
-            self.detection_states[max_config].append(state)
-            # Confusion matrix: add each config's probability for this state to the
-            # (config, argmax_config) cell, so entry (A,B) = P(classified as B | config A).
-            for name in config_names:
-                self.confusion_matrix[(name, max_config)] += prob_state.get(name, 0.0)
-            
+        Raises:
+            ValueError: If ``state_probabilities`` or ``states_map`` have not been set (no data to classify).
+        """
+        from qsopt.core.core_utils import make_confusion_matrix
+
+        if self.state_probabilities is None or not self.states_map:
+            raise ValueError("compute_measurement_confusion requires state_probabilities and states_map to be set.")
+
+        config_names = list(self.states_map.keys())
+        probs = np.asarray(self.state_probabilities)
+        # One matrix per measurement, classified by the shared deployable map.
+        self.measurement_confusion_matrices = [
+            make_confusion_matrix(probs[:, m], config_names, self.states_map)[0]
+            for m in range(probs.shape[1])
+        ]
+        return self.measurement_confusion_matrices
+
+    def reset_measurement_confusion(self) -> None:
+        """Delete the per-measurement confusion matrices; leaves the main ``confusion_matrix`` intact."""
+        self.measurement_confusion_matrices = None
+
     def get_best_trainable_params(self) -> Optional[tuple[list, list]]:
         """
         Get the best trainable parameters found during optimization.
@@ -364,13 +390,15 @@ class OptimizationCallback:
             "final_grad_norm": np.array(final_grad_norm_value),
         }
 
-        # Save optional per-run state probabilities if available
+        # Save per-run detection artifacts only when present (absent during plain optimization).
         if self.state_probabilities is not None:
-            save_dict["state_probabilities"] = np.array(self.state_probabilities, dtype=object)
-
-        # Save detection states and metrics
-        save_dict["detection_states"] = np.array(self.detection_states, dtype=object)
-        save_dict["confusion_matrix"] = np.array(self.confusion_matrix, dtype=object)
+            save_dict["state_probabilities"] = np.asarray(self.state_probabilities)
+        if self.states_map:
+            save_dict["states_map"] = np.array(self.states_map, dtype=object)
+        if self.confusion_matrix:
+            save_dict["confusion_matrix"] = np.array(self.confusion_matrix, dtype=object)
+        if self.false_signal is not None:
+            save_dict["false_signal"] = np.array(self.false_signal, dtype=object)
 
         # Add best parameters if available
         if self.best_trainable_params is not None:
@@ -489,15 +517,15 @@ class OptimizationCallback:
                 "detection_dict": data["best_detection"].item(),
             }
 
-        # Restore optional per-run state probabilities if present
+        # Restore optional per-run detection artifacts if present.
         if "state_probabilities" in data:
-            callback.state_probabilities = data["state_probabilities"].item()
-
-        # Restore detection states and metrics
-        if "detection_states" in data:
-            callback.detection_states = data["detection_states"].item()
+            callback.state_probabilities = np.asarray(data["state_probabilities"])
+        if "states_map" in data:
+            callback.states_map = data["states_map"].item()
         if "confusion_matrix" in data:
             callback.confusion_matrix = data["confusion_matrix"].item()
+        if "false_signal" in data:
+            callback.false_signal = data["false_signal"].item()
 
         return callback
 
@@ -536,8 +564,10 @@ class OptimizationCallback:
         self.converged = False
         self.final_grad_norm = None
         self.state_probabilities = None
-        self.detection_states = {}
+        self.states_map = {}
         self.confusion_matrix = {}
+        self.false_signal = None
+        self.measurement_confusion_matrices = None
 
     def __repr__(self) -> str:
         """
@@ -598,41 +628,59 @@ class OptimizationCallback:
             if self.best_metrics.get("validation") is not None:
                 lines.append(f"     Validation: {self.best_metrics['validation']:.6f}")
 
-        # Show per-configuration measurement-state probabilities
-        if self.state_probabilities:
-            lines.append("  State Probabilities:")
-            for config_name, probs in self.state_probabilities.items():
-                lines.append(f"     {config_name}:")
-                for state, prob in probs.items():
-                    lines.append(f"        {state}: {float(prob):.6f}")
-
         # Show detection protocol: which states are classified as which configuration
-        if self.detection_states:
+        if self.states_map:
             lines.append("  Detection Protocol (states classified per configuration):")
-            for config_name, states in self.detection_states.items():
+            for config_name, states in self.states_map.items():
                 lines.append(f"     {config_name}: {list(states)}")
 
-        # Show confusion matrix (rows: true configuration, cols: predicted configuration)
-        if self.confusion_matrix:
-            # Preserve first-seen ordering of configuration names
-            config_names: List[str] = []
-            for true_name, pred_name in self.confusion_matrix:
-                for name in (true_name, pred_name):
-                    if name not in config_names:
-                        config_names.append(name)
+        # Show false-signal information per configuration and measurement
+        if isinstance(self.false_signal, dict) and self.false_signal:
+            lines.append("  False signal (per measurement):")
+            for config_name, values in self.false_signal.items():
+                formatted = ", ".join(f"{float(v):.4f}" for v in values)
+                lines.append(f"     {config_name}: [{formatted}]")
 
-            col_width = max(10, max(len(str(name)) for name in config_names) + 2)
-            lines.append("  Confusion Matrix (rows: true, cols: predicted):")
-            header = " " * col_width + "".join(f"{str(name):>{col_width}}" for name in config_names)
-            lines.append("     " + header)
-            for true_name in config_names:
-                row = f"{str(true_name):>{col_width}}"
-                for pred_name in config_names:
-                    val = float(self.confusion_matrix.get((true_name, pred_name), 0.0))
-                    row += f"{val:>{col_width}.4f}"
-                lines.append("     " + row)
+        # Show the main confusion matrix (rows: true, cols: predicted)
+        if self.confusion_matrix:
+            lines += self._format_confusion_matrix(self.confusion_matrix, "Confusion Matrix (rows: true, cols: predicted):")
+
+        # Show per-measurement confusion matrices when they have been computed on request
+        if self.measurement_confusion_matrices:
+            for m, matrix in enumerate(self.measurement_confusion_matrices):
+                lines += self._format_confusion_matrix(matrix, f"Confusion Matrix - measurement {m} (rows: true, cols: predicted):")
 
         return "\n".join(lines)
+
+    def _format_confusion_matrix(self, confusion_matrix: Dict[Tuple[str, str], float], title: str) -> List[str]:
+        """
+        Render a confusion matrix as aligned text rows (rows: true, cols: predicted).
+
+        Args:
+            - ``confusion_matrix`` (Dict[Tuple[str, str], float]): Matrix mapping (true, predicted) to mass.
+            - ``title`` (str): Heading line printed above the matrix.
+
+        Returns:
+            - ``lines`` (List[str]): Formatted text lines for the matrix.
+        """
+        # Preserve first-seen ordering of configuration names.
+        config_names: List[str] = []
+        for true_name, pred_name in confusion_matrix:
+            for name in (true_name, pred_name):
+                if name not in config_names:
+                    config_names.append(name)
+
+        col_width = max(10, max(len(str(name)) for name in config_names) + 2)
+        lines = [f"  {title}"]
+        header = " " * col_width + "".join(f"{str(name):>{col_width}}" for name in config_names)
+        lines.append("     " + header)
+        for true_name in config_names:
+            row = f"{str(true_name):>{col_width}}"
+            for pred_name in config_names:
+                val = float(confusion_matrix.get((true_name, pred_name), 0.0))
+                row += f"{val:>{col_width}.4f}"
+            lines.append("     " + row)
+        return lines
 
     def __str__(self) -> str:
         """String representation (calls __repr__)."""
