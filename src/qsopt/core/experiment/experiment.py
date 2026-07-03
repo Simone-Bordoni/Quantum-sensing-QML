@@ -288,7 +288,7 @@ class Experiment:
         return self._cached_solvers
 
     @staticmethod
-    def _set_solver_tolerances(solvers: Dict[str, qt.MESolver], atol, rtol) -> None:
+    def _set_solver_tolerances(solvers: Dict[str, qt.MESolver], atol = _SOLVER_ATOL, rtol = _SOLVER_RTOL) -> None:
         """Inject a diffrax PIDController with the given tolerances into each cached solver.
 
         atol/rtol may be traced (epoch-dependent) values: they enter the compiled graph as
@@ -923,8 +923,7 @@ class Experiment:
         final_results: bool = True,
         hot_start: bool = False,
         tot_steps: Optional[int] = None,
-        anneal_tolerances: bool = True,
-        tollerances: Optional[Tuple[Optional[float], Optional[float]]] = None
+        anneal_tolerances: Union[bool, float] = True,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -958,7 +957,8 @@ class Experiment:
             anneal_tolerances: If True, anneals the ODE-solver tolerances over training from loose
                     (fast, approximate gradients early) to the tight final tolerances (accurate near
                     convergence), following annealing_weight(epoch_fraction). Costs no recompilation.
-                    (default: True)
+                    True uses the default 100x loosening at the start; pass a float > 1 to set a
+                    custom starting loosening factor; False disables annealing. (default: True)
 
         Returns:
             OptimizationCallback with full optimization history, including
@@ -1011,6 +1011,18 @@ class Experiment:
         else:
             start_step = 0
             callback.reset()
+
+        if isinstance(anneal_tolerances, bool):
+            tolerance_scale = _TOL_ANNEAL_FACTOR if anneal_tolerances else 1.0
+
+        elif isinstance(anneal_tolerances, (int, float)) and anneal_tolerances > 1:
+            tolerance_scale = float(anneal_tolerances)
+            anneal_tolerances = True
+
+        else:
+            raise ValueError("anneal_tolerances must either be a bool to toggle the tolerance annealing "
+                             f"or a float > 1 to toggle it on with a custom starting loosening factor. "
+                             f"Value given: {anneal_tolerances}")
 
         if tot_steps is None:
             tot_steps = num_steps
@@ -1083,12 +1095,6 @@ class Experiment:
         # Signature order is kept future-proof for optional optimization over times.
         def parallel_simulations(circuit_unitaries, timestamps, noise, epoch_fraction: float):
             """Single-realization of all configuration simulations at the given (noisy) timestamps."""
-
-            # Anneal ODE-solver tolerances loose -> tight over training (epoch_fraction is
-            # unbatched here, so this sets one scalar tolerance per step; no recompilation).
-            if anneal_tolerances:
-                scale = _TOL_ANNEAL_FACTOR ** annealing_weight(epoch_fraction)
-                self._set_solver_tolerances(solvers, _SOLVER_ATOL * scale, _SOLVER_RTOL * scale)
 
             noisy_timestamps = timestamps + noise
 
@@ -1232,14 +1238,23 @@ class Experiment:
         # Initialize variables
         step = start_step
         grad_norm = float("inf")
+        scaling_speedup = 1.0
 
         for step in range(start_step, num_steps):
+
+            epoch_fraction = step / tot_steps
+
+            # Anneal ODE-solver tolerances loose -> tight over training (epoch_fraction is
+            # unbatched here, so this sets one scalar tolerance per step; no recompilation).
+            if anneal_tolerances:                
+                scale = tolerance_scale ** annealing_weight(epoch_fraction*scaling_speedup)
+                self._set_solver_tolerances(solvers, _SOLVER_ATOL * scale, _SOLVER_RTOL * scale)
 
             noise_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
             grads, (detection_dict, step_metric, step_validation) = jitted_grad(
-                params, timestamps_arg, noise_batch, step / tot_steps
+                params, timestamps_arg, noise_batch, epoch_fraction
             )
 
             step_metric_value = float(step_metric)
@@ -1292,7 +1307,10 @@ class Experiment:
 
             # Convergence check
             if grad_norm < tolerance:
-                break
+                if epoch_fraction*scaling_speedup <= 8: # se è la terza volta che triggero questa condizione al massimo dell'apprendimento
+                    scaling_speedup *= 2
+                else:
+                    break
 
             # Update parameters
             updates, opt_state = optimizer.update(grads, opt_state, params)
@@ -1311,7 +1329,7 @@ class Experiment:
         # controllers holding (now dead) traced tolerances, and the final run_simulation
         # below reuses these same solvers and wants full accuracy.
         if anneal_tolerances:
-            self._set_solver_tolerances(solvers, _SOLVER_ATOL, _SOLVER_RTOL)
+            self._set_solver_tolerances(solvers)
 
         # Run simulation to get probabilities for each state with the best parameters
         if has_uncertainty and batch_size < 16:

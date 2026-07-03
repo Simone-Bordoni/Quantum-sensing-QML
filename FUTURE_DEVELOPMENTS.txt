@@ -1,7 +1,7 @@
 Sweep:
-+ rendere possibile sul rumore
 + test
 - auto-resolution
+- rendere possibile sul rumore
 
 Generale:
 + mettere modulazione temporale delle hamiltoniane insieme a quelle dei lindblad durante la creazione dei termini
@@ -28,7 +28,7 @@ Run experiment:
     (per la configurazione i la probabilità che almeno una volta non esca config_i o ground, quindi serve dare informazione su chi è ground state)
 
 TimeEvolution:
-- tiene traccia di operatore personalizzato  
+- tiene traccia di operatore personalizzato
 
 Visualization:
 - Time evolution where various subsystems and observables can be choosen and toggled

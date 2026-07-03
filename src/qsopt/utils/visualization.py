@@ -15,7 +15,6 @@ from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 
 from qsopt.core.callback import OptimizationCallback
-from qsopt.core.core_utils import state_probs_to_dict
 from qsopt.core.experimental_parameters import ExperimentalParameters
 from qsopt.utils.results import SweepResults, TimeEvolutionResults
 
@@ -426,7 +425,6 @@ def plot_optimization_dashboard(
         confusion_matrix = getattr(optimization_callback, "confusion_matrix", {}) or {}
         states_map = getattr(optimization_callback, "states_map", {}) or {}
         false_signal = getattr(optimization_callback, "false_signal", None)
-        state_probabilities = getattr(optimization_callback, "state_probabilities", None)
 
         # Ordered configuration names: prefer the confusion-matrix keys, then fall back to the
         # states_map so the panel still renders when only a subset of the data is present.
@@ -486,23 +484,6 @@ def plot_optimization_dashboard(
                 if name in false_signal:
                     values = ", ".join(f"{float(v):.3f}" for v in false_signal[name])
                     summary_lines.append(f"  {name}: [{values}]")
-
-        if has_state_probabilities:
-            # state_probabilities is (n_configs, n_measurements, n_states); render one table per measurement.
-            probs_array = np.asarray(state_probabilities)
-            sp_config_names = list(states_map.keys())
-            if len(sp_config_names) != probs_array.shape[0]:
-                sp_config_names = None
-            summary_lines.append("State probabilities:")
-            for m in range(probs_array.shape[1]):
-                probs_m = state_probs_to_dict(probs_array[:, m], sp_config_names)
-                names_m = list(probs_m.keys())
-                ordered_states = sorted({state for probs in probs_m.values() for state in probs})
-                summary_lines.append(f"  measurement {m}:")
-                summary_lines.append("    state | " + " | ".join(str(name) for name in names_m))
-                for state in ordered_states:
-                    row = " | ".join(f"{float(probs_m[name].get(state, 0.0)):.3f}" for name in names_m)
-                    summary_lines.append(f"    {state} | {row}")
 
         if summary_lines:
             # Position the summary in figure coordinates to the right of the confusion
