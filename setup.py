@@ -23,7 +23,8 @@ setup(
         "scipy>=1.16.1",
         "ml-dtypes>=0.5.3",
         "opt-einsum>=3.4.0",
-        "chex>=0.1.91"
+        "chex>=0.1.91",
+        "ipywidgets>=8.1.0"
     ],
     extras_require={
         "dev": [

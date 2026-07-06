@@ -16,4 +16,7 @@ chex==0.1.89
 pandas==2.2.3
 seaborn==0.13.2
 
+# Interactive notebook widgets (interactive_sweep)
+ipywidgets==8.1.5
+
 # Development dependencies (optional, install with: pip install -r requirements-dev.txt)

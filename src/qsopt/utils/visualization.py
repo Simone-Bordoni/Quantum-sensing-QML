@@ -12,7 +12,6 @@ from typing import Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
-from matplotlib.gridspec import GridSpec
 
 from qsopt.core.callback import OptimizationCallback
 from qsopt.core.experimental_parameters import ExperimentalParameters
@@ -76,12 +75,9 @@ def plot_optimization_dashboard(
         ...                                   show_gradients=False,
         ...                                   show_detection_measures=False)
     """
-    # Confusion-matrix summary panel is shown only if explicitly requested and the
-    # callback carries at least one related piece of information. The multi-configuration
-    # API stores: state_probabilities ((n_configs, n_measurements, n_states) array),
-    # states_map (each configuration -> states classified as it), confusion_matrix
-    # ((true, predicted) configuration pair -> accumulated probability mass), and false_signal.
-    has_state_probabilities = getattr(optimization_callback, "state_probabilities", None) is not None
+    # Confusion-matrix summary panel is shown only if explicitly requested and the callback carries all
+    # three plotted artifacts: confusion_matrix ((true, predicted) -> detection prob/rate) as a heatmap,
+    # states_map (config -> classified states) and false_signal (per config) as text summaries.
     has_detection_protocol = bool(getattr(optimization_callback, "states_map", None))
     has_confusion_values = any(
         float(value) > 0.0
@@ -89,7 +85,7 @@ def plot_optimization_dashboard(
     )
     has_false_signal = bool(getattr(optimization_callback, "false_signal", None))
     show_confusion_summary_panel = show_confusion_matrix_summary and (
-        has_state_probabilities or has_detection_protocol or has_confusion_values or has_false_signal
+        has_detection_protocol and has_confusion_values and has_false_signal
     )
 
     # Count active plots to determine layout
@@ -426,40 +422,40 @@ def plot_optimization_dashboard(
         states_map = getattr(optimization_callback, "states_map", {}) or {}
         false_signal = getattr(optimization_callback, "false_signal", None)
 
-        # Ordered configuration names: prefer the confusion-matrix keys, then fall back to the
-        # states_map so the panel still renders when only a subset of the data is present.
-        config_names_cm: List[str] = []
-        for true_name, pred_name in confusion_matrix:
-            for name in (true_name, pred_name):
-                if name not in config_names_cm:
-                    config_names_cm.append(name)
+        # Rows are the true configurations (from the confusion keys, falling back to the states_map);
+        # columns are the predicted categories, which may include prediction-only labels (e.g. 'mixed')
+        # that are never a true configuration -> shown as a column only.
+        row_names: List[str] = []
+        for true_name, _ in confusion_matrix:
+            if true_name not in row_names:
+                row_names.append(true_name)
         for name in states_map.keys():
-            if name not in config_names_cm:
-                config_names_cm.append(name)
+            if name not in row_names:
+                row_names.append(name)
+        col_names = list(row_names)
+        for _, pred_name in confusion_matrix:
+            if pred_name not in col_names:
+                col_names.append(pred_name)
 
-        n_cm = len(config_names_cm)
-        # confusion_matrix[(true, predicted)] = accumulated probability mass; rows are the true
-        # configuration, columns the predicted one.
+        n_rows, n_cols = len(row_names), len(col_names)
+        # confusion_matrix[(true, predicted)] = mass; rows are the true config, columns the predicted one.
         cm_values = np.array(
-            [
-                [float(confusion_matrix.get((true, pred), 0.0)) for pred in config_names_cm]
-                for true in config_names_cm
-            ],
+            [[float(confusion_matrix.get((true, pred), 0.0)) for pred in col_names] for true in row_names],
             dtype=float,
-        ).reshape(n_cm, n_cm)
+        ).reshape(n_rows, n_cols)
 
         vmax = max(1.0, float(np.max(cm_values))) if cm_values.size else 1.0
-        im = ax.imshow(cm_values, cmap="Blues", vmin=0.0, vmax=vmax)
+        im = ax.imshow(cm_values, cmap="Blues", vmin=0.0, vmax=vmax, aspect="auto")
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        ax.set_xticks(range(n_cm))
-        ax.set_xticklabels([f"Pred: {name}" for name in config_names_cm], rotation=20, ha="right")
-        ax.set_yticks(range(n_cm))
-        ax.set_yticklabels([f"True: {name}" for name in config_names_cm])
+        ax.set_xticks(range(n_cols))
+        ax.set_xticklabels([f"Pred: {name}" for name in col_names], rotation=20, ha="right")
+        ax.set_yticks(range(n_rows))
+        ax.set_yticklabels([f"True: {name}" for name in row_names])
         ax.set_title("Confusion Matrix", fontsize=14)
 
-        for i in range(n_cm):
-            for j in range(n_cm):
+        for i in range(n_rows):
+            for j in range(n_cols):
                 ax.text(
                     j,
                     i,
@@ -474,16 +470,15 @@ def plot_optimization_dashboard(
         summary_lines = []
         if has_detection_protocol:
             summary_lines.append("Protocol (states per configuration):")
-            for name in config_names_cm:
+            for name in row_names:
                 if name in states_map:
                     summary_lines.append(f"  {name}: {list(states_map[name])}")
 
         if has_false_signal and isinstance(false_signal, dict):
-            summary_lines.append("False signal (per measurement):")
-            for name in config_names_cm:
+            summary_lines.append("False signal (joint, per configuration):")
+            for name in row_names:
                 if name in false_signal:
-                    values = ", ".join(f"{float(v):.3f}" for v in false_signal[name])
-                    summary_lines.append(f"  {name}: [{values}]")
+                    summary_lines.append(f"  {name}: {float(false_signal[name]):.3f}")
 
         if summary_lines:
             # Position the summary in figure coordinates to the right of the confusion
@@ -719,506 +714,6 @@ def plot_parameter_trajectory(
 
         plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         print(f"Trajectory plot saved to: {save_path}")
-
-    return fig
-
-
-def plot_parameter_landscape(
-    landscape_data: Dict[str, Union[np.ndarray, float]],
-    exp_params: "ExperimentalParameters",
-    save_path: Optional[str] = None,
-    dpi: int = 300,
-) -> Figure:
-    """
-    Plot parameter space landscape with system information.
-
-    Creates a two-panel visualization showing:
-    1. Detection metric landscape as a 2D heatmap
-    2. Detection measure landscape as a 2D heatmap
-
-    Includes a comprehensive system information box showing:
-    - Physical constants (coupling strengths, pulse widths)
-    - Noise configuration (relaxation, dephasing, depolarizing)
-    - Measurement protocol (timing, intervals)
-    - Landscape statistics (ranges, optimal points)
-
-    Args:
-        landscape_data: Dictionary from compute_theta1_theta2_landscape() containing:
-            - 'theta1_vals': Array of θ₁ values
-            - 'theta2_vals': Array of θ₂ values
-            - 'metric_map': 2D array of metric values
-            - 'detection_map': 2D array of detection measures
-            - 'center_theta1': Center θ₁ value
-            - 'center_theta2': Center θ₂ value
-        exp_params: ExperimentalParameters instance with system configuration
-        save_path: Optional file path to save figure. If None, figure is not saved.
-        dpi: Resolution for saved figure. Default: 300.
-
-    Returns:
-        matplotlib Figure object
-
-    Example:
-        >>> from qsopt.utils import compute_theta1_theta2_landscape, plot_parameter_landscape
-        >>> from qsopt.core.experimental_parameters import ExperimentalParameters
-        >>>
-        >>> exp_params = ExperimentalParameters()
-        >>> # Configure exp_params...
-        >>>
-        >>> landscape = compute_theta1_theta2_landscape(exp_params, resolution=25)
-        >>> fig = plot_parameter_landscape(
-        ...     landscape,
-        ...     exp_params,
-        ...     save_path='landscape.png'
-        ... )
-        >>> plt.show()
-
-    Notes:
-        - The figure includes comprehensive system information at the bottom
-        - Optimal parameter locations are marked with symbols
-        - Color maps: 'viridis' for the metric, 'plasma' for detection
-        - Layout is optimized for publication-quality output
-    """
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 16))
-
-    # Extract data
-    theta1_vals = landscape_data["theta1_vals"]
-    theta2_vals = landscape_data["theta2_vals"]
-    metric_map = np.asarray(landscape_data["metric_map"])
-    detection_map = np.asarray(landscape_data["detection_map"])
-    center_theta1 = landscape_data["center_theta1"]
-    center_theta2 = landscape_data["center_theta2"]
-
-    # Create meshgrid
-    P1, P2 = np.meshgrid(theta1_vals, theta2_vals)
-
-    # Convert to degrees for display
-    P1_deg = np.degrees(P1)
-    P2_deg = np.degrees(P2)
-    center_x = np.degrees(center_theta1)
-    center_y = np.degrees(center_theta2)
-
-    # Plot 1: Metric landscape
-    im1 = ax1.contourf(P1_deg, P2_deg, metric_map, levels=30, cmap="viridis")
-    ax1.set_xlabel("θ₁ (degrees)", fontsize=12)
-    ax1.set_ylabel("θ₂ (degrees)", fontsize=12)
-    ax1.set_title("Detection Metric Landscape", fontsize=14)
-    ax1.grid(True, alpha=0.3)
-    cbar1 = plt.colorbar(im1, ax=ax1, label="Metric")
-
-    # Find and mark maximum metric
-    max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
-    max_x = P1_deg[max_idx]
-    max_y = P2_deg[max_idx]
-    max_metric = metric_map[max_idx]
-
-    # Mark points on metric plot
-    ax1.plot(
-        center_x, center_y, "w+", markersize=15, markeredgewidth=3, label="Center point", zorder=10
-    )
-    ax1.plot(
-        max_x,
-        max_y,
-        "ro",
-        markersize=10,
-        markerfacecolor="red",
-        markeredgecolor="white",
-        markeredgewidth=2,
-        label=f"Max = {max_metric:.6f}",
-        zorder=10,
-    )
-    ax1.legend(loc="upper right", fontsize=10)
-
-    # Plot 2: Detection measure landscape
-    im2 = ax2.contourf(P1_deg, P2_deg, detection_map, levels=30, cmap="plasma")
-    ax2.set_xlabel("θ₁ (degrees)", fontsize=12)
-    ax2.set_ylabel("θ₂ (degrees)", fontsize=12)
-    ax2.set_title("Detection Measure Landscape (with photon)", fontsize=14)
-    ax2.grid(True, alpha=0.3)
-    cbar2 = plt.colorbar(im2, ax=ax2, label="Detection Measure")
-
-    # Mark center point
-    ax2.plot(
-        center_x, center_y, "w+", markersize=15, markeredgewidth=3, label="Center point", zorder=10
-    )
-    ax2.legend(loc="upper right", fontsize=10)
-
-    # Adjust layout to leave space at bottom
-    plt.tight_layout(rect=(0, 0.12, 1, 1))
-
-    # Create comprehensive system information box
-    if (
-        exp_params._measurement_times_list is not None
-        and len(exp_params._measurement_times_list) > 1
-    ):
-        meas_times = exp_params._measurement_times_list
-        time_intervals = np.diff(meas_times)
-        avg_interval = np.mean(time_intervals)
-        interval_text = f"{avg_interval:.6f}"
-        n_measurements = len(exp_params._measurement_times_list)
-    else:
-        interval_text = "N/A"
-        n_measurements = 0
-
-    # Format chi and noise rates for display (handle list format)
-    chi_display = (
-        exp_params.chi
-        if isinstance(exp_params.chi, (int, float))
-        else exp_params.chi[0] if len(exp_params.chi) == 1 else str(exp_params.chi)
-    )
-    relaxation_display = (
-        exp_params.noise_config.relaxation
-        if isinstance(exp_params.noise_config.relaxation, (int, float))
-        else (
-            exp_params.noise_config.relaxation[0]
-            if len(exp_params.noise_config.relaxation) == 1
-            else str(exp_params.noise_config.relaxation)
-        )
-    )
-    dephasing_display = (
-        exp_params.noise_config.dephasing
-        if isinstance(exp_params.noise_config.dephasing, (int, float))
-        else (
-            exp_params.noise_config.dephasing[0]
-            if len(exp_params.noise_config.dephasing) == 1
-            else str(exp_params.noise_config.dephasing)
-        )
-    )
-    depolarizing_display = (
-        exp_params.noise_config.depolarizing
-        if isinstance(exp_params.noise_config.depolarizing, (int, float))
-        else (
-            exp_params.noise_config.depolarizing[0]
-            if len(exp_params.noise_config.depolarizing) == 1
-            else str(exp_params.noise_config.depolarizing)
-        )
-    )
-
-    system_info = f"""SYSTEM PARAMETERS AND CONFIGURATION
-
-Physical Constants:
-  • Photon-cavity coupling (γ):    {exp_params.photon_cavity_coupling:.6f} rad/time
-  • Inverse pulse width (σ):        {exp_params.inverse_pulse_width:.6f} 1/time
-  • Dispersive coupling (χ):        {chi_display if isinstance(chi_display, str) else f'{chi_display:.6f}'} rad/time
-
-System Dimensions:
-  • Number of qubits: {exp_params.n_qubits}  |  Cavity levels:  {exp_params.cavity_levels}  |  Qubit levels:  {exp_params.qubit_levels}  |  Field levels:  {exp_params.field_levels}
-
-Noise Configuration:
-  • Relaxation (γ_relax):   {relaxation_display if isinstance(relaxation_display, str) else f'{relaxation_display:.6f}'} rad/time
-  • Dephasing (γ_deph):     {dephasing_display if isinstance(dephasing_display, str) else f'{dephasing_display:.6f}'} rad/time
-  • Depolarizing (γ_depol): {depolarizing_display if isinstance(depolarizing_display, str) else f'{depolarizing_display:.6f}'} rad/time
-
-Measurement Protocol:
-  • Initial time:     {exp_params.measurement.initial_time:.6f}  |  Final time:  {exp_params.measurement.final_time:.6f}
-  • Time interval (Δt):  {exp_params.measurement.time_interval:.6f}
-  • Avg. interval between measurements:  {interval_text}  |  Number of measurements:  {n_measurements}
-
-Initial State:  {exp_params.initial_state.state_type.value}
-
-Landscape Statistics:
-    • Metric range:       [{metric_map.min():.6f}, {metric_map.max():.6f}]  |  Variation:  {metric_map.max() - metric_map.min():.2e}
-    • Detection measure range:    [{detection_map.min():.6f}, {detection_map.max():.6f}]  |  Variation:  {detection_map.max() - detection_map.min():.2e}
-    • Maximum at:         θ₁ = {max_x:.2f}°,  θ₂ = {max_y:.2f}°,  Metric = {max_metric:.8f}
-"""
-
-    # Add text box below plots
-    fig.text(
-        0.05,
-        0.02,
-        system_info,
-        fontsize=9,
-        family="monospace",
-        verticalalignment="bottom",
-        bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.7, pad=0.8),
-    )
-
-    # Save figure if path provided
-    if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-        print(f"Landscape plot saved to: {save_path}")
-
-    return fig
-
-
-def plot_time_interval_landscape(
-    landscape_data: Dict[str, Union[np.ndarray, float, str, int]],
-    exp_params: "ExperimentalParameters",
-    save_path: Optional[str] = None,
-    dpi: int = 300,
-    show_measurement_count: bool = False,
-) -> Figure:
-    """
-    Plot time interval landscape with system information.
-
-    Creates a comprehensive visualization showing:
-    1. Detection metric vs time interval
-    2. Detection measures (with and without photon) vs time interval
-    3. (Optional) Number of measurements vs time interval
-
-    Includes system information box showing:
-    - Physical constants (coupling strengths, pulse widths)
-    - Noise configuration
-    - Batch averaging details (if used)
-    - Optimal interval statistics
-
-    Args:
-        landscape_data: Dictionary from ``compute_time_interval_landscape()`` containing:
-            - 'interval_vals': Array of time interval values
-            - 'metric_vals': Array of metric values
-            - 'detection_with': Array of detection measures with photon
-            - 'detection_without': Array of detection measures without photon
-            - 'n_measurements': Array of number of measurements per interval
-            - 'mode': Computation mode ('continuous' or 'discrete')
-            - 'batch_size': Batch size used
-            - 'initial_time_uncertainty': Uncertainty value
-        exp_params: ExperimentalParameters instance with system configuration
-        save_path: Optional file path to save figure. If None, figure is not saved.
-        dpi: Resolution for saved figure. Default: 300.
-        show_measurement_count: Include measurement count subplot when True (default: False)
-
-    Returns:
-        matplotlib Figure object
-
-    Example:
-        >>> from qsopt.core.circuit import create_ry_circuit_layer
-        >>> from qsopt.core.experiment import Experiment
-        >>>
-        >>> # Create experiment with circuits
-        >>> initial_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[np.pi/2])
-        >>> final_circuit = create_ry_circuit_layer(n_qubits=1, theta_values=[-np.pi/2])
-        >>> experiment = Experiment(exp_params, initial_circuit, final_circuit)
-        >>>
-        >>> # Optimize measurement times
-        >>> data = experiment.optimize_measurement_times(
-        ...     resolution=50,
-        ...     batch_size=10
-        ... )
-        >>> fig = plot_time_interval_landscape(
-        ...     data,
-        ...     exp_params,
-        ...     save_path='time_interval_landscape.png'
-        ... )
-        >>> plt.show()
-
-    Notes:
-        - The figure layout adapts to show different features for continuous vs discrete modes
-        - Optimal interval is marked with a vertical line and annotation
-        - If batch_size > 1, uncertainty information is displayed
-    """
-    # Create figure with subplots stacked vertically
-    if show_measurement_count:
-        fig, axes = plt.subplots(3, 1, figsize=(12, 14))
-        ax1, ax2, ax3 = axes
-    else:
-        fig, axes = plt.subplots(2, 1, figsize=(12, 10))
-        ax1, ax2 = axes
-        ax3 = None
-
-    # Extract data
-    interval_vals = np.asarray(landscape_data["interval_vals"])
-    metric_vals = np.asarray(landscape_data["metric_vals"])
-    detection_with = np.asarray(landscape_data["detection_with"])
-    detection_without = np.asarray(landscape_data["detection_without"])
-    n_measurements = np.asarray(landscape_data["n_measurements"])
-    mode = str(landscape_data["mode"])
-    batch_size = int(landscape_data["batch_size"])
-    uncertainty = float(landscape_data["initial_time_uncertainty"])
-    uncertainty_spec = landscape_data.get("initial_time_uncertainty_spec")
-
-    # Find optimal interval
-    optimal_idx = np.argmax(metric_vals)
-    optimal_interval = interval_vals[optimal_idx]
-    optimal_metric = metric_vals[optimal_idx]
-    optimal_n_meas = n_measurements[optimal_idx]
-
-    # Plot 1: Detection metric vs time interval
-    if mode == "discrete":
-        ax1.plot(interval_vals, metric_vals, "bo-", linewidth=2, markersize=6, label="Metric")
-    else:
-        ax1.plot(interval_vals, metric_vals, "b-", linewidth=2, label="Metric")
-
-    # Mark optimal point
-    ax1.axvline(optimal_interval, color="red", linestyle="--", alpha=0.7, linewidth=1.5)
-    ax1.plot(
-        optimal_interval,
-        optimal_metric,
-        "ro",
-        markersize=10,
-        markerfacecolor="red",
-        markeredgecolor="white",
-        markeredgewidth=2,
-        label=f"Optimal: Δt={optimal_interval:.4f}",
-        zorder=10,
-    )
-
-    ax1.set_xlabel("Time Interval (Δt)", fontsize=12)
-    ax1.set_ylabel("Metric", fontsize=12)
-    ax1.set_title(f"Detection Metric vs Time Interval ({mode} mode)", fontsize=14)
-    ax1.grid(True, alpha=0.3)
-    ax1.legend(loc="best", fontsize=10)
-
-    # Plot 2: Detection measures
-    if mode == "discrete":
-        ax2.plot(
-            interval_vals,
-            detection_with,
-            "go-",
-            linewidth=2,
-            markersize=5,
-            label="With photon",
-            alpha=0.8,
-        )
-        ax2.plot(
-            interval_vals,
-            detection_without,
-            "mo-",
-            linewidth=2,
-            markersize=5,
-            label="Without photon",
-            alpha=0.8,
-        )
-    else:
-        ax2.plot(interval_vals, detection_with, "g-", linewidth=2, label="With photon", alpha=0.8)
-        ax2.plot(
-            interval_vals, detection_without, "m-", linewidth=2, label="Without photon", alpha=0.8
-        )
-
-    # Mark optimal point
-    ax2.axvline(optimal_interval, color="red", linestyle="--", alpha=0.7, linewidth=1.5)
-
-    ax2.set_xlabel("Time Interval (Δt)", fontsize=12)
-    ax2.set_ylabel("Detection Measure", fontsize=12)
-    ax2.set_title("Detection Measures vs Time Interval", fontsize=14)
-    ax2.grid(True, alpha=0.3)
-    ax2.legend(loc="best", fontsize=10)
-
-    # Plot 3: Number of measurements (optional)
-    if show_measurement_count and ax3 is not None:
-        if mode == "discrete":
-            ax3.plot(
-                interval_vals,
-                n_measurements,
-                "ko-",
-                linewidth=2,
-                markersize=5,
-                label="Number of measurements",
-            )
-        else:
-            ax3.plot(
-                interval_vals, n_measurements, "k-", linewidth=2, label="Number of measurements"
-            )
-
-        # Mark optimal point
-        ax3.axvline(optimal_interval, color="red", linestyle="--", alpha=0.7, linewidth=1.5)
-        ax3.plot(
-            optimal_interval,
-            optimal_n_meas,
-            "ro",
-            markersize=10,
-            markerfacecolor="red",
-            markeredgecolor="white",
-            markeredgewidth=2,
-            zorder=10,
-        )
-
-        ax3.set_xlabel("Time Interval (Δt)", fontsize=12)
-        ax3.set_ylabel("Number of Measurements", fontsize=12)
-        ax3.set_title("Measurement Count vs Time Interval", fontsize=14)
-        ax3.grid(True, alpha=0.3)
-        ax3.legend(loc="best", fontsize=10)
-
-    # Adjust layout to leave space at bottom for info box
-    layout_bottom = 0.15 if show_measurement_count else 0.2
-    plt.tight_layout(rect=(0, layout_bottom, 1, 1))
-
-    # Create comprehensive system information box
-    batch_info = f"  • Batch size: {batch_size} realizations"
-    spec_suffix = (
-        f" (specified as '{uncertainty_spec}')" if isinstance(uncertainty_spec, str) else ""
-    )
-    if batch_size > 1 and uncertainty > 0:
-        batch_info += f" (uncertainty: ±{uncertainty:.4f}{spec_suffix})"
-    elif batch_size == 1 and uncertainty > 0:
-        batch_info += f" (uncertainty available: ±{uncertainty:.4f}{spec_suffix}, not used)"
-
-    # Format chi and noise rates for display (handle list format)
-    chi_display = (
-        exp_params.chi
-        if isinstance(exp_params.chi, (int, float))
-        else exp_params.chi[0] if len(exp_params.chi) == 1 else str(exp_params.chi)
-    )
-    relaxation_display = (
-        exp_params.noise_config.relaxation
-        if isinstance(exp_params.noise_config.relaxation, (int, float))
-        else (
-            exp_params.noise_config.relaxation[0]
-            if len(exp_params.noise_config.relaxation) == 1
-            else str(exp_params.noise_config.relaxation)
-        )
-    )
-    dephasing_display = (
-        exp_params.noise_config.dephasing
-        if isinstance(exp_params.noise_config.dephasing, (int, float))
-        else (
-            exp_params.noise_config.dephasing[0]
-            if len(exp_params.noise_config.dephasing) == 1
-            else str(exp_params.noise_config.dephasing)
-        )
-    )
-    depolarizing_display = (
-        exp_params.noise_config.depolarizing
-        if isinstance(exp_params.noise_config.depolarizing, (int, float))
-        else (
-            exp_params.noise_config.depolarizing[0]
-            if len(exp_params.noise_config.depolarizing) == 1
-            else str(exp_params.noise_config.depolarizing)
-        )
-    )
-
-    system_info = f"""SYSTEM PARAMETERS AND CONFIGURATION
-
-Physical Constants:
-  • Photon-cavity coupling (γ):    {exp_params.photon_cavity_coupling:.6f} rad/time
-  • Inverse pulse width (σ):        {exp_params.inverse_pulse_width:.6f} 1/time
-  • Dispersive coupling (χ):        {chi_display if isinstance(chi_display, str) else f'{chi_display:.6f}'} rad/time
-
-Noise Configuration:
-  • Relaxation (γ_relax):   {relaxation_display if isinstance(relaxation_display, str) else f'{relaxation_display:.6f}'} rad/time
-  • Dephasing (γ_deph):     {dephasing_display if isinstance(dephasing_display, str) else f'{dephasing_display:.6f}'} rad/time
-  • Depolarizing (γ_depol): {depolarizing_display if isinstance(depolarizing_display, str) else f'{depolarizing_display:.6f}'} rad/time
-
-Measurement Protocol:
-  • Initial time:     {exp_params.measurement.initial_time:.6f}  |  Final time:  {exp_params.measurement.final_time:.6f}
-  • Total evolution:  {exp_params.measurement.final_time - exp_params.measurement.initial_time:.6f}
-{batch_info}
-  • Computation mode: {mode}
-
-Landscape Statistics:
-    • Metric range:       [{metric_vals.min():.6f}, {metric_vals.max():.6f}]  |  Variation:  {metric_vals.max() - metric_vals.min():.2e}
-    • Optimal interval:   {optimal_interval:.6f}  |  N_measurements:  {optimal_n_meas}  |  Metric:  {optimal_metric:.8f}
-  • Interval range:     [{interval_vals.min():.6f}, {interval_vals.max():.6f}]
-"""
-
-    # Add text box below plots
-    fig.text(
-        0.05,
-        0.01,
-        system_info,
-        fontsize=9,
-        family="monospace",
-        verticalalignment="bottom",
-        bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.7, pad=0.8),
-    )
-
-    # Save figure if path provided
-    if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-        print(f"Time interval landscape plot saved to: {save_path}")
 
     return fig
 
@@ -1602,373 +1097,612 @@ def plot_time_evolution(
     return fig
 
 
+# ---------------------------------------------------------------------------
+# Parameter-sweep visualization (N-dimensional SweepResults)
+# ---------------------------------------------------------------------------
+
+# Filled/labelled contour levels for probability-like maps (detection measures in [0, 1]).
+_PROB_FILL_LEVELS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+_PROB_LABEL_LEVELS = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+
+
+def _pretty_axis(name: str) -> str:
+    """Human/greek-friendly axis label.
+
+    Args:
+        name: Raw axis name from the sweep.
+
+    Returns:
+        str: Label with underscores replaced and common greek names substituted.
+    """
+    return name.replace("_", " ").replace("gamma", "γ").replace("chi", "χ").replace("Delta", "Δ")
+
+
+def _axis_index(sweep: "SweepResults", name: str) -> int:
+    """Index of a named axis, raising a helpful error if it is unknown.
+
+    Args:
+        sweep: The sweep results.
+        name: Axis name to look up.
+
+    Returns:
+        int: Position of ``name`` in ``sweep.axis_names``.
+    """
+    if name not in sweep.axis_names:
+        raise ValueError(f"Unknown axis '{name}'; available axes: {sweep.axis_names}")
+    return sweep.axis_names.index(name)
+
+
+def _best_index(sweep: "SweepResults") -> List[int]:
+    """Grid index of the optimum (metadata ``best_index``, else argmax of the metric map).
+
+    Args:
+        sweep: The sweep results.
+
+    Returns:
+        List[int]: One index per axis pointing at the best-metric grid point.
+    """
+    best = sweep.metadata.get("best_index")
+    if best is not None:
+        return [int(x) for x in best]
+    metric = sweep.results.get("metric")
+    if metric is None:
+        return [0] * sweep.ndim
+    return list(int(x) for x in np.unravel_index(int(np.nanargmax(metric)), metric.shape))
+
+
+def _resolve_fixed_indices(sweep: "SweepResults", fixed: Optional[Dict[str, float]]) -> List[int]:
+    """Per-axis indices used to fix hidden axes, defaulting to the optimum.
+
+    Args:
+        sweep: The sweep results.
+        fixed: Optional {axis_name: value} overrides; each value is snapped to the
+            nearest grid point on that axis.
+
+    Returns:
+        List[int]: One index per axis (optimum, with the requested overrides applied).
+    """
+    idx = _best_index(sweep)
+    if fixed:
+        for name, value in fixed.items():
+            k = _axis_index(sweep, name)
+            idx[k] = int(np.argmin(np.abs(np.asarray(sweep.axis_vals[k], dtype=float) - value)))
+    return idx
+
+
+def _reduce_to_2d(data: np.ndarray, i: int, j: int, mode: str, fixed_idx: List[int]) -> np.ndarray:
+    """Collapse an N-D result array to a 2D map over axes (i, j), indexed [i, j].
+
+    Args:
+        data: N-D result array over the whole grid.
+        i: Axis mapped to the first (x) output dimension.
+        j: Axis mapped to the second (y) output dimension.
+        mode: 'slice' fixes hidden axes at ``fixed_idx``; 'max'/'mean' reduce over them.
+        fixed_idx: Per-axis indices used when ``mode == 'slice'``.
+
+    Returns:
+        np.ndarray: 2D array of shape (len_i, len_j).
+    """
+    arr = np.moveaxis(data, (i, j), (0, 1))
+    others = [k for k in range(data.ndim) if k not in (i, j)]
+    if not others:
+        return arr
+    if mode == "slice":
+        return arr[(slice(None), slice(None)) + tuple(int(fixed_idx[k]) for k in others)]
+    reducer = np.nanmax if mode == "max" else np.nanmean
+    return reducer(arr, axis=tuple(range(2, arr.ndim)))
+
+
+def _reduce_to_1d(data: np.ndarray, i: int, mode: str, fixed_idx: List[int]) -> np.ndarray:
+    """Collapse an N-D result array to a 1D curve over axis i.
+
+    Args:
+        data: N-D result array over the whole grid.
+        i: Axis kept as the output dimension.
+        mode: 'slice' fixes the other axes at ``fixed_idx``; 'max'/'mean' reduce over them.
+        fixed_idx: Per-axis indices used when ``mode == 'slice'``.
+
+    Returns:
+        np.ndarray: 1D array of length len_i.
+    """
+    arr = np.moveaxis(data, i, 0)
+    others = [k for k in range(data.ndim) if k != i]
+    if not others:
+        return arr
+    if mode == "slice":
+        return arr[(slice(None),) + tuple(int(fixed_idx[k]) for k in others)]
+    reducer = np.nanmax if mode == "max" else np.nanmean
+    return reducer(arr, axis=tuple(range(1, arr.ndim)))
+
+
+def _detection_config_names(sweep: "SweepResults") -> List[str]:
+    """Configuration names that have a detection map in the results.
+
+    Args:
+        sweep: The sweep results.
+
+    Returns:
+        List[str]: Config names extracted from 'detection_<config>' result keys.
+    """
+    return [k[len("detection_"):] for k in sweep.results if k.startswith("detection_")]
+
+
+def _selected_result_keys(sweep: "SweepResults", show_metric: bool, show_validation: bool,
+                          show_detection: bool) -> List[str]:
+    """Result keys to plot given the metric/validation/detection toggles.
+
+    Args:
+        sweep: The sweep results.
+        show_metric: Include the 'metric' map if present.
+        show_validation: Include the 'validation' map if present.
+        show_detection: Include every 'detection_<config>' map.
+
+    Returns:
+        List[str]: Ordered result keys to plot.
+    """
+    keys: List[str] = []
+    if show_metric and "metric" in sweep.results:
+        keys.append("metric")
+    if show_validation and "validation" in sweep.results:
+        keys.append("validation")
+    if show_detection:
+        keys += [f"detection_{c}" for c in _detection_config_names(sweep)]
+    return keys
+
+
+def _result_title(key: str) -> str:
+    """Readable panel title for a result key."""
+    if key == "metric":
+        return "Detection metric"
+    if key == "validation":
+        return "Validation metric"
+    if key.startswith("detection_"):
+        return f"Detection: {key[len('detection_'):]}"
+    return key
+
+
+def _result_cmap(key: str) -> str:
+    """Colormap for a result key ('metric' diverging, detection rainbow, else viridis)."""
+    if key == "metric":
+        return "RdBu_r"
+    if key.startswith("detection_"):
+        return "rainbow"
+    return "viridis"
+
+
+def _is_probability_like(key: str) -> bool:
+    """Whether a result is a probability-like measure bounded to [0, 1]."""
+    return key.startswith("detection_")
+
+
+def _contour_levels(z: np.ndarray, is_probability: bool):
+    """Fill and label contour levels appropriate for the data.
+
+    Args:
+        z: 2D data being contoured.
+        is_probability: Use fixed [0, 1] levels when True; data-aware levels otherwise.
+
+    Returns:
+        tuple: (fill_levels, label_levels) arrays/lists for contourf/contour.
+    """
+    if is_probability:
+        return _PROB_FILL_LEVELS, _PROB_LABEL_LEVELS
+    zmin, zmax = float(np.nanmin(z)), float(np.nanmax(z))
+    if np.isclose(zmin, zmax):
+        eps = max(1e-6, abs(zmax) * 0.1 + 1e-6)
+        zmin, zmax = zmin - eps, zmax + eps
+    return np.linspace(zmin, zmax, 21), np.linspace(zmin, zmax, 6)
+
+
+def _panel_grid(n: int) -> Tuple[int, int]:
+    """Square-ish (nrows, ncols) layout for n panels."""
+    if n <= 1:
+        return 1, 1
+    if n == 2:
+        return 1, 2
+    ncols = int(np.ceil(np.sqrt(n)))
+    return int(np.ceil(n / ncols)), ncols
+
+
+def _save_fig(fig: Figure, save_path: str, dpi: int, what: str) -> None:
+    """Save a figure, creating parent directories, and print the location."""
+    path = Path(save_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    print(f"{what} plot saved to: {path}")
+
+
+def _mark_optimum_star(ax, x: float, y: float, label: Optional[str] = None) -> None:
+    """Draw a high-visibility star marker at (x, y)."""
+    ax.scatter([x], [y], marker="*", s=420, c="#3ec1ff", edgecolors="black",
+               linewidths=2.2, zorder=10, clip_on=False, label=label)
+
+
+def _draw_contour_panel(ax, xvals, yvals, z_xy, *, xscale="linear", yscale="linear",
+                        xlabel="", ylabel="", title="", cmap="rainbow", is_probability=False,
+                        levels=None, label_levels=None, mark_xy=None, mark_label=None,
+                        add_colorbar=True, colorbar_label="Value"):
+    """Draw one filled+labelled contour panel of a 2D map indexed [x, y].
+
+    Args:
+        ax: Target matplotlib axis.
+        xvals: 1D values for the x axis.
+        yvals: 1D values for the y axis.
+        z_xy: 2D data indexed [x, y] (transposed internally for contouring).
+        xscale, yscale: 'linear' or 'log' per axis.
+        xlabel, ylabel, title: Panel labels.
+        cmap: Colormap name.
+        is_probability: Use [0, 1] contour levels when True.
+        levels, label_levels: Explicit levels; computed from the data when None.
+        mark_xy: Optional (x, y) to mark with an optimum star.
+        mark_label: Optional legend label for the marker.
+        add_colorbar: Attach a colorbar to this panel.
+        colorbar_label: Colorbar label text.
+
+    Returns:
+        The QuadContourSet from contourf.
+    """
+    X, Y = np.meshgrid(np.asarray(xvals), np.asarray(yvals))
+    Z = np.asarray(z_xy).T
+    if levels is None:
+        levels, label_levels = _contour_levels(Z, is_probability)
+    cf = ax.contourf(X, Y, Z, levels=levels, cmap=cmap)
+    if add_colorbar:
+        cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.03)
+        cbar.set_label(colorbar_label, fontsize=9)
+    cs = ax.contour(X, Y, Z, levels=label_levels, colors="k", linewidths=0.2)
+    ax.clabel(cs, inline=True, fontsize=7)
+    if mark_xy is not None:
+        _mark_optimum_star(ax, mark_xy[0], mark_xy[1], mark_label)
+        if mark_label:
+            ax.legend(loc="upper right", fontsize=8)
+    if xscale == "log":
+        ax.set_xscale("log")
+    if yscale == "log":
+        ax.set_yscale("log")
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel(ylabel, fontsize=10)
+    if title:
+        ax.set_title(title, fontsize=11)
+    return cf
+
+
+def _draw_line_panel(ax, xvals, y, *, xscale="linear", xlabel="", ylabel="", title="",
+                     mark_x=None):
+    """Draw one 1D curve panel with an optional optimum marker.
+
+    Args:
+        ax: Target matplotlib axis.
+        xvals: 1D x values.
+        y: 1D values to plot.
+        xscale: 'linear' or 'log'.
+        xlabel, ylabel, title: Panel labels.
+        mark_x: Optional x location to mark with a dashed vertical line.
+    """
+    ax.plot(np.asarray(xvals), np.asarray(y), "-o", ms=3, lw=1.4, color="#1f77b4")
+    if mark_x is not None:
+        ax.axvline(mark_x, color="#ff2d55", ls="--", lw=1.2, label=f"optimum {mark_x:.3g}")
+        ax.legend(loc="best", fontsize=8)
+    if xscale == "log":
+        ax.set_xscale("log")
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel(ylabel, fontsize=10)
+    if title:
+        ax.set_title(title, fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+
+def _resolve_quantity_key(sweep: "SweepResults", quantity: str, config: Optional[str]) -> str:
+    """Map a quantity selector to a concrete result key.
+
+    Args:
+        sweep: The sweep results.
+        quantity: 'metric', 'validation', 'detection', or a raw result key.
+        config: Detection configuration to use when ``quantity == 'detection'``
+            (defaults to the first available configuration).
+
+    Returns:
+        str: A key present in ``sweep.results``.
+    """
+    if quantity in ("metric", "validation"):
+        if quantity not in sweep.results:
+            raise ValueError(f"'{quantity}' not in results: {list(sweep.results)}")
+        return quantity
+    if quantity == "detection":
+        configs = _detection_config_names(sweep)
+        if not configs:
+            raise ValueError("No detection results available in this sweep.")
+        chosen = config if config is not None else configs[0]
+        if chosen not in configs:
+            raise ValueError(f"Unknown detection config '{chosen}'; available: {configs}")
+        return f"detection_{chosen}"
+    if quantity in sweep.results:
+        return quantity
+    raise ValueError(f"quantity must be 'metric', 'validation' or 'detection' (got {quantity!r}); "
+                     f"available results: {list(sweep.results)}")
+
+
 def plot_sweep_results(
     sweep: "SweepResults",
-    results_to_plot: Optional[List[str]] = None,
+    display_axes: Optional[Union[str, List[str]]] = None,
+    fixed: Optional[Dict[str, float]] = None,
+    *,
+    show_metric: bool = True,
+    show_validation: bool = True,
+    show_detection: bool = True,
     figsize: Optional[Tuple[int, int]] = None,
-    contour_levels: Optional[List[float]] = None,
-    label_levels: Optional[List[float]] = None,
     mark_optimal: bool = True,
     save_path: Optional[str] = None,
     dpi: int = 300,
-    aspect: str = "auto",
 ) -> Figure:
-    """
-    Unified function to plot parameter sweep results.
+    """Plot the selected quantities of an N-dimensional sweep over one or two axes.
 
-    This function creates contour plots for any parameter sweep, automatically
-    detecting whether it's a chi-gamma sweep, asymmetry sweep, or custom sweep.
-    It plots all results contained in the SweepResults object by default, or
-    a user-specified subset.
+    One panel is drawn per selected quantity (metric, validation and each detection
+    configuration). ``display_axes`` chooses the one or two axes to show; any further
+    axis is fixed at ``fixed`` (defaulting to the optimum), i.e. a slice through the
+    best point. Use :func:`plot_sweep_corner` for a full multi-axis overview.
 
     Args:
-        sweep: SweepResults object from any compute_*_sweep function
-        results_to_plot: Optional list of result keys to plot. If None, plots all results.
-            Common keys: 'metric_map', 'detection_map', 'detection_without_map'
-        figsize: Figure size (width, height) in inches. If None, automatically sized
-        contour_levels: Levels for filled contours. Default: [0, 0.1, 0.2, ..., 1.0]
-        label_levels: Levels for labeled line contours. Default: [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
-        mark_optimal: If True and metric_map exists, mark the optimal point
-        save_path: Optional path to save the figure
-        dpi: Resolution for saved figure
-        aspect: Aspect ratio for subplots. 'auto' (default) uses figsize, 'equal' forces square plots
+        sweep: SweepResults from :meth:`Experiment.sweep`.
+        display_axes: One or two axis names to plot (default: the first one or two axes).
+            One name gives line plots, two names give contour plots.
+        fixed: Optional {axis_name: value} for the non-displayed axes; each value snaps
+            to the nearest grid point. Defaults to the optimum for every hidden axis.
+        show_metric: Plot the 'metric' map (default True).
+        show_validation: Plot the 'validation' map (default True).
+        show_detection: Plot every 'detection_<config>' map (default True).
+        figsize: Figure size in inches; auto-sized from the panel count when None.
+        mark_optimal: Mark the optimum on each panel (default True).
+        save_path: Optional path to save the figure.
+        dpi: Resolution for the saved figure.
 
     Returns:
-        matplotlib Figure object
+        Figure: The matplotlib figure.
 
     Example:
-        >>> # Chi-gamma sweep
-        >>> sweep = compute_chi_gamma_sweep(exp, chi_interval=[0.1, 50], gamma_interval=[0.1, 30])
-        >>> plot_sweep_results(sweep)  # Plots all results (metric, detection maps)
-        >>>
-        >>> # Two-qubit sweep - plot only probabilities
-        >>> sweep = compute_chi_gamma_sweep(exp_2q, ...)
-        >>> plot_sweep_results(sweep, results_to_plot=['p00', 'p01', 'p10', 'p11'])
-        >>>
-        >>> # Asymmetry sweep with custom size
-        >>> sweep = compute_asymmetry_coupling_sweep(exp_2q, ...)
-        >>> plot_sweep_results(sweep, figsize=(10, 6), mark_optimal=True)
+        >>> sweep = experiment.sweep({'chi': np.linspace(1, 30, 10),
+        ...                           'gamma': np.linspace(1, 60, 10)})
+        >>> plot_sweep_results(sweep)                          # metric + validation + detections
+        >>> plot_sweep_results(sweep, show_detection=False)    # metric + validation only
+        >>> plot_sweep_results(sweep, display_axes='chi')      # 1D slice through the optimum
     """
-    # Preserve explicit user levels; otherwise choose per-result defaults later.
-    user_contour_levels = contour_levels
-    user_label_levels = label_levels
+    keys = _selected_result_keys(sweep, show_metric, show_validation, show_detection)
+    if not keys:
+        raise ValueError("No results selected; enable at least one of "
+                         "show_metric / show_validation / show_detection.")
 
-    probability_default_levels = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
-    probability_default_labels = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+    if display_axes is None:
+        display_axes = sweep.axis_names[: min(2, sweep.ndim)]
+    elif isinstance(display_axes, str):
+        display_axes = [display_axes]
+    display_axes = list(display_axes)
+    if not 1 <= len(display_axes) <= 2:
+        raise ValueError("display_axes must name one or two axes.")
+    disp_idx = [_axis_index(sweep, n) for n in display_axes]
+    fixed_idx = _resolve_fixed_indices(sweep, fixed)
 
-    # Determine which results to plot
-    if results_to_plot is None:
-        results_to_plot = list(sweep.results.keys())
+    # Note describing where the hidden axes are pinned.
+    hidden = [n for n in sweep.axis_names if n not in display_axes]
+    fixed_note = ""
+    if hidden:
+        parts = [f"{_pretty_axis(n)}={sweep.axis_vals[_axis_index(sweep, n)][fixed_idx[_axis_index(sweep, n)]]:.3g}"
+                 for n in hidden]
+        fixed_note = "fixed at " + ", ".join(parts)
 
-    # Filter to only existing keys
-    results_to_plot = [k for k in results_to_plot if k in sweep.results]
-
-    if not results_to_plot:
-        raise ValueError("No valid results to plot")
-
-    n_plots = len(results_to_plot)
-
-    # Create meshgrid for plotting
-    Param1, Param2 = np.meshgrid(sweep.param1_vals, sweep.param2_vals)
-
-    # Determine optimal point if available
-    optimal_param1, optimal_param2 = None, None
-    if mark_optimal and "metric_map" in sweep.results:
-        metric_map = sweep.results["metric_map"]
-        max_idx = np.unravel_index(np.argmax(metric_map), metric_map.shape)
-        # max_idx[0] is row index (param1), max_idx[1] is column index (param2)
-        optimal_param1 = sweep.param1_vals[max_idx[0]]
-        optimal_param2 = sweep.param2_vals[max_idx[1]]
-    elif mark_optimal and "optimal_idx" in sweep.metadata:
-        max_idx = sweep.metadata["optimal_idx"]
-        # max_idx[0] is row index (param1), max_idx[1] is column index (param2)
-        optimal_param1 = sweep.param1_vals[max_idx[0]]
-        optimal_param2 = sweep.param2_vals[max_idx[1]]
-
-    # Determine subplot layout
-    if n_plots == 1:
-        nrows, ncols = 1, 1
-        subplot_size = (10, 7)  # Single plot: rectangular for better visibility
-    elif n_plots == 2:
-        nrows, ncols = 1, 2
-        subplot_size = (8, 8)
-    elif n_plots == 3:
-        nrows, ncols = 3, 1
-        subplot_size = (8, 8)
-    elif n_plots == 4:
-        nrows, ncols = 2, 2
-        subplot_size = (6, 6)
-    else:
-        # General case: try to make square-ish
-        ncols = int(np.ceil(np.sqrt(n_plots)))
-        nrows = int(np.ceil(n_plots / ncols))
-        subplot_size = (6, 6)
-
-    # Determine figure size
+    nrows, ncols = _panel_grid(len(keys))
     if figsize is None:
-        if n_plots == 1:
-            figsize = subplot_size  # Use tuple directly for single plot
-        else:
-            # Use first element as base size (assuming square subplot_size)
-            base_size = subplot_size[0] if isinstance(subplot_size, tuple) else subplot_size
-            figsize = (base_size * ncols, base_size * nrows)
-
-    # Create figure
+        figsize = (6.5 * ncols, 5.0 * nrows)
     fig, axes_array = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
     axes = axes_array.flatten()
 
-    # Title mapping for common result types
-    title_map = {
-        "metric_map": "Detection Metric",
-        "detection_map": "Detection measure (with photon)",
-        "detection_without_map": "Detection measure (without photon)",
-    }
-
-    # Format parameter names for axis labels
-    param1_label = (
-        sweep.param1_name.replace("_", " ")
-        .replace("gamma", "γ")
-        .replace("chi", "χ")
-        .replace("Delta", "Δ")
-    )
-    param2_label = (
-        sweep.param2_name.replace("_", " ")
-        .replace("gamma", "γ")
-        .replace("chi", "χ")
-        .replace("Delta", "Δ")
-    )
-
-    # Plot each result
-    for idx, result_key in enumerate(results_to_plot):
-        ax = axes[idx]
-        result_data = sweep.results[result_key]
-
-        # Transpose data to match param1-param2 orientation
-        result_T = result_data.T
-
-        # Use data-aware levels for metric values so small/negative ranges are visible.
-        if user_contour_levels is None:
-            is_probability_like = result_key.startswith("p")
-            if is_probability_like:
-                contour_levels_local = probability_default_levels
-            else:
-                result_min = float(np.min(result_T))
-                result_max = float(np.max(result_T))
-                if np.isclose(result_min, result_max):
-                    eps = max(1e-6, abs(result_max) * 0.1 + 1e-6)
-                    result_min -= eps
-                    result_max += eps
-                contour_levels_local = np.linspace(result_min, result_max, 21)
+    for ax, key in zip(axes, keys):
+        data = sweep.results[key]
+        if len(disp_idx) == 1:
+            i = disp_idx[0]
+            y = _reduce_to_1d(data, i, "slice", fixed_idx)
+            mark_x = sweep.axis_vals[i][fixed_idx[i]] if mark_optimal else None
+            _draw_line_panel(ax, sweep.axis_vals[i], y, xscale=sweep.axis_scales[i],
+                             xlabel=_pretty_axis(sweep.axis_names[i]), ylabel=_result_title(key),
+                             title=_result_title(key), mark_x=mark_x)
         else:
-            contour_levels_local = user_contour_levels
+            i, j = disp_idx
+            z = _reduce_to_2d(data, i, j, "slice", fixed_idx)
+            mark_xy = ((sweep.axis_vals[i][fixed_idx[i]], sweep.axis_vals[j][fixed_idx[j]])
+                       if mark_optimal else None)
+            _draw_contour_panel(ax, sweep.axis_vals[i], sweep.axis_vals[j], z,
+                                xscale=sweep.axis_scales[i], yscale=sweep.axis_scales[j],
+                                xlabel=_pretty_axis(sweep.axis_names[i]),
+                                ylabel=_pretty_axis(sweep.axis_names[j]),
+                                title=_result_title(key), cmap=_result_cmap(key),
+                                is_probability=_is_probability_like(key), mark_xy=mark_xy,
+                                colorbar_label="Detection" if key.startswith("detection_") else "Value")
 
-        if user_label_levels is None:
-            if result_key.startswith("p"):
-                label_levels_local = probability_default_labels
-            else:
-                label_levels_local = np.linspace(contour_levels_local[0], contour_levels_local[-1], 6)
-        else:
-            label_levels_local = user_label_levels
+    for ax in axes[len(keys):]:
+        ax.axis("off")
 
-        cmap_local = "RdBu_r" if result_key == "metric_map" else "rainbow"
-
-        # Filled contours
-        cf = ax.contourf(Param1, Param2, result_T, levels=contour_levels_local, cmap=cmap_local)
-        cbar = plt.colorbar(cf, ax=ax, fraction=0.04)
-        is_probability_result = result_key.startswith("p")
-        if result_key in {"detection_map", "detection_without_map"}:
-            cbar_label = "Detection Measure"
-        else:
-            cbar_label = "Probability" if is_probability_result else "Value"
-        cbar.set_label(cbar_label, fontsize=10)
-
-        # Line contours with labels
-        cs = ax.contour(Param1, Param2, result_T, levels=label_levels_local, colors="k", linewidths=0.2)
-        ax.clabel(cs, inline=True, fontsize=8)
-
-        # Mark optimal point
-        if optimal_param1 is not None and optimal_param2 is not None:
-            if result_key == "metric_map":
-                max_val = sweep.results[result_key][
-                    np.unravel_index(
-                        np.argmax(sweep.results[result_key]), sweep.results[result_key].shape
-                    )
-                ]
-                marker_label = f"Max: {max_val:.4f}"
-            else:
-                marker_label = "At max metric"
-
-            # High-visibility multicolor star with thick black border.
-            ax.scatter(
-                [optimal_param1],
-                [optimal_param2],
-                marker="*",
-                s=700,
-                c="black",
-                linewidths=0,
-                zorder=9,
-                clip_on=False,
-            )
-            ax.scatter(
-                [optimal_param1],
-                [optimal_param2],
-                marker="*",
-                s=500,
-                c="#3ec1ff",
-                edgecolors="black",
-                linewidths=2.8,
-                zorder=10,
-                clip_on=False,
-            )
-            ax.scatter(
-                [optimal_param1],
-                [optimal_param2],
-                marker="*",
-                s=280,
-                c="#ff2d55",
-                edgecolors="#ffd54f",
-                linewidths=1.4,
-                zorder=11,
-                label=marker_label,
-                clip_on=False,
-            )
-            ax.legend(loc="upper right", fontsize=9)
-
-        # Set scales
-        if sweep.param1_scale == "log":
-            ax.set_xscale("log")
-        if sweep.param2_scale == "log":
-            ax.set_yscale("log")
-
-        # Labels and title
-        ax.set_xlabel(param1_label, fontsize=11)
-        ax.set_ylabel(param2_label, fontsize=11)
-        ax.set_title(title_map.get(result_key, result_key), fontsize=12)
-
-        # Set aspect ratio (use 'auto' to respect figsize, 'equal' for square plots)
-        if aspect in ["auto", "equal"]:
-            ax.set_aspect(aspect, adjustable="box")
-        else:
-            ax.set_aspect(aspect)
-
-    # Hide unused subplots
-    for idx in range(n_plots, len(axes)):
-        axes[idx].axis("off")
-
-    # Build system characteristics text from metadata
-    system_info_lines = []
-    if sweep.metadata:
-        # Extract common system parameters
-        if "n_qubits" in sweep.metadata:
-            system_info_lines.append(f"Qubits: {sweep.metadata['n_qubits']}")
-        if "cavity_levels" in sweep.metadata:
-            system_info_lines.append(f"Cavity levels: {sweep.metadata['cavity_levels']}")
-        if "qubit_levels" in sweep.metadata:
-            levels = sweep.metadata["qubit_levels"]
-            if isinstance(levels, list):
-                system_info_lines.append(f"Qubit levels: {levels}")
-            else:
-                system_info_lines.append(f"Qubit levels: {levels}")
-        if "field_levels" in sweep.metadata:
-            system_info_lines.append(f"Field levels: {sweep.metadata['field_levels']}")
-
-        # Measurement info
-        if "n_measurements" in sweep.metadata:
-            system_info_lines.append(f"Measurements: {sweep.metadata['n_measurements']}")
-        if "measurement_times" in sweep.metadata:
-            times = sweep.metadata["measurement_times"]
-            if isinstance(times, (list, np.ndarray)) and len(times) == 2:
-                system_info_lines.append(f"Meas. times: [{times[0]:.1f}, {times[1]:.1f}]")
-        if "initial_time_uncertainty" in sweep.metadata:
-            system_info_lines.append(
-                f"Time uncertainty: {sweep.metadata['initial_time_uncertainty']}"
-            )
-
-        # Noise parameters
-        noise_lines = []
-        if "depolarizing_rate" in sweep.metadata and sweep.metadata["depolarizing_rate"] > 0:
-            noise_lines.append(f"Depolarizing: {sweep.metadata['depolarizing_rate']}")
-        if "dephasing_rate" in sweep.metadata and sweep.metadata["dephasing_rate"] > 0:
-            noise_lines.append(f"Dephasing: {sweep.metadata['dephasing_rate']}")
-        if "relaxation_rate" in sweep.metadata and sweep.metadata["relaxation_rate"] > 0:
-            noise_lines.append(f"Relaxation: {sweep.metadata['relaxation_rate']}")
-        if noise_lines:
-            system_info_lines.append("Noise: " + ", ".join(noise_lines))
-        elif (
-            "depolarizing_rate" in sweep.metadata
-            or "dephasing_rate" in sweep.metadata
-            or "relaxation_rate" in sweep.metadata
-        ):
-            system_info_lines.append("Noise: None")
-
-        # Initial state
-        if "initial_state" in sweep.metadata:
-            system_info_lines.append(f"Initial: {sweep.metadata['initial_state']}")
-
-        # Pulse parameters
-        if "inverse_pulse_width" in sweep.metadata:
-            system_info_lines.append(f"σ⁻¹: {sweep.metadata['inverse_pulse_width']}")
-
-    # Add summary text if optimal point exists
-    if (
-        optimal_param1 is not None
-        and optimal_param2 is not None
-        and "max_metric" in sweep.metadata
-    ):
-        summary_text = f"""OPTIMAL PARAMETERS
-{param2_label}: {optimal_param2:.3f}
-{param1_label}: {optimal_param1:.3f}
-Metric: {sweep.metadata['max_metric']:.6f}"""
-
-        fig.text(
-            0.5,
-            0.02,
-            summary_text,
-            fontsize=10,
-            family="monospace",
-            ha="center",
-            va="bottom",
-            bbox=dict(boxstyle="round", facecolor="lightgreen", alpha=0.7, pad=0.8),
-        )
-
-        # Add system info on the right side if available
-        if system_info_lines:
-            system_text = "SYSTEM INFO\n" + "\n".join(system_info_lines)
-            fig.text(
-                0.98,
-                0.02,
-                system_text,
-                fontsize=9,
-                family="monospace",
-                ha="right",
-                va="bottom",
-                bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.7, pad=0.8),
-            )
-
-        plt.tight_layout(rect=[0, 0.08, 1, 1])
-    else:
-        # No optimal point, but still show system info if available
-        if system_info_lines:
-            system_text = "SYSTEM INFO\n" + "\n".join(system_info_lines)
-            fig.text(
-                0.98,
-                0.02,
-                system_text,
-                fontsize=9,
-                family="monospace",
-                ha="right",
-                va="bottom",
-                bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.7, pad=0.8),
-            )
-            plt.tight_layout(rect=[0, 0.08, 1, 1])
-        else:
-            plt.tight_layout()
-
-    # Save figure if path provided
+    subtitle = []
+    if "best_metric" in sweep.metadata:
+        subtitle.append(f"best metric {sweep.metadata['best_metric']:.4g}")
+    if fixed_note:
+        subtitle.append(fixed_note)
+    if subtitle:
+        fig.suptitle("   |   ".join(subtitle), fontsize=10, y=0.995)
+    fig.tight_layout()
     if save_path:
-        save_path_obj = Path(save_path)
-        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
-        print(f"Sweep results plot saved to: {save_path}")
-
+        _save_fig(fig, save_path, dpi, "Sweep results")
     return fig
+
+
+def plot_sweep_corner(
+    sweep: "SweepResults",
+    quantity: str = "metric",
+    config: Optional[str] = None,
+    *,
+    figsize: Optional[Tuple[int, int]] = None,
+    mark_optimal: bool = True,
+    save_path: Optional[str] = None,
+    dpi: int = 300,
+) -> Figure:
+    """Full N×N corner matrix of one quantity over every pair of sweep axes.
+
+    For each axis pair the upper triangle shows a 2D *slice through the optimum*
+    (hidden axes fixed at the best point) and the lower triangle shows a 2D
+    *max-projection* (best value over the hidden axes); the diagonal shows the 1D
+    max-projection for each axis. All 2D panels share one color scale.
+
+    Args:
+        sweep: SweepResults from :meth:`Experiment.sweep` (needs at least 2 axes).
+        quantity: Which map to show: 'metric', 'validation' or 'detection'.
+        config: Detection configuration when ``quantity == 'detection'`` (defaults to
+            the first available configuration).
+        figsize: Figure size in inches; auto-sized from the axis count when None.
+        mark_optimal: Mark the optimum on every panel (default True).
+        save_path: Optional path to save the figure.
+        dpi: Resolution for the saved figure.
+
+    Returns:
+        Figure: The matplotlib figure.
+
+    Example:
+        >>> sweep = experiment.sweep({'chi': ..., 'gamma': ..., 'Delta': ..., 'g': ..., 'kappa': ...})
+        >>> plot_sweep_corner(sweep, quantity='metric')
+        >>> plot_sweep_corner(sweep, quantity='detection', config='with_photon')
+    """
+    key = _resolve_quantity_key(sweep, quantity, config)
+    data = sweep.results[key]
+    n = sweep.ndim
+    if n < 2:
+        raise ValueError("Corner plots need at least 2 sweep axes; use plot_sweep_results instead.")
+
+    fixed_idx = _best_index(sweep)
+    is_prob = _is_probability_like(key)
+    cmap = _result_cmap(key)
+    # Shared color scale so slice and max-projection panels are directly comparable.
+    levels, label_levels = _contour_levels(data, is_prob)
+
+    if figsize is None:
+        figsize = (3.1 * n, 3.0 * n)
+    fig, axes = plt.subplots(n, n, figsize=figsize, squeeze=False)
+
+    for r in range(n):
+        for c in range(n):
+            ax = axes[r][c]
+            if r == c:
+                # Diagonal: 1D max-projection for this axis.
+                y = _reduce_to_1d(data, r, "max", fixed_idx)
+                mark_x = sweep.axis_vals[r][fixed_idx[r]] if mark_optimal else None
+                _draw_line_panel(ax, sweep.axis_vals[r], y, xscale=sweep.axis_scales[r],
+                                 mark_x=mark_x)
+                ax.set_title(_pretty_axis(sweep.axis_names[r]), fontsize=9)
+                continue
+            # x = axis c, y = axis r; upper triangle slices, lower triangle max-projects.
+            mode = "slice" if r < c else "max"
+            z = _reduce_to_2d(data, c, r, mode, fixed_idx)
+            mark_xy = ((sweep.axis_vals[c][fixed_idx[c]], sweep.axis_vals[r][fixed_idx[r]])
+                       if mark_optimal else None)
+            _draw_contour_panel(ax, sweep.axis_vals[c], sweep.axis_vals[r], z,
+                                xscale=sweep.axis_scales[c], yscale=sweep.axis_scales[r],
+                                cmap=cmap, is_probability=is_prob, levels=levels,
+                                label_levels=label_levels, mark_xy=mark_xy, add_colorbar=False)
+            if c == 0:
+                ax.set_ylabel(_pretty_axis(sweep.axis_names[r]), fontsize=9)
+            if r == n - 1:
+                ax.set_xlabel(_pretty_axis(sweep.axis_names[c]), fontsize=9)
+
+    # One shared colorbar for every 2D panel.
+    sm = plt.cm.ScalarMappable(cmap=cmap,
+                               norm=plt.Normalize(vmin=float(levels[0]), vmax=float(levels[-1])))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), fraction=0.02, pad=0.02)
+    cbar.set_label(_result_title(key), fontsize=10)
+
+    fig.suptitle(f"Corner sweep — {_result_title(key)}   "
+                 f"(upper: slice @ optimum · lower: max-projection · diag: 1D max)", fontsize=11)
+    if save_path:
+        _save_fig(fig, save_path, dpi, "Corner sweep")
+    return fig
+
+
+def interactive_sweep(
+    sweep: "SweepResults",
+    quantity: str = "metric",
+    config: Optional[str] = None,
+):
+    """Interactive contour explorer for a sweep (Jupyter; requires ipywidgets).
+
+    Dropdowns choose the quantity and the two displayed axes; a selection slider per
+    remaining axis fixes its value; a reduce selector switches the hidden axes between
+    slice, max and mean. Sliders are hidden while a display axis or a non-slice reduce
+    mode makes them irrelevant.
+
+    Args:
+        sweep: SweepResults from :meth:`Experiment.sweep` (needs at least 2 axes).
+        quantity: Initial quantity ('metric', 'validation' or 'detection').
+        config: Detection configuration used for the initial 'detection' quantity.
+
+    Returns:
+        The ipywidgets container being displayed.
+    """
+    try:
+        import ipywidgets as widgets
+        from IPython.display import display
+    except ImportError as exc:
+        raise ImportError("interactive_sweep requires ipywidgets: pip install ipywidgets") from exc
+
+    names = sweep.axis_names
+    if sweep.ndim < 2:
+        raise ValueError("interactive_sweep needs at least 2 sweep axes.")
+
+    quantity_options = [q for q in ("metric", "validation") if q in sweep.results]
+    quantity_options += [f"detection:{c}" for c in _detection_config_names(sweep)]
+    initial = f"detection:{config}" if (quantity == "detection" and config) else quantity
+    if initial not in quantity_options:
+        initial = quantity_options[0]
+
+    best = _best_index(sweep)
+    q_dd = widgets.Dropdown(options=quantity_options, value=initial, description="quantity")
+    x_dd = widgets.Dropdown(options=names, value=names[0], description="x axis")
+    y_dd = widgets.Dropdown(options=names, value=names[1], description="y axis")
+    reduce_dd = widgets.Dropdown(options=["slice", "max", "mean"], value="slice", description="hidden")
+    sliders = {
+        n: widgets.SelectionSlider(
+            options=[(f"{v:.3g}", k) for k, v in enumerate(sweep.axis_vals[_axis_index(sweep, n)])],
+            value=best[_axis_index(sweep, n)], description=n)
+        for n in names
+    }
+    out = widgets.Output()
+
+    def render(*_):
+        with out:
+            out.clear_output(wait=True)
+            xi, yi = _axis_index(sweep, x_dd.value), _axis_index(sweep, y_dd.value)
+            if xi == yi:
+                print("Choose two different axes for x and y.")
+                return
+            key = (f"detection_{q_dd.value.split(':', 1)[1]}"
+                   if q_dd.value.startswith("detection:") else q_dd.value)
+            fixed_idx = list(best)
+            for n in names:
+                fixed_idx[_axis_index(sweep, n)] = sliders[n].value
+            # Only show sliders that actually affect a slice view.
+            for n, slider in sliders.items():
+                k = _axis_index(sweep, n)
+                slider.layout.display = "none" if (k in (xi, yi) or reduce_dd.value != "slice") else ""
+            z = _reduce_to_2d(sweep.results[key], xi, yi, reduce_dd.value, fixed_idx)
+            fig, ax = plt.subplots(figsize=(7, 5.5))
+            mark_xy = (sweep.axis_vals[xi][best[xi]], sweep.axis_vals[yi][best[yi]])
+            _draw_contour_panel(ax, sweep.axis_vals[xi], sweep.axis_vals[yi], z,
+                                xscale=sweep.axis_scales[xi], yscale=sweep.axis_scales[yi],
+                                xlabel=_pretty_axis(names[xi]), ylabel=_pretty_axis(names[yi]),
+                                title=f"{_result_title(key)} ({reduce_dd.value})",
+                                cmap=_result_cmap(key), is_probability=_is_probability_like(key),
+                                mark_xy=mark_xy)
+            plt.show()
+
+    for widget in [q_dd, x_dd, y_dd, reduce_dd, *sliders.values()]:
+        widget.observe(render, names="value")
+    render()
+    ui = widgets.VBox([widgets.HBox([q_dd, reduce_dd]), widgets.HBox([x_dd, y_dd]),
+                       widgets.VBox(list(sliders.values())), out])
+    display(ui)
+    return ui

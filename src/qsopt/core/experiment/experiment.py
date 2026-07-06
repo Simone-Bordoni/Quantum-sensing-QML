@@ -29,9 +29,8 @@ from qsopt.core.core_utils import (
     annealing_weight,
     classify_sweep_axis,
     sweep_key_types,
-    make_confusion_matrix,
-    confusion_quality,
-    state_probs_to_dict
+    derive_detection_map,
+    branching_paths,
 )
 from qsopt.utils.results import SweepResults
 
@@ -472,36 +471,101 @@ class Experiment:
 
         return rho_list
 
-    def run_simulation(self, batch_size: int = 1, measurement_times = None, detection_states: bool = False, debug: bool=False) -> OptimizationCallback:
+    def branching_simulation(
+        self,
+        solver: qt.MESolver,
+        rho: qt.Qobj,
+        measurements: Union[List[float], np.ndarray, jnp.ndarray],
+        args: Optional[Dict] = None,
+        precomputed_unitaries: Optional[tuple] = None,
+    ) -> Dict[tuple, jnp.ndarray]:
         """
-        Run n-qubit sensing protocol with current parameters.
+        Exact branching evolution for one timing realization: the joint outcome tree ``{path: probability}``.
 
-        This method executes the complete n-qubit quantum sensing workflow:
-        - Applies rotations to all qubits independently
-        - Evolves under n-qubit Hamiltonian
-        - Performs measurements (joint or individual)
-        - Computes detection measures with and without photon interaction
+        Keeps the joint outcome distribution that :meth:`simulation` discards (it carries the
+        outcome-averaged mixture). Each measurement splits every branch into ``2**n_qubits`` children via
+        the ``measure_reset[k]`` Kraus map, whose trace shrinks by exactly ``P(outcome k)``; probabilities
+        stay encoded as traces, so each leaf's final trace is its path probability. One ``jax.vmap`` over
+        branches per interval. JAX-pure (timestamps stay traced, static loop), so :meth:`make_protocol` can
+        ``jax.vmap`` it over a batch of realizations. Leaf count is ``(2**n_qubits)**M``.
 
         Args:
-            batch_size: Number of random realizations to average over for measurement
-                       uncertainty (default: 1). Each realization draws a different timing
-                       offset (collective shift + per-measurement jitter) from the protocol.
-            measurement_times: Optional measurement times instead of the ones determined by the experimental parameters.
-            detection_states: Whether to return the probabilities of the final quantum states (default: False)
+            - ``solver`` (qt.MESolver): Evolution solver for this configuration.
+            - ``rho`` (qt.Qobj): Initial density matrix (Qobj or raw JAX array).
+            - ``measurements`` (array): 1D timestamps ``[t_start, *measurement_times]`` (sorted).
+            - ``args`` (Optional[Dict]): Solver parameters; defaults to ``self.global_args``.
+            - ``precomputed_unitaries`` (Optional[tuple]): ``(U_init, U_init_dag, U_final, U_final_dag)``.
+
+        Returns:
+            - ``leaf_tree`` (Dict[tuple, jnp.ndarray]): outcome path (a tuple of per-qubit bit-strings, one
+              per measurement, e.g. ``('01', '11')``, matching the map labels) -> its (traced) path
+              probability. Sums to 1 over leaves.
+        """
+        if args is None:
+            args = self.global_args
+        if precomputed_unitaries is None:
+            precomputed_unitaries = self._prepare_circuit_unitaries()
+        initial_unitary, initial_unitary_dag, final_unitary, final_unitary_dag = precomputed_unitaries
+
+        dims = self.total_dims
+        n_states = 2 ** self.n_qubits
+
+        # measure_reset[k] projects onto basis state k then resets the qubits to |0>, as raw JAX arrays.
+        measure_reset = jnp.stack([op.data._jxa for op in self.operators["measure_reset"]])      # (K, D, D)
+        measure_reset_dag = jnp.stack([op.data._jxa for op in self.operators["measure_reset_dag"]])
+
+        def evolve_single(rho_data, t0, t1):
+            """Evolve one branch over an interval (circuit in, solve, circuit out); returns JAX data."""
+            rho_q = qt.Qobj(rho_data, dims=[dims, dims])
+            rho_after_circuit = initial_unitary * rho_q * initial_unitary_dag  # type: ignore
+            evolved = solver.run(rho_after_circuit, [t0, t1], args=args).states[-1]
+            return (final_unitary * evolved * final_unitary_dag).data._jxa  # type: ignore
+
+        # Evolve all branches for one interval at once by mapping evolve_single over the branch axis.
+        vmap_evolve = jax.vmap(evolve_single, in_axes=(0, None, None))
+
+        # branches[b] is UNNORMALIZED; its trace is the probability of the outcome path so far.
+        branches = (rho.data._jxa if isinstance(rho, qt.Qobj) else jnp.asarray(rho))[None]  # (B=1, D, D)
+
+        # Static loop over intervals (measurements has a known length), so timestamps can stay traced.
+        for i in range(len(measurements) - 1):
+            rho_final = vmap_evolve(branches, measurements[i], measurements[i + 1])  # (B, D, D)
+
+            # child[b, k] = measure_reset[k] @ rho_final[b] @ measure_reset[k]^dag; the Kraus map shrinks
+            # the trace by P(outcome k), so each child's trace is the joint prob of "path so far AND k".
+            child = measure_reset[None] @ rho_final[:, None] @ measure_reset_dag[None]  # (B, K, D, D)
+            # Flatten (branch, outcome) into one leaf axis (branch-major -> branching_paths order).
+            branches = child.reshape(child.shape[0] * n_states, child.shape[2], child.shape[3])
+
+        # Each leaf's trace is its path probability; key it by the measured path (same order as the leaves).
+        leaf_probs = jnp.real(jnp.trace(branches, axis1=1, axis2=2))  # (B,)
+        return {path: leaf_probs[i] for i, path in enumerate(branching_paths(self.n_qubits, len(measurements) - 1))}
+
+    def run_simulation(self, batch_size: int = 1, measurement_times=None, debug: bool = False) -> OptimizationCallback:
+        """
+        Evaluate the detection metric for the current parameters over the measurement train.
+
+        For every configuration, runs the measure-and-reset mixture evolution -- each interval wraps the
+        trainable initial/final circuits around the Hamiltonian evolution, then measures and resets the
+        qubits -- and evaluates the configured detection metric, averaged over ``batch_size`` timing
+        realizations drawn from the protocol's uncertainty.
+
+        Args:
+            batch_size: Number of random realizations to average over for measurement uncertainty
+                       (default: 1). Each realization draws a different timing offset (collective shift +
+                       per-measurement jitter) from the protocol.
+            measurement_times: Optional explicit measurement times instead of the protocol's.
             debug: Whether to enable detailed timing debug output (default: False)
         Returns:
-            OptimizationCallback: Callback containing simulation results with:
-                - Single epoch (epoch=1)
-                - Current parameter values
-                - Detection measures (detection_with, detection_without) averaged over batch
-                - Metric value averaged over batch
+            OptimizationCallback: single-epoch callback with the batch-averaged metric, validation and
+                per-configuration detection values.
 
         Raises:
             ValueError: If initial state cache is not initialized
         """
         # Get initial state and solvers
 
-        if debug or detection_states:
+        if debug:
             self.debug_times = []
             self.step=0
             self.debug_times.append({ f'initialize_solvers' : t.time()})
@@ -546,10 +610,6 @@ class Experiment:
         batch_detect = { config.name : [] for config in self.experimental_params.configuration_set }
         batch_validation = []
 
-        if detection_states:
-            batch_for_prob = []
-            batch_weights = []
-
         if debug:
             self.debug_times.append({ f'start_measurement_loop' : t.time()})
 
@@ -580,11 +640,6 @@ class Experiment:
             weights = self.experimental_params.measurement.measurement_weights(measurement_times[1:])
             metric_value, (detection_dict, validation_value) = self.detection_metric(rho_lists, weights=weights)
 
-            if detection_states:
-                batch_for_prob.append(rho_lists)
-                batch_weights.append(weights)
-
-
             batch_metric.append(metric_value)
             batch_validation.append(validation_value)
             for name, value in detection_dict.items():
@@ -604,85 +659,18 @@ class Experiment:
         mean_validation = sum(batch_validation)/len(batch_validation)
         mean_detect_dict = {name: sum(values)/len(values) for name, values in batch_detect.items()}
 
-        if detection_states:
-
-            # P_all[i] is a diagonal projector, so P(state i | rho) = Tr(P_i @ rho) = <diag(P_i), diag(rho)>.
-            # Stack the diagonals into (n_states, D): one mat-vec against diag(rho) gives the full prob vector.
-            # Real cast: qutip returns diagonals as complex128 and would otherwise promote the result.
-            proj_diags = np.real(np.stack([np.asarray(proj.diag()) for proj in self.operators['P_all']]))
-
-            config_names = self.experimental_params.get_configuration_names()
-            n_measurements = len(batch_for_prob[0][config_names[0]])
-            n_states = proj_diags.shape[0]
-            avg_weights = np.asarray(sum(batch_weights))
-
-            # Sum probability vectors over the batch, then divide once. Axes: (config, measurement, state).
-            prob_sum = np.zeros((len(config_names), n_measurements, n_states))
-            for rho_lists in batch_for_prob:
-                for c, name in enumerate(config_names):
-                    for m, rho in enumerate(rho_lists[name]):
-                        prob_sum[c, m] += proj_diags @ np.real(rho.diag())
-            avg_probs = prob_sum / len(batch_for_prob)
-
-            # Flatten to per-measurement, per-config {binary_state: prob} only at the boundary.
-            state_prob_data = [state_probs_to_dict(avg_probs[:,m], config_names) for m in range(n_measurements)]
-
-            if self.experimental_params.perturbation_type == 'persistent':
-
-                weighted_probs = (avg_probs * avg_weights[None, :, None]).sum(axis=1) / avg_weights.sum()
-
-                main_confusion_matrix, states_map = make_confusion_matrix(weighted_probs, config_names)
-
-            else: #transient
-
-                # Create a confusion matrix for each measurement
-                evaluation_matrices, states_maps = list(zip(*[make_confusion_matrix(measurement_probs)
-                                            for measurement_probs in state_prob_data]))
-
-                # Each matrix is evaluated and the highest is used to determine which map to use
-                confusion_scores = np.array([confusion_quality(matrix) for matrix in evaluation_matrices])*avg_weights
-                winning_map = np.argmax(confusion_scores)
-
-                main_confusion_matrix = evaluation_matrices[winning_map]
-                states_map = states_maps[winning_map]
-
-            confusion_matrices = [make_confusion_matrix(avg_probs[:, m], config_names, states_map)[0] for m in range(n_measurements)]
-            
-            false_signal_dict = {config:
-                                    [sum([matrix[(config,prediction)] for prediction in config_names if not prediction in [config, self.experimental_params.ground]])
-                                     for matrix in confusion_matrices]
-                                 for config in config_names}
-
-
         if debug:
             self.debug_times.append({ f'save_callback' : t.time()})
 
-        # Create callback with single epoch for simulation results
+        # Single-epoch callback with the simulation metrics (the detection protocol is built by make_protocol).
         callback = OptimizationCallback(save_every=1, save_best=True)
-
-        if detection_states:
-            
-            callback(
-                trainable_params_initial=self.trainable_params_initial,
-                trainable_params_final=self.trainable_params_final,
-                detection_dict=mean_detect_dict,
-                metric=float(mean_metric),
-                validation=float(mean_validation),
-                state_probabilities=avg_probs,
-                states_map=states_map,
-                confusion_matrix=main_confusion_matrix,
-                false_signal=false_signal_dict
-            )
-
-        else:
-
-            callback(
-                trainable_params_initial=self.trainable_params_initial,
-                trainable_params_final=self.trainable_params_final,
-                detection_dict=mean_detect_dict,
-                metric=float(mean_metric),
-                validation=float(mean_validation),
-            )
+        callback(
+            trainable_params_initial=self.trainable_params_initial,
+            trainable_params_final=self.trainable_params_final,
+            detection_dict=mean_detect_dict,
+            metric=float(mean_metric),
+            validation=float(mean_validation),
+        )
 
         if debug:
             self.debug_times.append({ f'end_time' : t.time()})
@@ -710,6 +698,91 @@ class Experiment:
                 except Exception:
                     pass
 
+        return callback
+
+    def make_protocol(
+        self,
+        callback: Optional[OptimizationCallback] = None,
+        batch_size: int = 1,
+        measurement_times=None,
+        false_signal_weight: float = 1.0,
+        false_signal_constraint: Optional[float] = None,
+        contested_threshold: float = 1e-3,
+    ) -> OptimizationCallback:
+        """
+        Derive the deployable detection protocol from the exact branching simulation.
+
+        Runs only the branching (correlation-aware) evolution per configuration -- once for a single timing
+        realization, or ``jax.vmap``-ed over a batch of realizations and averaged when the protocol has
+        timing uncertainty -- then derives the single state->config map plus the joint (non-marginal)
+        confusion matrix and false signal, stored on the callback via ``set_measurement_protocol`` (see
+        :meth:`branching_simulation` and :func:`derive_detection_map`).
+
+        Uses the current circuit parameters, or, if a ``callback`` is given, its best parameters (which it
+        then sets on the circuits); :meth:`optimize_rotations` already leaves the best parameters on the
+        circuits, so calling this right after it (with no callback) uses them.
+
+        Args:
+            - ``callback`` (Optional[OptimizationCallback]): if given, load its best parameters onto the
+              circuits and store the protocol into it; else use the current parameters and a fresh callback.
+            - ``batch_size`` (int): timing realizations to average over when the protocol has uncertainty (default: 1).
+            - ``measurement_times``: explicit 1D timestamp sequence instead of the protocol's (default: None).
+            - ``false_signal_weight`` (float): lambda penalty on false signals (default: 1.0).
+            - ``false_signal_constraint`` (Optional[float]): hard cap on the worst per-config false signal.
+            - ``contested_threshold`` (float): producer threshold for the contested-state map search (default: 1e-3).
+
+        Returns:
+            - ``callback`` (OptimizationCallback): carrying ``states_map``, the joint ``confusion_matrix``,
+              the joint ``false_signal`` and the full ``probability_tree``.
+        """
+        # Parameters: from the callback's best (also set on the circuits), else the current circuit values.
+        if callback is not None:
+            best = callback.get_best_trainable_params()
+            if best is not None:
+                best_initial, best_final = best
+                self.initial_circuit.set_trainable_parameters(list(best_initial))
+                self.final_circuit.set_trainable_parameters(list(best_final))
+        else:
+            callback = OptimizationCallback(save_every=1, save_best=True)
+
+        init_states = self._cached_initial_states
+        if init_states is None:
+            raise RuntimeError("Initial states cache is not initialized.")
+        solvers = self.get_solvers()
+        circuit_unitaries = self._prepare_circuit_unitaries()
+
+        # Timestamps: explicit override or no timing uncertainty -> a single 1D sequence (no vmap);
+        # otherwise a 2D (batch, M+1) stack that gets vmapped and averaged.
+        mp = self.experimental_params.measurement
+        has_uncertainty = bool(mp.max_measurements_offset) or (mp.per_measurement_jitter is not None)
+        if measurement_times is not None:
+            timestamps = jnp.asarray(measurement_times, dtype=float)
+        elif has_uncertainty:
+            timestamps = jnp.asarray(self.experimental_params.get_timestamps(batch_size), dtype=float)
+        else:
+            timestamps = jnp.asarray(self.experimental_params.get_timestamps(1, offset=False, jitter=False)[0], dtype=float)
+
+        # Per config: branch once (1D) or vmap over the realizations and average the leaf probabilities (2D).
+        probability_tree = {}
+        for config in self.experimental_params.configuration_set:
+            branch = lambda ts, s=solvers[config.name], r=init_states[config.name]: \
+                self.branching_simulation(s, r, ts, precomputed_unitaries=circuit_unitaries)
+            if timestamps.ndim == 1:
+                probability_tree[config.name] = {path: float(prob) for path, prob in branch(timestamps).items()}
+            else:
+                batched = jax.vmap(branch)(timestamps)  # {path: (batch,)}
+                probability_tree[config.name] = {path: float(jnp.mean(prob)) for path, prob in batched.items()}
+
+        # Derive the deployable map + joint confusion + joint false signal from the (averaged) tree.
+        result = derive_detection_map(
+            probability_tree, self.config_names, self.experimental_params.ground,
+            self.experimental_params.perturbation_type, 2 ** self.n_qubits,
+            false_signal_weight=false_signal_weight, false_signal_constraint=false_signal_constraint,
+            contested_threshold=contested_threshold)
+
+        callback.set_measurement_protocol(
+            probability_tree=probability_tree, states_map=result["states_map"],
+            confusion_matrix=result["confusion_matrix"], false_signal=result["false_signal"])
         return callback
 
     def time_evolution(
@@ -813,9 +886,11 @@ class Experiment:
             raise TypeError("partial_configs must be a list of strings or None.")
 
         if callback is None or not callback.states_map:
-            if callback is not None and not callback.states_map:
-                print("Warning: Callback provided without a states map. Creating new one.")
-            callback = self.run_simulation(measurement_times=(t_start, t_end), detection_states=True)
+            if callback is None:
+                print("Warning: No callback provided; building the detection protocol from the current parameters.")
+            else:
+                print("Warning: Callback provided without a states map. Building the detection protocol into it.")
+            callback = self.make_protocol(callback=callback, measurement_times=(t_start, t_end))
 
         
         # Get number operators for population calculation
@@ -1325,24 +1400,13 @@ class Experiment:
         self.initial_circuit.set_trainable_parameters(best_initial)
         self.final_circuit.set_trainable_parameters(best_final)
 
-        # Restore concrete tight tolerances on the cached solvers: annealing left their
-        # controllers holding (now dead) traced tolerances, and the final run_simulation
-        # below reuses these same solvers and wants full accuracy.
+        # Restore concrete tight tolerances on the cached solvers: annealing left their controllers
+        # holding (now dead) traced tolerances, and any later reuse of these solvers wants full accuracy.
         if anneal_tolerances:
             self._set_solver_tolerances(solvers)
 
-        # Run simulation to get probabilities for each state with the best parameters
-        if has_uncertainty and batch_size < 16:
-            if verbose:
-                warnings.warn(f"Temporarily raising batch size from {batch_size} to 16 for the final evaluation to reduce uncertainty noise in the reported probabilities.")
-            batch_size = 16 # Use a larger batch size for final evaluation to reduce noise in results when uncertainty is present
-
-        final_results_callback = self.run_simulation(batch_size=batch_size,
-                                            detection_states=True,
-                                            debug=False
-                                            )
-            
-        callback.set_measurement_protocol(*final_results_callback.get_measurement_protocol())
+        # The best parameters are now set on the circuits; the deployable detection protocol is built
+        # separately (and explicitly) via make_protocol, so optimize_rotations stays pure optimization.
 
         if verbose:
             print("=" * (5+len(header)))

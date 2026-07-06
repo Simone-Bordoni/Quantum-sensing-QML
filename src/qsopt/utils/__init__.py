@@ -12,29 +12,26 @@ removed. Use the Experiment class methods instead:
 """
 
 from .experiment_loader import load_experiment_from_report
-from .landscape_analysis import compute_theta1_theta2_landscape, compute_time_interval_landscape
 from .results import SweepResults, TimeEvolutionResults, load_results, save_results
 from .visualization import (
+    interactive_sweep,
     plot_metric_evolution,
     plot_optimization_dashboard,
-    plot_parameter_landscape,
     plot_parameter_trajectory,
+    plot_sweep_corner,
     plot_sweep_results,
     plot_time_evolution,
-    plot_time_interval_landscape,
 )
 
 __all__ = [
     "plot_optimization_dashboard",
     "plot_metric_evolution",
     "plot_parameter_trajectory",
-    "plot_parameter_landscape",
-    "plot_time_interval_landscape",
     "plot_sweep_results",
+    "plot_sweep_corner",
+    "interactive_sweep",
     "plot_time_evolution",
     "load_experiment_from_report",
-    "compute_theta1_theta2_landscape",
-    "compute_time_interval_landscape",
     "TimeEvolutionResults",
     "SweepResults",
     "save_results",

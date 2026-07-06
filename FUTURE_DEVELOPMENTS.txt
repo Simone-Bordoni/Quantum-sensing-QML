@@ -17,6 +17,7 @@ Optimization:
 - on measurement time
 - speedup
 - custom precision annealing
+- problema: quando validation raggiunge il massimo presto, la precisione è poca ed il risultato è inesatto.
 
 Run experiment:
 + per far usare measurement protocol usare aggregazione per capire cosa far vedere:
@@ -31,7 +32,7 @@ TimeEvolution:
 - tiene traccia di operatore personalizzato
 
 Visualization:
-- Time evolution where various subsystems and observables can be choosen and toggled
+- Time evolution where various subsystems and observables can be choosen and toggled, including various time modulations
 - multidimensional sweep visualization
 - clean and automize optimization dashboard (wheter or not detection metrics should be plotted and wheter or not visualization and metric should both be plotted)
 - aggiungere ground e perturbation_type al print di exp_params
@@ -40,6 +41,11 @@ Visualization:
 DetectionMetric:
 - rielaborare il MeasurementAggregator per poter avere metriche che massimizzano ottenere risultati positivi su k misure su n oppure k misure consecutive. 
     Serve tener conto di un vettore di k successi e non basta un float.
+    Per k successi creare vettore di tutti i possibili gruppi di k successi differenti non ordinati (o solo quelli consecutivi) e fare una softmin tra quei k e poi una softmax su tutti i gruppi di k.
 
 Callback:
 - salvare metadata dell'esperimento?
+
+MeasurementProtocol:
+- cambiare nome per includere tempo di inizio simulazione, che se non è incluso qua è facile da dimenticare
+- mettere toggle di rumore su inizio simulazione true di default

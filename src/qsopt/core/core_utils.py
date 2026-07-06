@@ -7,6 +7,8 @@ helpers used by :meth:`Experiment.sweep` (kept out of the class so only the main
 methods live in ``experiment.py``).
 """
 
+import itertools
+import warnings
 from math import prod
 from typing import Any, Dict, List, Optional, Tuple, Union
 import jax
@@ -166,6 +168,251 @@ def confusion_quality(confusion_matrix: Dict[Tuple[str, str], float]) -> float:
     diagonal = [value for (true, pred), value in confusion_matrix.items() if true == pred]
 
     return pow(prod(diagonal), 1 / len(diagonal))
+
+
+# ---------------- branching detection-map derivation (joint, correlation-aware) ----------------
+# These consume the per-config leaf dicts from Experiment.branching_simulation ({path: path prob})
+# and pick the single deployable state->config map. The objective is joint over the measurement train,
+# unlike make_confusion_matrix's per-measurement marginals: transient classifies each whole train (with a
+# 'mixed' category), persistent averages per-measurement rates. Only "contested" states are searched.
+
+
+def branching_paths(n_qubits: int, n_measurements: int) -> List[tuple]:
+    """All measurement-outcome paths of a branching simulation (the keys of the leaf-probability dict).
+
+    Enumerates every length-``n_measurements`` sequence of computational basis outcomes (each a per-qubit
+    bit-string) in the order the branch split produces (first measurement most significant), so zipping
+    this with the flat leaf-probability array yields ``{path: probability}``.
+
+    Args:
+        - ``n_qubits`` (int): number of qubits (basis states are the ``2**n_qubits`` bit-strings).
+        - ``n_measurements`` (int): number of measurements M in the train.
+    Returns:
+        - ``paths`` (List[tuple]): the ``(2**n_qubits)**M`` outcome-path tuples, e.g. ``('01', '11')``.
+    """
+    labels = [format(k, f"0{n_qubits}b") for k in range(2 ** n_qubits)]
+    return list(itertools.product(labels, repeat=n_measurements))
+
+
+def _leaf_state_counts(leaf_data: Dict[tuple, float], n_states: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Collapse a config's leaves into distinct per-state count vectors and their summed probability.
+
+    Args:
+        - ``leaf_data`` (Dict[tuple, float]): outcome history (bit-string per measurement) -> path prob.
+        - ``n_states`` (int): number of computational basis states (2**n_qubits).
+    Returns:
+        - ``unique_counts`` (np.ndarray): (U, n_states) distinct occurrence-count vectors.
+        - ``weights`` (np.ndarray): (U,) total path probability carrying each count vector.
+    """
+    histories = list(leaf_data.keys())
+    probs = np.array([leaf_data[h] for h in histories], dtype=float)
+    # count how many measurements landed on each basis state (bit-string -> index via int(s, 2))
+    counts = np.array([np.bincount([int(s, 2) for s in h], minlength=n_states) for h in histories], dtype=int)
+    # many leaves share a count vector; dedupe and sum their probability onto the representative
+    unique_counts, inverse = np.unique(counts, axis=0, return_inverse=True)
+    weights = np.zeros(len(unique_counts))
+    np.add.at(weights, inverse.ravel(), probs)
+    return unique_counts, weights
+
+
+def _balanced_geomean(values: List[float]) -> float:
+    """Geometric mean of per-config scores; 0 if any is 0 so one undetected config collapses the score."""
+    values = np.asarray(values, dtype=float)
+    if values.size == 0 or np.any(values <= 0):
+        return 0.0
+    return float(np.exp(np.mean(np.log(values))))
+
+
+def _state_production(leaf_data_per_config: Dict[str, Dict[tuple, float]], config_names: List[str],
+                      n_states: int) -> np.ndarray:
+    """Map-independent P(config produces basis state at least once), for each (config, state).
+
+    Args:
+        - ``leaf_data_per_config`` (Dict[str, Dict[tuple, float]]): per config, its branching leaf dict.
+        - ``config_names`` (List[str]): configuration names (row order of the result).
+        - ``n_states`` (int): number of computational basis states.
+    Returns:
+        - ``production`` (np.ndarray): (n_configs, n_states) at-least-once production probability.
+    """
+    production = np.zeros((len(config_names), n_states))
+    for c, name in enumerate(config_names):
+        for history, prob in leaf_data_per_config[name].items():
+            # count a state once per leaf however often it recurs (at-least-once)
+            for state in set(int(s, 2) for s in history):
+                production[c, state] += prob
+    return production
+
+
+def _contested_states(production: np.ndarray, ground_idx: int,
+                      threshold: float) -> Tuple[List[int], np.ndarray]:
+    """Split basis states into contested (must be searched) and fixed-to-their-producer.
+
+    A state is contested when >=2 configs produce it above ``threshold``; otherwise it is fixed to its
+    sole above-threshold producer (or ground if none), optimal up to the ignored sub-threshold mass.
+
+    Args:
+        - ``production`` (np.ndarray): (n_configs, n_states) from :func:`_state_production`.
+        - ``ground_idx`` (int): index of the ground configuration.
+        - ``threshold`` (float): production probability above which a config counts as a producer.
+    Returns:
+        - ``contested`` (List[int]): basis-state indices to brute-force.
+        - ``fixed_assign`` (np.ndarray): (n_states,) forced config index, -1 on contested slots.
+    """
+    n_configs, n_states = production.shape
+    contested: List[int] = []
+    fixed_assign = np.full(n_states, -1)
+    for state in range(n_states):
+        producers = np.where(production[:, state] >= threshold)[0]
+        if len(producers) >= 2:
+            contested.append(state)                  # genuine trade-off -> search it
+        elif len(producers) == 1:
+            fixed_assign[state] = int(producers[0])  # single producer owns it
+        else:
+            fixed_assign[state] = ground_idx         # produced by nobody meaningfully -> "no detection"
+    return contested, fixed_assign
+
+
+def _score_map(assign: np.ndarray, per_config: Dict[str, Tuple[np.ndarray, np.ndarray]],
+               config_names: List[str], ground_idx: int, transient: bool
+               ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Dict[str, float]]]:
+    """Score one candidate map into per-config true-detection, false-signal and row-stochastic confusion rows.
+
+    Each row (true config) is a probability distribution over the predicted categories, summing to 1.
+    Transient classifies each whole measurement train by the distinct non-ground configs it detected:
+    none -> ground; exactly one -> that config; two or more -> ``'mixed'``. Persistent instead classifies
+    every measurement independently and averages the per-measurement rates over the train. ground is scored
+    like any other config (its diagonal enters the balance); a wrong-config classification is a false
+    signal, while landing on ground is a missed detection (not a false signal).
+
+    Args:
+        - ``assign`` (np.ndarray): (n_states,) config index each basis state maps to.
+        - ``per_config`` (Dict[str, Tuple[np.ndarray, np.ndarray]]): name -> (unique_counts, weights).
+        - ``config_names`` (List[str]): configuration names.
+        - ``ground_idx`` (int): ground configuration index.
+        - ``transient`` (bool): True -> per-train classification (with 'mixed'), False -> per-measurement rate.
+    Returns:
+        - ``true_detection`` (Dict[str, float]): per config, its diagonal (correct-classification probability/rate).
+        - ``false_signal`` (Dict[str, float]): per config, mass classified as a wrong, non-ground category.
+        - ``confusion_rows`` (Dict[str, Dict[str, float]]): per true config, {predicted category: mass}.
+    """
+    n_configs = len(config_names)
+    ground_name = config_names[ground_idx]
+    onehot = np.eye(n_configs)[assign]  # (n_states, n_configs): basis state -> owning config
+    nonground = [j for j in range(n_configs) if j != ground_idx]
+
+    true_detection, false_signal, confusion_rows = {}, {}, {}
+    for name in config_names:
+        unique_counts, weights = per_config[name]  # (U, n_states), (U,)
+        if transient:
+            # detects[u, j] = leaf u measured at least one state the map assigns to config j
+            present = unique_counts > 0  # (U, n_states)
+            detects = (present[:, :, None] & (onehot > 0)[None, :, :]).any(axis=1)  # (U, n_configs)
+            n_nonground = detects[:, nonground].sum(axis=1)  # distinct non-ground configs the train detected
+            row = {pred: 0.0 for pred in config_names}
+            row["mixed"] = float(weights[n_nonground >= 2].sum())       # detected two or more non-ground configs
+            row[ground_name] = float(weights[n_nonground == 0].sum())   # detected only ground
+            single = n_nonground == 1
+            for j in nonground:                                         # detected exactly this one non-ground config
+                row[config_names[j]] = float(weights[single & detects[:, j]].sum())
+        else:
+            # independent measurements: mean over the train of the per-config classification rate.
+            # every train has M measurements, so M is the row-sum of any count vector.
+            n_measurements = int(unique_counts.sum(axis=1)[0])
+            rate = (weights @ (unique_counts @ onehot)) / n_measurements  # (n_configs,)
+            row = {config_names[j]: float(rate[j]) for j in range(n_configs)}
+        confusion_rows[name] = row
+        true_detection[name] = row[name]  # diagonal: config correctly classified as itself
+        # false signal: mass sent to a wrong, non-ground category (another config or 'mixed')
+        false_signal[name] = sum(v for pred, v in row.items() if pred != name and pred != ground_name)
+    return true_detection, false_signal, confusion_rows
+
+
+def derive_detection_map(leaf_data_per_config: Dict[str, Dict[tuple, float]], config_names: List[str],
+                         ground: str, perturbation_type: str, n_states: int,
+                         false_signal_weight: float = 1.0, false_signal_constraint: Optional[float] = None,
+                         contested_threshold: float = 1e-3, max_search: int = 500_000) -> Dict[str, Any]:
+    """Derive the single deployable state->config map from branching (correlation-aware) leaf data.
+
+    Every basis state maps to one config; maps are ranked by a balanced geometric mean over all configs
+    (ground included) of their diagonal correct-classification -- transient: each measurement train is
+    classified by the distinct non-ground configs it detected (none -> ground, one -> that config, two or
+    more -> 'mixed'); persistent: the per-measurement classification rate -- while false signals (mass sent
+    to a wrong, non-ground category) are penalized by ``false_signal_weight`` or hard-constrained by
+    ``false_signal_constraint``. Only contested states (produced by >=2 configs above
+    ``contested_threshold``) are brute-forced; the rest are fixed to their sole producer.
+
+    Args:
+        - ``leaf_data_per_config`` (Dict[str, Dict[tuple, float]]): per config, the branching leaf dict
+          ``{history: path_prob}`` from :meth:`Experiment.branching_simulation`.
+        - ``config_names`` (List[str]): configuration names.
+        - ``ground`` (str): ground (no-detection) configuration name.
+        - ``perturbation_type`` (str): 'transient' (at-least-once) or 'persistent' (rate).
+        - ``n_states`` (int): number of computational basis states (2**n_qubits).
+        - ``false_signal_weight`` (float): lambda subtracted as ``lambda * mean_false`` when unconstrained.
+        - ``false_signal_constraint`` (Optional[float]): if set, only maps whose worst per-config false
+          signal is <= this are eligible; among them balanced true detection is maximized.
+        - ``contested_threshold`` (float): production probability above which a config counts as a producer
+          of a state (0.0 searches every jointly-produced state, i.e. exact).
+        - ``max_search`` (int): raise if the contested brute force exceeds this many candidate maps.
+    Returns:
+        - ``result`` (Dict[str, Any]): ``states_map`` (config -> owned bit-string labels),
+          ``confusion_matrix`` ((true, pred) -> probability or rate), per-config ``true_detection`` and
+          ``false_signal``, the winner's ``true_score``/``mean_false``/``max_false``, and the
+          ``n_contested``/``n_maps_searched`` search sizes.
+    """
+    config_names = list(config_names)
+    n_configs = len(config_names)
+    ground_idx = config_names.index(ground)
+    transient = perturbation_type == "transient"
+
+    # setup (once): per-config count vectors, state production, and the contested/fixed split
+    per_config = {name: _leaf_state_counts(leaf_data_per_config[name], n_states) for name in config_names}
+    production = _state_production(leaf_data_per_config, config_names, n_states)
+    contested, fixed_assign = _contested_states(production, ground_idx, contested_threshold)
+
+    n_maps = n_configs ** len(contested)
+    if n_maps > max_search:
+        raise NotImplementedError(
+            f"{n_maps} candidate maps over {len(contested)} contested states exceeds max_search="
+            f"{max_search}. Raise max_search / contested_threshold, or add a greedy fallback.")
+
+    # search: only the contested states vary; fixed ones stay at their producer
+    best = None
+    for combo in itertools.product(range(n_configs), repeat=len(contested)):
+        assign = fixed_assign.copy()
+        assign[contested] = combo
+        true_detection, false_signal, rows = _score_map(
+            assign, per_config, config_names, ground_idx, transient)
+        true_score = _balanced_geomean(list(true_detection.values()))
+        mean_false = float(np.mean(list(false_signal.values())))
+        max_false = float(np.max(list(false_signal.values())))
+        # constrained: feasible-first then most detection; unconstrained: penalized detection
+        if false_signal_constraint is not None:
+            feasible = max_false <= false_signal_constraint
+            key = (feasible, true_score if feasible else -max_false)
+        else:
+            key = (True, true_score - false_signal_weight * mean_false)
+        if best is None or key > best[0]:
+            best = (key, assign, true_detection, false_signal, rows, true_score, mean_false, max_false)
+
+    _, assign, true_detection, false_signal, rows, true_score, mean_false, max_false = best
+    if true_score == 0.0:
+        warnings.warn("Best detection map has balanced true-detection 0: a config is never correctly "
+                      "detected (false-signal constraint too tight, or configs indistinguishable here).")
+
+    # build the deployable map (config -> owned bit-string states) and the confusion matrix
+    n_qubits = n_states.bit_length() - 1
+    labels = [format(i, f"0{n_qubits}b") for i in range(n_states)]
+    states_map = {name: [] for name in config_names}
+    for state, c in enumerate(assign):
+        states_map[config_names[c]].append(labels[state])
+    # rows are true configs; columns are every config plus a 'mixed' prediction column (transient only).
+    pred_categories = list(config_names) + (["mixed"] if transient else [])
+    confusion_matrix = {(t, pred): float(rows[t].get(pred, 0.0)) for t in config_names for pred in pred_categories}
+
+    return dict(states_map=states_map, confusion_matrix=confusion_matrix, true_detection=true_detection,
+                false_signal=false_signal, true_score=true_score, mean_false=mean_false, max_false=max_false,
+                n_contested=len(contested), n_maps_searched=n_maps)
 
 
 # ---------------------------- generic N-dimensional sweep helpers ----------------------------

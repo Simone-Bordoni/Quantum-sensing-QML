@@ -38,6 +38,7 @@ dependencies = [
     "chex==0.1.89",
     "pandas==2.2.3",
     "seaborn==0.13.2",
+    "ipywidgets==8.1.5",
 ]
 
 [project.optional-dependencies]
