@@ -18,7 +18,7 @@ import qutip as qt
 from jax import Array
 from jax.scipy.special import erfc
 
-from qsopt.core.experiment.quantum_utils import PROMOTABLE_TYPES, build_hamiltonians
+from qsopt.core.experiment.quantum_utils import PROMOTABLE_TYPES, _build_hamiltonian_term, build_hamiltonians
 
 
 @jax.jit
@@ -487,12 +487,55 @@ def is_baked(exp, key: str) -> bool:
     return False
 
 
+def collapse_unsafe_keys(exp) -> set:
+    """Global keys that must NOT be promoted because they sit on a Lindblad collapse-operator term
+    that already coexists with another coefficient-bearing term.
+
+    qutip-jax bug: when a single collapse operator SUMS two coefficient-bearing terms on DIFFERENT
+    operators (``c1*A + c2*B`` with ``A != B``) it computes ``L†L`` wrong (drops the cross term
+    ``A†B``), so the master equation stops preserving trace and the solve blows up. Coefficients
+    multiplied into one term are fine, and so is one coefficient term (a pulse ``g(t)`` or one promoted
+    parameter) plus constant parts -- that is what baking gives. Each collapse contribution here is a
+    distinct operator, so promoting a parameter onto a collapse term is only allowed when no OTHER term
+    of that same collapse operator is time-modulated or itself promotable (that other term would be the
+    second summand). ``gamma`` stays promotable because it multiplies into the already-modulated pulse
+    term rather than adding a new summand. Everything flagged here is swept via the rebuild lane (baked
+    back into a constant operator) instead. See ``_interaction_terms`` for the matching build-time guard.
+
+    Args:
+        exp (Experiment): experiment providing the interactions and operators.
+    Returns:
+        set[str]: global-args keys that are unsafe to promote.
+    """
+    unsafe: set = set()
+
+    def scan(interactions, prefix):
+        for inter in interactions:
+            l_terms = [t for t in _build_hamiltonian_term(inter, exp.operators, exp.n_cavities, exp.n_fields)
+                       if t.kind == 'L']
+            n_modulated = sum(1 for t in l_terms if t.modulated)
+            for term in l_terms:
+                other_modulated = n_modulated - (1 if term.modulated else 0)
+                other_promotable = any(other is not term and other.params for other in l_terms)
+                if other_modulated >= 1 or (not term.modulated and other_promotable):
+                    for name in term.params:
+                        unsafe.add(f"{prefix}{inter._interaction_context()}__{name}")
+
+    scan(exp.experimental_params.interactions, "BaseModel_")
+    for cfg in exp.experimental_params.configuration_set:
+        scan(cfg.interactions, f"Conf:{cfg.name}_")
+    return unsafe
+
+
 def classify_sweep_axis(exp, name: str, key_types: Dict[str, Any]):
     """Return (lane, keys). Lanes: 'measurement' (time_interval), 'promote' (baked + promotable
     -> args-coefficient), 'rebuild' (baked + non-promotable), 'coeff' (already a coefficient)."""
     if name == "time_interval":
         return "measurement", []
     keys = resolve_sweep_keys(exp, name)
+    # a parameter on a multi-coefficient Lindblad collapse operator must be baked, not promoted
+    if any(k in collapse_unsafe_keys(exp) for k in keys):
+        return "rebuild", keys
     if {key_types[k] for k in keys} <= PROMOTABLE_TYPES:
         return "promote", keys
     return ("rebuild" if any(is_baked(exp, k) for k in keys) else "coeff"), keys

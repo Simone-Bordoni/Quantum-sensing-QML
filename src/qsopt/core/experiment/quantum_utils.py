@@ -839,6 +839,19 @@ def _interaction_terms(interaction, prefix, operators, n_cavities, n_fields, ove
         else:
             (L_timedep if is_pair else L_const).append(part)
 
+    # qutip-jax bug guard: when ONE collapse operator SUMS two coefficient-bearing terms on DIFFERENT
+    # operators (c1*A + c2*B with A != B), qutip-jax drops the L†L cross term (A†B), so the master
+    # equation stops preserving trace and the solve blows up (trace -> large negative, metric -> inf).
+    # Coefficients MULTIPLIED into one term ([A, c1*c2]) are fine, as is a single coefficient term plus
+    # constant parts -- that is what baking gives. Every L contribution here is a distinct operator, so
+    # >1 coefficient term means the broken sum. classify_sweep_axis / collapse_unsafe_keys keep such
+    # parameters out of the promote lane; this is the last-line guard.
+    if len(L_timedep) > 1:
+        raise NotImplementedError(
+            f"{interaction._interaction_context()}: collapse operator would carry {len(L_timedep)} "
+            "coefficient terms (time-modulated and/or promoted). qutip-jax mishandles L†L for a "
+            "multi-coefficient collapse operator (trace is not preserved), so the offending "
+            "parameter(s) must be swept via the rebuild lane (baked), not promoted.")
     # all 'L' pieces are ONE collapse operator: keep them in a single QobjEvo (or Qobj)
     if not L_const and not L_timedep:
         L_term = None

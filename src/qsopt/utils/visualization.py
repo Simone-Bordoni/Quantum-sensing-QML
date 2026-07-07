@@ -6,6 +6,7 @@ that display key data including the detection metric, gradient evolution,
 parameter trajectories, and detection measures.
 """
 
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -1287,6 +1288,8 @@ def _contour_levels(z: np.ndarray, is_probability: bool):
     """
     if is_probability:
         return _PROB_FILL_LEVELS, _PROB_LABEL_LEVELS
+    if not np.isfinite(z).any():  # no valid data; return a harmless default range
+        return np.linspace(0.0, 1.0, 21), np.linspace(0.0, 1.0, 6)
     zmin, zmax = float(np.nanmin(z)), float(np.nanmax(z))
     if np.isclose(zmin, zmax):
         eps = max(1e-6, abs(zmax) * 0.1 + 1e-6)
@@ -1344,6 +1347,18 @@ def _draw_contour_panel(ax, xvals, yvals, z_xy, *, xscale="linear", yscale="line
     """
     X, Y = np.meshgrid(np.asarray(xvals), np.asarray(yvals))
     Z = np.asarray(z_xy).T
+    # An all-NaN/all-inf map has no valid contour levels; show a placeholder instead of crashing.
+    if not np.isfinite(Z).any():
+        ax.text(0.5, 0.5, "no finite data", ha="center", va="center", transform=ax.transAxes)
+        if xscale == "log":
+            ax.set_xscale("log")
+        if yscale == "log":
+            ax.set_yscale("log")
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        if title:
+            ax.set_title(title, fontsize=11)
+        return None
     if levels is None:
         levels, label_levels = _contour_levels(Z, is_probability)
     cf = ax.contourf(X, Y, Z, levels=levels, cmap=cmap)
@@ -1470,6 +1485,13 @@ def plot_sweep_results(
     if not keys:
         raise ValueError("No results selected; enable at least one of "
                          "show_metric / show_validation / show_detection.")
+
+    # Surface NaNs in the data (e.g. from diverged solves) instead of hiding them behind a plot.
+    nan_maps = {k: float(np.isnan(sweep.results[k]).mean()) for k in keys
+                if np.isnan(sweep.results[k]).any()}
+    if nan_maps:
+        warnings.warn("sweep results contain NaN (fraction per map): "
+                      + ", ".join(f"{k}={f:.0%}" for k, f in nan_maps.items()))
 
     if display_axes is None:
         display_axes = sweep.axis_names[: min(2, sweep.ndim)]
