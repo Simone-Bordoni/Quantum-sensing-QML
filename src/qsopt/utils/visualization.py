@@ -1103,8 +1103,11 @@ def plot_time_evolution(
 # ---------------------------------------------------------------------------
 
 # Filled/labelled contour levels for probability-like maps (detection measures in [0, 1]).
-_PROB_FILL_LEVELS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0]
+# 40 uniform fill bands (0.025 step: 0.1 split four ways) so colorbar ticks stay round.
+_PROB_FILL_LEVELS = list(np.round(np.linspace(0.0, 1.0, 41), 4))
 _PROB_LABEL_LEVELS = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
+# Colorbar tick positions for the fixed [0, 1] range: every 0.2.
+_PROB_CBAR_TICKS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 
 
 def _pretty_axis(name: str) -> str:
@@ -1263,11 +1266,7 @@ def _result_title(key: str) -> str:
 
 
 def _result_cmap(key: str) -> str:
-    """Colormap for a result key ('metric' diverging, detection rainbow, else viridis)."""
-    if key == "metric":
-        return "RdBu_r"
-    if key.startswith("detection_"):
-        return "rainbow"
+    """Colormap for a result key; one shared 'viridis' scale for every quantity."""
     return "viridis"
 
 
@@ -1289,12 +1288,12 @@ def _contour_levels(z: np.ndarray, is_probability: bool):
     if is_probability:
         return _PROB_FILL_LEVELS, _PROB_LABEL_LEVELS
     if not np.isfinite(z).any():  # no valid data; return a harmless default range
-        return np.linspace(0.0, 1.0, 21), np.linspace(0.0, 1.0, 6)
+        return np.linspace(0.0, 1.0, 61), np.linspace(0.0, 1.0, 6)
     zmin, zmax = float(np.nanmin(z)), float(np.nanmax(z))
     if np.isclose(zmin, zmax):
         eps = max(1e-6, abs(zmax) * 0.1 + 1e-6)
         zmin, zmax = zmin - eps, zmax + eps
-    return np.linspace(zmin, zmax, 21), np.linspace(zmin, zmax, 6)
+    return np.linspace(zmin, zmax, 61), np.linspace(zmin, zmax, 6)
 
 
 def _panel_grid(n: int) -> Tuple[int, int]:
@@ -1316,15 +1315,15 @@ def _save_fig(fig: Figure, save_path: str, dpi: int, what: str) -> None:
 
 
 def _mark_optimum_star(ax, x: float, y: float, label: Optional[str] = None) -> None:
-    """Draw a high-visibility star marker at (x, y)."""
-    ax.scatter([x], [y], marker="*", s=420, c="#3ec1ff", edgecolors="black",
+    """Draw a high-visibility red star marker at (x, y)."""
+    ax.scatter([x], [y], marker="*", s=420, c="red", edgecolors="black",
                linewidths=2.2, zorder=10, clip_on=False, label=label)
 
 
 def _draw_contour_panel(ax, xvals, yvals, z_xy, *, xscale="linear", yscale="linear",
                         xlabel="", ylabel="", title="", cmap="rainbow", is_probability=False,
                         levels=None, label_levels=None, mark_xy=None, mark_label=None,
-                        add_colorbar=True, colorbar_label="Value"):
+                        add_colorbar=True, colorbar_label="Value", colorbar_ticks=None):
     """Draw one filled+labelled contour panel of a 2D map indexed [x, y].
 
     Args:
@@ -1341,6 +1340,7 @@ def _draw_contour_panel(ax, xvals, yvals, z_xy, *, xscale="linear", yscale="line
         mark_label: Optional legend label for the marker.
         add_colorbar: Attach a colorbar to this panel.
         colorbar_label: Colorbar label text.
+        colorbar_ticks: Explicit colorbar tick positions; automatic when None.
 
     Returns:
         The QuadContourSet from contourf.
@@ -1365,6 +1365,10 @@ def _draw_contour_panel(ax, xvals, yvals, z_xy, *, xscale="linear", yscale="line
     if add_colorbar:
         cbar = plt.colorbar(cf, ax=ax, fraction=0.046, pad=0.03)
         cbar.set_label(colorbar_label, fontsize=9)
+        # Default to the same tick ratios as the fixed [0, 1] range, mapped to the level span.
+        ticks = colorbar_ticks if colorbar_ticks is not None else \
+            np.linspace(float(levels[0]), float(levels[-1]), len(_PROB_CBAR_TICKS))
+        cbar.set_ticks(ticks)
     cs = ax.contour(X, Y, Z, levels=label_levels, colors="k", linewidths=0.2)
     ax.clabel(cs, inline=True, fontsize=7)
     if mark_xy is not None:
@@ -1445,6 +1449,7 @@ def plot_sweep_results(
     show_metric: bool = True,
     show_validation: bool = True,
     show_detection: bool = True,
+    fixed_range: bool = True,
     figsize: Optional[Tuple[int, int]] = None,
     mark_optimal: bool = True,
     save_path: Optional[str] = None,
@@ -1466,6 +1471,8 @@ def plot_sweep_results(
         show_metric: Plot the 'metric' map (default True).
         show_validation: Plot the 'validation' map (default True).
         show_detection: Plot every 'detection_<config>' map (default True).
+        fixed_range: Use a fixed [0, 1] color range for all contour panels (default
+            True); when False the color range is fit to each panel's data.
         figsize: Figure size in inches; auto-sized from the panel count when None.
         mark_optimal: Mark the optimum on each panel (default True).
         save_path: Optional path to save the figure.
@@ -1531,13 +1538,17 @@ def plot_sweep_results(
             z = _reduce_to_2d(data, i, j, "slice", fixed_idx)
             mark_xy = ((sweep.axis_vals[i][fixed_idx[i]], sweep.axis_vals[j][fixed_idx[j]])
                        if mark_optimal else None)
+            levels, label_levels = (_PROB_FILL_LEVELS, _PROB_LABEL_LEVELS) if fixed_range else (None, None)
+            cbar_ticks = _PROB_CBAR_TICKS if fixed_range else None
             _draw_contour_panel(ax, sweep.axis_vals[i], sweep.axis_vals[j], z,
                                 xscale=sweep.axis_scales[i], yscale=sweep.axis_scales[j],
                                 xlabel=_pretty_axis(sweep.axis_names[i]),
                                 ylabel=_pretty_axis(sweep.axis_names[j]),
                                 title=_result_title(key), cmap=_result_cmap(key),
-                                is_probability=_is_probability_like(key), mark_xy=mark_xy,
-                                colorbar_label="Detection" if key.startswith("detection_") else "Value")
+                                is_probability=_is_probability_like(key),
+                                levels=levels, label_levels=label_levels, mark_xy=mark_xy,
+                                colorbar_label="Detection" if key.startswith("detection_") else "Value",
+                                colorbar_ticks=cbar_ticks)
 
     for ax in axes[len(keys):]:
         ax.axis("off")
@@ -1560,6 +1571,7 @@ def plot_sweep_corner(
     quantity: str = "metric",
     config: Optional[str] = None,
     *,
+    fixed_range: bool = True,
     figsize: Optional[Tuple[int, int]] = None,
     mark_optimal: bool = True,
     save_path: Optional[str] = None,
@@ -1577,6 +1589,8 @@ def plot_sweep_corner(
         quantity: Which map to show: 'metric', 'validation' or 'detection'.
         config: Detection configuration when ``quantity == 'detection'`` (defaults to
             the first available configuration).
+        fixed_range: Use a fixed [0, 1] color range for all panels (default True);
+            when False the color range is fit to the data.
         figsize: Figure size in inches; auto-sized from the axis count when None.
         mark_optimal: Mark the optimum on every panel (default True).
         save_path: Optional path to save the figure.
@@ -1600,7 +1614,10 @@ def plot_sweep_corner(
     is_prob = _is_probability_like(key)
     cmap = _result_cmap(key)
     # Shared color scale so slice and max-projection panels are directly comparable.
-    levels, label_levels = _contour_levels(data, is_prob)
+    if fixed_range:
+        levels, label_levels = _PROB_FILL_LEVELS, _PROB_LABEL_LEVELS
+    else:
+        levels, label_levels = _contour_levels(data, is_prob)
 
     if figsize is None:
         figsize = (3.1 * n, 3.0 * n)
@@ -1609,13 +1626,18 @@ def plot_sweep_corner(
     for r in range(n):
         for c in range(n):
             ax = axes[r][c]
+            # Column names label the top row only (not the bottom or the diagonal).
+            if r == 0:
+                ax.set_title(_pretty_axis(sweep.axis_names[c]), fontsize=9)
             if r == c:
                 # Diagonal: 1D max-projection for this axis.
                 y = _reduce_to_1d(data, r, "max", fixed_idx)
                 mark_x = sweep.axis_vals[r][fixed_idx[r]] if mark_optimal else None
                 _draw_line_panel(ax, sweep.axis_vals[r], y, xscale=sweep.axis_scales[r],
                                  mark_x=mark_x)
-                ax.set_title(_pretty_axis(sweep.axis_names[r]), fontsize=9)
+                # Set the row name after the line panel, which clears the y label.
+                if c == 0:
+                    ax.set_ylabel(_pretty_axis(sweep.axis_names[r]), fontsize=9)
                 continue
             # x = axis c, y = axis r; upper triangle slices, lower triangle max-projects.
             mode = "slice" if r < c else "max"
@@ -1628,8 +1650,9 @@ def plot_sweep_corner(
                                 label_levels=label_levels, mark_xy=mark_xy, add_colorbar=False)
             if c == 0:
                 ax.set_ylabel(_pretty_axis(sweep.axis_names[r]), fontsize=9)
-            if r == n - 1:
-                ax.set_xlabel(_pretty_axis(sweep.axis_names[c]), fontsize=9)
+
+    # Align all row names to a common x so differing tick-label widths don't stagger them.
+    fig.align_ylabels(axes[:, 0])
 
     # One shared colorbar for every 2D panel.
     sm = plt.cm.ScalarMappable(cmap=cmap,
@@ -1637,6 +1660,8 @@ def plot_sweep_corner(
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes.ravel().tolist(), fraction=0.02, pad=0.02)
     cbar.set_label(_result_title(key), fontsize=10)
+    if fixed_range:
+        cbar.set_ticks(_PROB_CBAR_TICKS)
 
     fig.suptitle(f"Corner sweep — {_result_title(key)}   "
                  f"(upper: slice @ optimum · lower: max-projection · diag: 1D max)", fontsize=11)
@@ -1667,7 +1692,6 @@ def interactive_sweep(
     """
     try:
         import ipywidgets as widgets
-        from IPython.display import display
     except ImportError as exc:
         raise ImportError("interactive_sweep requires ipywidgets: pip install ipywidgets") from exc
 
@@ -1713,12 +1737,14 @@ def interactive_sweep(
             z = _reduce_to_2d(sweep.results[key], xi, yi, reduce_dd.value, fixed_idx)
             fig, ax = plt.subplots(figsize=(7, 5.5))
             mark_xy = (sweep.axis_vals[xi][best[xi]], sweep.axis_vals[yi][best[yi]])
+            # Fixed [0, 1] color range so every rendered view is directly comparable.
             _draw_contour_panel(ax, sweep.axis_vals[xi], sweep.axis_vals[yi], z,
                                 xscale=sweep.axis_scales[xi], yscale=sweep.axis_scales[yi],
                                 xlabel=_pretty_axis(names[xi]), ylabel=_pretty_axis(names[yi]),
                                 title=f"{_result_title(key)} ({reduce_dd.value})",
                                 cmap=_result_cmap(key), is_probability=_is_probability_like(key),
-                                mark_xy=mark_xy)
+                                levels=_PROB_FILL_LEVELS, label_levels=_PROB_LABEL_LEVELS,
+                                colorbar_ticks=_PROB_CBAR_TICKS, mark_xy=mark_xy)
             plt.show()
 
     for widget in [q_dd, x_dd, y_dd, reduce_dd, *sliders.values()]:
@@ -1726,5 +1752,6 @@ def interactive_sweep(
     render()
     ui = widgets.VBox([widgets.HBox([q_dd, reduce_dd]), widgets.HBox([x_dd, y_dd]),
                        widgets.VBox(list(sliders.values())), out])
-    display(ui)
+    # Return the container and let Jupyter display it; calling display() here as well
+    # would render two synced copies of the same widget.
     return ui

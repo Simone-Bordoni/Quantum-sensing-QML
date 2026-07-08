@@ -8,6 +8,7 @@ methods live in ``experiment.py``).
 """
 
 import itertools
+import os
 import warnings
 from math import prod
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -541,10 +542,49 @@ def classify_sweep_axis(exp, name: str, key_types: Dict[str, Any]):
     return ("rebuild" if any(is_baked(exp, k) for k in keys) else "coeff"), keys
 
 
+# Sweep execution backend: 'auto' (pick by device), 'cpu' (eager per-point loop), 'gpu' (vmap grid).
+# Override via the QSOPT_SWEEP_BACKEND env var or set_sweep_backend() at runtime.
+_SWEEP_BACKEND = os.environ.get("QSOPT_SWEEP_BACKEND", "auto").lower()
+
+
+def set_sweep_backend(backend: str) -> None:
+    """Force the sweep execution backend used by :func:`adaptive_map`.
+
+    Args:
+        backend (str): 'auto' (pick by device), 'cpu' (eager per-point loop), or 'gpu' (vmap the grid).
+    """
+    global _SWEEP_BACKEND
+    backend = backend.lower()
+    if backend not in ("auto", "cpu", "gpu"):
+        raise ValueError(f"backend must be 'auto', 'cpu' or 'gpu'; got {backend!r}")
+    _SWEEP_BACKEND = backend
+
+
 def adaptive_map(fn, grid, verbose):
-    """Run ``fn`` over ``grid``'s leading axis, starting fully parallel (batch_size = all) and
-    halving the batch on GPU OOM down to sequential (batch_size = 1). No GPU -> just runs."""
+    """Run ``fn`` over ``grid``'s leading axis with a backend-aware strategy.
+
+    On GPU the vmap lanes run in parallel, so the whole grid is vmapped at once (halving the batch on
+    OOM down to sequential). On CPU there are no parallel lanes -- vmapping only widens each step's work
+    and couples the adaptive ODE steps to the worst-case point -- so an eager per-point loop is faster.
+    The choice follows :data:`_SWEEP_BACKEND` ('auto' picks by device; override via QSOPT_SWEEP_BACKEND
+    or :func:`set_sweep_backend`).
+
+    Args:
+        fn (callable): function evaluated at one grid point (leading-axis slice of ``grid``).
+        grid (array-like): stacked grid points; iterated/mapped over the leading axis.
+        verbose (bool): print GPU-OOM batch-halving notices.
+    Returns:
+        pytree: ``fn``'s outputs stacked along a new leading axis (same structure as ``jax.lax.map``).
+    """
     grid = jnp.asarray(grid)
+    backend = _SWEEP_BACKEND
+    if backend == "auto":
+        backend = "gpu" if any(d.platform == "gpu" for d in jax.devices()) else "cpu"
+
+    if backend == "cpu":
+        outs = [fn(row) for row in grid]
+        return jax.tree_util.tree_map(lambda *leaves: jnp.stack(leaves), *outs)
+
     bs = int(grid.shape[0])
     while True:
         try:

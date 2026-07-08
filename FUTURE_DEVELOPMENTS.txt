@@ -36,7 +36,7 @@ Visualization:
 - multidimensional sweep visualization
 - clean and automize optimization dashboard (wheter or not detection metrics should be plotted and wheter or not visualization and metric should both be plotted)
 - aggiungere ground e perturbation_type al print di exp_params
-
+- make protocol printa ottimizzazione al posto di make protocol o simulazione singola
 
 DetectionMetric:
 - rielaborare il MeasurementAggregator per poter avere metriche che massimizzano ottenere risultati positivi su k misure su n oppure k misure consecutive. 
