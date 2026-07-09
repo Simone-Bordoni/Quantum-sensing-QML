@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#nuovo file
-
 #SBATCH --job-name=train_lfr0        # Job name
 #SBATCH --account=phocqal          # Account name
 # una cosa che sto levando        #SBATCH --chdir=home/e/emurano/comm_det_snap
