@@ -29,6 +29,7 @@ PROMOTABLE_TYPES = frozenset({
     InteractionType.DISPERSIVE, InteractionType.DETUNING, InteractionType.COUPLING,
     InteractionType.XX, InteractionType.YY, InteractionType.ZZ,
     InteractionType.DISSIPATION, InteractionType.INPUT_OUTPUT,
+    InteractionType.DEPOLARIZING, InteractionType.DEPHASING, InteractionType.RELAXATION,
 })
 
 _ID = lambda x: x  # noqa: E731  (linear parameter -> identity transform)
@@ -46,12 +47,16 @@ class InteractionTerm(NamedTuple):
         const (complex): constant numeric prefactor.
         params (dict[str, Callable]): multiplicative parameter name -> transform f (identity, sqrt, ...).
         modulated (bool): whether the time-modulation pulse g(t) multiplies this term.
+        collapse_group (int): only meaningful for 'L' terms; terms sharing a group id are summed into
+            one collapse operator (e.g. input-output's two summands), while different group ids become
+            independent collapse operators (e.g. depolarizing's three Pauli channels).
     """
     kind: str
     operator: Union[qt.Qobj, Callable]
     const: complex
     params: Dict[str, Callable]
     modulated: bool
+    collapse_group: int = 0
 
 def generate_system_operators(
     n_cavities: int,\
@@ -428,13 +433,15 @@ def generate_initial_state(
 
 def build_hamiltonians(operators, experimental_params, n_cavities, n_fields, n_qubits,
                        overrides=None, dynamic_keys=None):
-    """Build the per-configuration Hamiltonians and Lindblad operators (pure).
+    """
+    Build the per-configuration Hamiltonians and Lindblad operators (pure).
 
     Each interaction is decomposed into :class:`InteractionTerm` terms and assembled by
     ``_interaction_terms``: parameters are baked into the operators, or, for keys in
-    ``dynamic_keys``, factored into an args-coefficient so a sweep varies them on a prebuilt
-    solver. Qubit-noise Lindblads are added per configuration. Pure, so safe inside
-    ``jax.vmap``/``jax.jit``.
+    ``dynamic_keys``, factored into an args-coefficient so a sweep varies them on a prebuilt solver.
+    Qubit noise is already present as ordinary interactions (``ExperimentalParameters`` absorbs each
+    noise model into the base or per-configuration interaction lists), so it is assembled here like any
+    other interaction and its rates sweep the same way. Pure, so safe inside ``jax.vmap``/``jax.jit``.
 
     Args:
         operators (dict): system operators from ``generate_system_operators``.
@@ -458,39 +465,36 @@ def build_hamiltonians(operators, experimental_params, n_cavities, n_fields, n_q
     H_const, H_time_dependent, L_interaction = [], [], []
     global_args: Dict[str, Any] = {}
 
-    # base model: interactions common to every configuration
-    for interaction in experimental_params.interactions:
-        const_H, timedep_H, L_term = _interaction_terms(
-            interaction, "BaseModel_", operators, n_cavities, n_fields, overrides, global_args, dynamic_keys)
-        H_const.extend(const_H)
-        H_time_dependent.extend(timedep_H)
-        if L_term is not None:
-            L_interaction.append(L_term)
+    def assemble(interactions, prefix, H_const_acc, H_time_acc, L_acc):
+        """Assemble a list of interactions into the given H/L accumulators (in place)."""
+        for interaction in interactions:
+            const_H, timedep_H, L_terms = _interaction_terms(
+                interaction, prefix, operators, n_cavities, n_fields, overrides, global_args, dynamic_keys)
+            H_const_acc.extend(const_H)
+            H_time_acc.extend(timedep_H)
+            L_acc.extend(L_terms)
+
+    # base model: interactions common to every configuration (noise the experimental parameters
+    # absorbed into this list applies to every configuration)
+    assemble(experimental_params.interactions, "BaseModel_", H_const, H_time_dependent, L_interaction)
 
     H_static = operators["identity"] if not H_const else sum(H_const)
     H_base = qt.QobjEvo([H_static] + H_time_dependent, args=global_args)
-
-    L_base_noise = _qubit_noise(experimental_params.noise_model, operators, n_qubits)
     hamiltonians = {'base': H_base}
-    lindblad_operators = {'base': L_interaction + L_base_noise}
+    lindblad_operators = {'base': list(L_interaction)}
 
-    # per-configuration extras on top of the base model
+    # per-configuration extras on top of the base model (including any configuration-specific noise
+    # the experimental parameters absorbed into the configuration's interactions)
     for configuration in experimental_params.configuration_set:
         const_terms, time_dependent_terms, lindblad_terms = [], [], []
-        for interaction in configuration.interactions:
-            const_H, timedep_H, L_term = _interaction_terms(
-                interaction, f"Conf:{configuration.name}_", operators, n_cavities, n_fields, overrides, global_args, dynamic_keys)
-            const_terms.extend(const_H)
-            time_dependent_terms.extend(timedep_H)
-            if L_term is not None:
-                lindblad_terms.append(L_term)
+        assemble(configuration.interactions, f"Conf:{configuration.name}_",
+                 const_terms, time_dependent_terms, lindblad_terms)
 
-        noise_terms = _qubit_noise(configuration.noise_model, operators, n_qubits) if configuration.noise_model is not None else L_base_noise
         conf_H_static = H_static.copy() if not const_terms else H_static + sum(const_terms)
         conf_H_time = H_time_dependent + time_dependent_terms
 
         hamiltonians[configuration.name] = qt.QobjEvo([conf_H_static] + conf_H_time, args=global_args)
-        lindblad_operators[configuration.name] = L_interaction + lindblad_terms + noise_terms
+        lindblad_operators[configuration.name] = L_interaction + lindblad_terms
 
     return hamiltonians, lindblad_operators, global_args
 
@@ -688,13 +692,15 @@ def _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
         list[InteractionTerm]: one per additive H/Lindblad term of the interaction.
     """
     int_type = interaction.interaction_type
-    system1, index1 = interaction.subsystem1
+    # subsystem-less (full-space) custom interactions carry no placement indices
+    if interaction.subsystem1 is not None:
+        system1, index1 = interaction.subsystem1
     # flag only; the pulse is jitted in _wrap_time_modulation (qutip-jax needs a jitted fn)
     has_mod = interaction.time_modulation is not None
     terms = []
 
-    def add(kind, operator, const=1.0, params=None, modulated=has_mod):
-        terms.append(InteractionTerm(kind, operator, complex(const), params or {}, modulated))
+    def add(kind, operator, const=1.0, params=None, modulated=has_mod, collapse_group=0):
+        terms.append(InteractionTerm(kind, operator, complex(const), params or {}, modulated, collapse_group))
 
     if int_type == InteractionType.DETUNING:
         if system1 == 'cavity':
@@ -717,6 +723,22 @@ def _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
 
     elif int_type == InteractionType.DISSIPATION:
         add('L', operators["a_c"][index1], params={'kappa': jnp.sqrt})
+
+    elif int_type == InteractionType.RELAXATION:
+        # energy decay |1> -> |0>: L = sqrt(rate) * sigma_minus
+        add('L', operators["sigma_minus"][index1], params={'relaxation': jnp.sqrt})
+
+    elif int_type == InteractionType.DEPHASING:
+        # pure dephasing: L = sqrt(rate) * sigma_z
+        add('L', operators["sigma_z"][index1], params={'dephasing': jnp.sqrt})
+
+    elif int_type == InteractionType.DEPOLARIZING:
+        # three independent channels L = sqrt(rate/3) * {sigma_x, sigma_y, sigma_z}; distinct
+        # collapse_group ids keep them as separate collapse operators (not one summed operator).
+        depol_const = complex(np.sqrt(1.0 / 3.0))
+        for group, pauli in enumerate(("sigma_x", "sigma_y", "sigma_z")):
+            add('L', operators[pauli][index1], const=depol_const,
+                params={'depolarizing': jnp.sqrt}, collapse_group=group)
 
     if interaction.subsystem2 is not None:
         system2, index2 = interaction.subsystem2
@@ -750,14 +772,18 @@ def _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
         add('H', operators[pauli][index1] * operators[pauli][index2], const=0.5, params={'chi': _ID})
 
     if int_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
-        # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
-        offsets = {'cavity': 0, 'field': n_cavities, 'qubit': n_cavities + n_fields}
-        positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
-        if interaction.subsystem2 is not None:
-            positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
-        # embed the custom matrix at those positions
         identities = list(operators["I_c"]) + list(operators["I_f"]) + list(operators["I_q"])
-        embedded = _embed_operator(interaction.custom_matrix, positions, identities)
+        if interaction.subsystem1 is None:
+            # full-space operator: used directly, only its per-subsystem dims are (re)assigned
+            embedded = _full_space_operator(interaction.custom_matrix, identities)
+        else:
+            # tensor positions of the subsystem(s) in canonical (cavity⊗field⊗qubits) order
+            offsets = {'cavity': 0, 'field': n_cavities, 'qubit': n_cavities + n_fields}
+            positions = [offsets[interaction.subsystem1[0]] + interaction.subsystem1[1]]
+            if interaction.subsystem2 is not None:
+                positions.append(offsets[interaction.subsystem2[0]] + interaction.subsystem2[1])
+            # embed the custom matrix at those positions
+            embedded = _embed_operator(interaction.custom_matrix, positions, identities)
         add('H' if int_type == InteractionType.CUSTOM_HAMILTONIAN else 'L', embedded)
 
     return terms
@@ -797,10 +823,11 @@ def _interaction_terms(interaction, prefix, operators, n_cavities, n_fields, ove
         global_args (dict[str, Any]): accumulator of resolved values by global key.
         dynamic_keys (set | None): global keys to promote into args-coefficients.
     Returns:
-        tuple: ``(const_H, timedep_H, L_term)`` where
+        tuple: ``(const_H, timedep_H, L_terms)`` where
           - const_H (list[qt.Qobj]): constant Hamiltonian terms.
           - timedep_H (list[[qt.Qobj, callable]]): ``[operator, coeff(t, **args)]`` pairs.
-          - L_term (qt.Qobj | qt.QobjEvo | None): the single Lindblad collapse operator.
+          - L_terms (list[qt.Qobj | qt.QobjEvo]): one collapse operator per ``collapse_group`` (usually
+            one; depolarizing yields three independent Pauli-channel operators).
     """
     # resolve local params to global keys; find which ones this sweep promotes
     merged, key_map = _map_to_global_args(interaction, prefix, overrides, global_args)
@@ -813,7 +840,10 @@ def _interaction_terms(interaction, prefix, operators, n_cavities, n_fields, ove
     # the interaction's pulse g(t), wrapped to read global args (None if not modulated)
     time_modulation = _wrap_time_modulation(interaction.time_modulation, key_map) if interaction.time_modulation is not None else None
 
-    const_H, timedep_H, L_const, L_timedep = [], [], [], []
+    # Lindblad terms are grouped by collapse_group: terms sharing a group id are summed into one
+    # collapse operator, terms with different ids become independent collapse operators.
+    const_H, timedep_H = [], []
+    l_groups: Dict[int, Dict[str, list]] = {}
     for term in _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
         # a fixed Qobj is used as-is; a structural-parameter operator is a builder(values)->Qobj
         # rebuilt from the resolved values (test Qobj, not callable(): Qobj defines __call__ too)
@@ -837,52 +867,58 @@ def _interaction_terms(interaction, prefix, operators, n_cavities, n_fields, ove
         if term.kind == 'H':
             (timedep_H if is_pair else const_H).append(part)
         else:
-            (L_timedep if is_pair else L_const).append(part)
+            group = l_groups.setdefault(term.collapse_group, {'const': [], 'timedep': []})
+            group['timedep' if is_pair else 'const'].append(part)
 
-    # qutip-jax bug guard: when ONE collapse operator SUMS two coefficient-bearing terms on DIFFERENT
-    # operators (c1*A + c2*B with A != B), qutip-jax drops the L†L cross term (A†B), so the master
-    # equation stops preserving trace and the solve blows up (trace -> large negative, metric -> inf).
-    # Coefficients MULTIPLIED into one term ([A, c1*c2]) are fine, as is a single coefficient term plus
-    # constant parts -- that is what baking gives. Every L contribution here is a distinct operator, so
-    # >1 coefficient term means the broken sum. classify_sweep_axis / collapse_unsafe_keys keep such
-    # parameters out of the promote lane; this is the last-line guard.
-    if len(L_timedep) > 1:
-        raise NotImplementedError(
-            f"{interaction._interaction_context()}: collapse operator would carry {len(L_timedep)} "
-            "coefficient terms (time-modulated and/or promoted). qutip-jax mishandles L†L for a "
-            "multi-coefficient collapse operator (trace is not preserved), so the offending "
-            "parameter(s) must be swept via the rebuild lane (baked), not promoted.")
-    # all 'L' pieces are ONE collapse operator: keep them in a single QobjEvo (or Qobj)
-    if not L_const and not L_timedep:
-        L_term = None
-    elif not L_timedep:
-        L_term = sum(L_const)
-    else:
-        L_term = qt.QobjEvo(([sum(L_const)] if L_const else []) + L_timedep, args=global_args)
-    return const_H, timedep_H, L_term
+    L_terms = []
+    for group_id in sorted(l_groups):
+        L_const, L_timedep = l_groups[group_id]['const'], l_groups[group_id]['timedep']
+        # qutip-jax bug guard: when ONE collapse operator SUMS two coefficient-bearing terms on DIFFERENT
+        # operators (c1*A + c2*B with A != B), qutip-jax drops the L†L cross term (A†B), so the master
+        # equation stops preserving trace and the solve blows up (trace -> large negative, metric -> inf).
+        # Coefficients MULTIPLIED into one term ([A, c1*c2]) are fine, as is a single coefficient term plus
+        # constant parts -- that is what baking gives. Every L contribution in a group is a distinct
+        # operator, so >1 coefficient term means the broken sum. classify_sweep_axis /
+        # collapse_unsafe_keys keep such parameters out of the promote lane; this is the last-line guard.
+        if len(L_timedep) > 1:
+            raise NotImplementedError(
+                f"{interaction._interaction_context()}: collapse operator would carry {len(L_timedep)} "
+                "coefficient terms (time-modulated and/or promoted). qutip-jax mishandles L†L for a "
+                "multi-coefficient collapse operator (trace is not preserved), so the offending "
+                "parameter(s) must be swept via the rebuild lane (baked), not promoted.")
+        # each group's 'L' pieces are ONE collapse operator: keep them in a single QobjEvo (or Qobj)
+        if not L_const and not L_timedep:
+            continue
+        elif not L_timedep:
+            L_terms.append(sum(L_const))
+        else:
+            L_terms.append(qt.QobjEvo(([sum(L_const)] if L_const else []) + L_timedep, args=global_args))
+    return const_H, timedep_H, L_terms
 
 
-def _qubit_noise(noise_model, operators, n_qubits):
-    """Flatten the per-qubit Lindblad noise operators for a noise model.
+def _full_space_operator(operator: qt.Qobj, identities: List[qt.Qobj]) -> qt.Qobj:
+    """Re-wrap a full composite-space operator with the canonical per-subsystem dims (no embedding).
+
+    Used for subsystem-less (full-space) custom interactions: the operator already acts on the whole
+    Hilbert space, so it is only given the structured per-subsystem dims (from ``identities``) under
+    the JAX backend so it composes cleanly with the other system operators.
 
     Args:
-        noise_model (NoiseModel): rates + optional custom collapse operators.
-        operators (dict): system operators (for the qubit Pauli/lowering operators).
-        n_qubits (int): number of qubits.
+        operator (qt.Qobj): full composite-space operator (its matrix size must equal ∏ subsystem dims).
+        identities (List[qt.Qobj]): identity per subsystem in canonical order (I_c + I_f + I_q).
     Returns:
-        list[qt.Qobj | qt.QobjEvo]: noise collapse operators for all qubits.
+        qt.Qobj: the same operator with per-subsystem dims metadata, JAX-backed.
     """
-    per_qubit = [build_qubit_noise_operators(
-        sigma_x=operators["sigma_x"][i], sigma_y=operators["sigma_y"][i],
-        sigma_z=operators["sigma_z"][i], sigma_minus=operators["sigma_minus"][i],
-        depolarizing_rate=noise_model.depolarizing[i],
-        dephasing_rate=noise_model.dephasing[i],
-        relaxation_rate=noise_model.relaxation[i],
-    ) for i in range(n_qubits)]
-    noise_operators: List[Union[qt.Qobj, qt.QobjEvo]] = [op for qubit in per_qubit for op in qubit]
-    if noise_model.custom_operators is not None:
-        noise_operators.extend(noise_model.custom_operators)
-    return noise_operators
+    legs = [identity.dims[0][0] for identity in identities]
+    expected_size = int(np.prod(legs))
+    mat = np.asarray(operator.full())
+    if mat.shape != (expected_size, expected_size):
+        raise ValueError(
+            f"full-space custom operator has matrix size {mat.shape} but the composite space "
+            f"requires a ({expected_size}, {expected_size}) operator (per-subsystem dims {legs})"
+        )
+    with qt.CoreOptions(default_dtype="jax"):
+        return qt.Qobj(mat, dims=[legs, list(legs)])
 
 
 def _embed_operator(

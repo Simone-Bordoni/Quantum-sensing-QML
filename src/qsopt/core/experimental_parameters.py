@@ -81,9 +81,24 @@ class InteractionType(Enum):
     XX = "sx-sx"  # σx ⊗ σx interaction
     YY = "sy-sy"  # σy ⊗ σy interaction
 
+    # single-qubit Lindblad noise channels (a NoiseModel is expanded into these before build,
+    # so their rates are swept exactly like any other interaction parameter)
+    DEPOLARIZING = "depolarizing"  # √(rate/3) σx, √(rate/3) σy, √(rate/3) σz (three collapse operators)
+    DEPHASING = "dephasing"        # √rate σz
+    RELAXATION = "relaxation"      # √rate σ₋
+
     # custom interactions
     CUSTOM_HAMILTONIAN= "custom_hamiltonian"  # Custom coherent interaction defined by user-provided matrix
     CUSTOM_LINDBLAD = "custom_lindblad"  # Custom dissipation defined by user-provided Lindblad operator
+
+
+# Single-qubit Lindblad noise channels. A NoiseModel is expanded into interactions of these types at
+# ExperimentalParameters init, so noise is stored and handled as ordinary interactions. They are the
+# only types a configuration may re-declare over the base model (a per-channel override, see
+# _validate_experimental_parameters and build_hamiltonians).
+NOISE_INTERACTION_TYPES = frozenset({
+    InteractionType.DEPOLARIZING, InteractionType.DEPHASING, InteractionType.RELAXATION,
+})
 
 
 class Interaction:
@@ -157,7 +172,7 @@ class Interaction:
     def __init__(
         self,
         interaction_type: InteractionType,
-        subsystem1: Tuple[str, int],
+        subsystem1: Optional[Tuple[str, int]] = None,
         subsystem2: Optional[Tuple[str, int]] = None,
         parameters: Optional[Union[Dict[str, Any], int, float, complex]] = 1.0,
         time_modulation: Optional[Callable[[float, Dict[str, Any]], float]] = None,
@@ -170,6 +185,10 @@ class Interaction:
         self.parameters = parameters
         self.time_modulation = time_modulation
         self.custom_matrix = custom_matrix
+        # True for interactions synthesized from a NoiseModel (see NoiseModel.to_interactions). Such
+        # interactions are owned by ExperimentalParameters._absorb_noise_into_interactions, which
+        # strips and regenerates them, so re-distributing noise (e.g. on copy) never doubles it.
+        self.generated_noise = False
 
         self.__post_init__()
 
@@ -180,74 +199,89 @@ class Interaction:
                 "interaction_type must be an InteractionType enum value"
             )
 
-        # Validate subsystem specifications before using them in diagnostics
-        if not isinstance(self.subsystem1, tuple) or len(self.subsystem1) != 2:
-            raise ValueError(
-                f"subsystem1 must be a tuple of (type, index), but got {self.subsystem1}"
-            )
-        if self.subsystem1[0] is None or self.subsystem1[1] is None:
-            raise ValueError(
-                f"subsystem1 must be a tuple of (type, index), but got {self.subsystem1}"
-            )
-        if self.subsystem2 is not None:
-            if not isinstance(self.subsystem2, tuple) or len(self.subsystem2) != 2:
+        # A custom interaction may omit its subsystem (subsystem1=None): the custom_matrix is then
+        # taken to act on the full composite space and is used directly, without embedding. Its size
+        # is checked against the total Hilbert dimension where that is known (PhysicalModel / build).
+        # Only custom types may be subsystem-less; every other type is placed on specific subsystems.
+        custom_types = {InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD}
+        if self.subsystem1 is None:
+            if self.interaction_type not in custom_types:
                 raise ValueError(
-                    f"subsystem2 must be a tuple of (type, index) if provided, but got {self.subsystem2}"
+                    f"subsystem1 is required for {self.interaction_type.value} interactions"
                 )
-            if self.subsystem2[0] is None or self.subsystem2[1] is None:
+            if self.subsystem2 is not None:
                 raise ValueError(
-                    f"subsystem2 must be a tuple of (type, index) if provided, but got {self.subsystem2}"
+                    "a full-space custom interaction (subsystem1=None) cannot also specify subsystem2"
                 )
-
-        if not isinstance(self.subsystem1[1], int) or (
-            self.subsystem2 is not None and not isinstance(self.subsystem2[1], int)
-        ):
-            raise TypeError(
-                "Subsystem indices must be integers"
-            )
-        if not isinstance(self.subsystem1[0], str) or (
-            self.subsystem2 is not None and not isinstance(self.subsystem2[0], str)
-        ):
-            raise TypeError(
-                "Subsystem types must be strings like 'qubit', 'cavity', or 'field'"
-            )
-        if self.subsystem1 == self.subsystem2:
-            raise ValueError("subsystem1 and subsystem2 must refer to different subsystems")
-        if self.subsystem1[1] < 0 or (self.subsystem2 is not None and self.subsystem2[1] < 0):
-            raise ValueError("Subsystem indices must be non-negative")
-        if not (
-            self.subsystem1[0] in ['qubit', 'cavity', 'field']
-            and (self.subsystem2 is None or self.subsystem2[0] in ['qubit', 'cavity', 'field'])
-        ):
-            raise ValueError("Subsystem types must be 'qubit', 'cavity', or 'field'")
-        
-        # Ensure canonical ordering (sort by type and then index)
-        if self.subsystem2 is not None and (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
-            self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
-            
-            # The matrix of a two-subsystem custom interaction is given with its tensor
-            # legs in the user's (subsystem1, subsystem2) order. Now that the subsystems
-            # have been swapped into canonical order, permute the matrix legs to match so
-            # the stored (subsystem1, subsystem2) order and the matrix stay aligned. This
-            # needs structured per-subsystem dims [[d1, d2], [d1, d2]]; a flat matrix
-            # cannot be split into its two legs, so it must be supplied with structured dims.
-            if isinstance(self.custom_matrix, qt.Qobj) and self.interaction_type in (
-                InteractionType.CUSTOM_HAMILTONIAN,
-                InteractionType.CUSTOM_LINDBLAD,
-            ):
-                if len(self.custom_matrix.dims[0]) == 2:
-                    self.custom_matrix = self.custom_matrix.permute([1, 0])
-                else:
+        else:
+            # Validate subsystem specifications before using them in diagnostics
+            if not isinstance(self.subsystem1, tuple) or len(self.subsystem1) != 2:
+                raise ValueError(
+                    f"subsystem1 must be a tuple of (type, index), but got {self.subsystem1}"
+                )
+            if self.subsystem1[0] is None or self.subsystem1[1] is None:
+                raise ValueError(
+                    f"subsystem1 must be a tuple of (type, index), but got {self.subsystem1}"
+                )
+            if self.subsystem2 is not None:
+                if not isinstance(self.subsystem2, tuple) or len(self.subsystem2) != 2:
                     raise ValueError(
-                        self._with_context(
-                            "The interaction's subsystems were reordered into canonical order "
-                            "(cavity < field < qubit, then by index), so the custom_matrix tensor "
-                            "legs must be permuted to match. This requires the matrix to carry "
-                            "structured per-subsystem dims [[d1, d2], [d1, d2]] (in your original "
-                            "subsystem1, subsystem2 order). Provide it with structured dims, or pass "
-                            "the subsystems already in canonical order."
-                        )
+                        f"subsystem2 must be a tuple of (type, index) if provided, but got {self.subsystem2}"
                     )
+                if self.subsystem2[0] is None or self.subsystem2[1] is None:
+                    raise ValueError(
+                        f"subsystem2 must be a tuple of (type, index) if provided, but got {self.subsystem2}"
+                    )
+
+            if not isinstance(self.subsystem1[1], int) or (
+                self.subsystem2 is not None and not isinstance(self.subsystem2[1], int)
+            ):
+                raise TypeError(
+                    "Subsystem indices must be integers"
+                )
+            if not isinstance(self.subsystem1[0], str) or (
+                self.subsystem2 is not None and not isinstance(self.subsystem2[0], str)
+            ):
+                raise TypeError(
+                    "Subsystem types must be strings like 'qubit', 'cavity', or 'field'"
+                )
+            if self.subsystem1 == self.subsystem2:
+                raise ValueError("subsystem1 and subsystem2 must refer to different subsystems")
+            if self.subsystem1[1] < 0 or (self.subsystem2 is not None and self.subsystem2[1] < 0):
+                raise ValueError("Subsystem indices must be non-negative")
+            if not (
+                self.subsystem1[0] in ['qubit', 'cavity', 'field']
+                and (self.subsystem2 is None or self.subsystem2[0] in ['qubit', 'cavity', 'field'])
+            ):
+                raise ValueError("Subsystem types must be 'qubit', 'cavity', or 'field'")
+
+            # Ensure canonical ordering (sort by type and then index)
+            if self.subsystem2 is not None and (self.subsystem1[0], self.subsystem1[1]) > (self.subsystem2[0], self.subsystem2[1]):
+                self.subsystem1, self.subsystem2 = self.subsystem2, self.subsystem1
+
+                # The matrix of a two-subsystem custom interaction is given with its tensor
+                # legs in the user's (subsystem1, subsystem2) order. Now that the subsystems
+                # have been swapped into canonical order, permute the matrix legs to match so
+                # the stored (subsystem1, subsystem2) order and the matrix stay aligned. This
+                # needs structured per-subsystem dims [[d1, d2], [d1, d2]]; a flat matrix
+                # cannot be split into its two legs, so it must be supplied with structured dims.
+                if isinstance(self.custom_matrix, qt.Qobj) and self.interaction_type in (
+                    InteractionType.CUSTOM_HAMILTONIAN,
+                    InteractionType.CUSTOM_LINDBLAD,
+                ):
+                    if len(self.custom_matrix.dims[0]) == 2:
+                        self.custom_matrix = self.custom_matrix.permute([1, 0])
+                    else:
+                        raise ValueError(
+                            self._with_context(
+                                "The interaction's subsystems were reordered into canonical order "
+                                "(cavity < field < qubit, then by index), so the custom_matrix tensor "
+                                "legs must be permuted to match. This requires the matrix to carry "
+                                "structured per-subsystem dims [[d1, d2], [d1, d2]] (in your original "
+                                "subsystem1, subsystem2 order). Provide it with structured dims, or pass "
+                                "the subsystems already in canonical order."
+                            )
+                        )
 
         # Validate time modulation function
         if self.time_modulation is not None and not callable(self.time_modulation):
@@ -325,6 +359,16 @@ class Interaction:
         
         elif self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
             self._validate_qubit_qubit()
+
+        elif self.interaction_type in {InteractionType.DEPOLARIZING, InteractionType.DEPHASING, InteractionType.RELAXATION}:
+            if self.subsystem2 is not None:
+                raise ValueError(
+                    self._with_context(
+                        f"Qubit-noise interaction is defined for a single qubit subsystem, "
+                        f"but subsystem2 was provided: {self.subsystem2}"
+                    )
+                )
+            self._validate_qubit_noise()
 
         elif self.interaction_type == InteractionType.CUSTOM_HAMILTONIAN:
             self._validate_custom_hamiltonian()
@@ -707,7 +751,56 @@ class Interaction:
                 )
             
         self.parameters["chi"] = float(self.parameters["chi"])
-    
+
+    def _validate_qubit_noise(self):
+        """Validate parameters for a single-qubit Lindblad noise channel.
+
+        The rate key matches the interaction type ('depolarizing', 'dephasing' or 'relaxation');
+        a bare numeric value is wrapped into that key.
+        """
+        rate_key = self.interaction_type.value  # 'depolarizing' | 'dephasing' | 'relaxation'
+        if self.subsystem1[0] != 'qubit':
+            raise ValueError(
+                self._with_context(
+                    f"{rate_key} noise interaction must be on a qubit subsystem, but got {self.subsystem1}"
+                )
+            )
+        elif isinstance(self.parameters, (int, float)):
+            self.parameters = {rate_key: self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    f"Parameters for {rate_key} noise interaction must be a float or a dict with '{rate_key}' key"
+                )
+            )
+        elif rate_key not in self.parameters:
+            raise ValueError(
+                self._with_context(
+                    f"Parameters for {rate_key} noise interaction must include '{rate_key}' key for the noise rate"
+                )
+            )
+        elif not isinstance(self.parameters[rate_key], (int, float)):
+            raise TypeError(
+                self._with_context(f"{rate_key} noise rate must be a numeric value, float or int")
+            )
+
+        self.parameters[rate_key] = float(self.parameters[rate_key])
+
+        if self.parameters[rate_key] < 0:
+            raise ValueError(
+                self._with_context(
+                    f"{rate_key} noise rate must be >= 0, got {self.parameters[rate_key]}"
+                )
+            )
+        elif self.parameters[rate_key] == 0:
+            warnings.warn(
+                self._with_context(
+                    f"{rate_key} noise rate is zero. This means no {rate_key} noise is applied, "
+                    "which may be intentional but should be double-checked."
+                ),
+                UserWarning,
+            )
+
     def _validate_custom_hamiltonian(self):
         """Validate parameters for custom Hamiltonian interactions."""
         if self.custom_matrix is None:
@@ -779,7 +872,7 @@ class Interaction:
         Returns:
             - ``copy`` (Interaction): New Interaction with deep-copied ``parameters`` and ``custom_matrix``.
         """
-        return Interaction(
+        new = Interaction(
             subsystem1=self.subsystem1,
             subsystem2=self.subsystem2,
             interaction_type=self.interaction_type,
@@ -787,17 +880,36 @@ class Interaction:
             time_modulation=self.time_modulation,
             custom_matrix=copy.deepcopy(self.custom_matrix) if self.custom_matrix is not None else None,
         )
+        new.generated_noise = self.generated_noise  # preserve so noise stays copy-idempotent
+        return new
 
-    def _interaction_context(self) -> str:
+    def _interaction_context(self, include_parameters: bool = False) -> str:
         """Return a compact interaction label like 'dispersive(cavity1,qubit3)'.
 
+        A subsystem-less (full-space) custom interaction is labelled '<type>(full)'.
+
+        Args:
+            ``include_parameters`` (bool): if True, append the parameter values and whether time
+                modulation is on, e.g. "dispersive(cavity1,qubit3): {'chi': 0.5}, time_modulation:
+                off" (default: False).
+
         Returns:
-            - ``label`` (str): Interaction type and its subsystem(s).
+            - ``label`` (str): Interaction type and its subsystem(s), optionally with parameters
+              and time-modulation state.
         """
-        parts = [f"{self.subsystem1[0]}{self.subsystem1[1]}"]
-        if self.subsystem2 is not None:
-            parts.append(f"{self.subsystem2[0]}{self.subsystem2[1]}")
-        return f"{self.interaction_type.value}({','.join(parts)})"
+        if self.subsystem1 is None:
+            label = f"{self.interaction_type.value}(full)"
+        else:
+            parts = [f"{self.subsystem1[0]}{self.subsystem1[1]}"]
+            if self.subsystem2 is not None:
+                parts.append(f"{self.subsystem2[0]}{self.subsystem2[1]}")
+            label = f"{self.interaction_type.value}({','.join(parts)})"
+
+        if include_parameters:
+            if self.parameters:
+                label += f": {self.parameters}"
+            label += f", time_modulation: {'on' if self.time_modulation is not None else 'off'}"
+        return label
 
     def _with_context(self, message: str) -> str:
         """Prefix a diagnostic message with the interaction context label.
@@ -839,8 +951,6 @@ class PhysicalModel:
     field_levels: int = 2  # Field mode truncation level
     qubit_levels: int = 2  # Qubit truncation level
     interactions: Optional[List[Interaction]] = None  # Subsystems' interactions
-    # Simulation start. None -> one interval before the first measurement (resolved in ExperimentalParameters).
-    t_simulation_start: Optional[float] = None
 
     def __post_init__(self):
         """Convert levels to list format if necessary and set default interactions."""
@@ -878,27 +988,38 @@ class PhysicalModel:
                     )
 
             if interaction.interaction_type in (InteractionType.CUSTOM_HAMILTONIAN, InteractionType.CUSTOM_LINDBLAD):
-                # The custom operator acts only on the involved subsystem(s). We validate
-                # its overall matrix size against the product of those subsystem
-                # dimensions; the per-subsystem dims metadata and the embedding into the
-                # full composite space are (re)assigned later by quantum_utils.embed_operator.
-                #
-                # Interaction.__post_init__ has already permuted the matrix legs into the
-                # stored (canonical) (subsystem1, subsystem2) order, so embed_operator can
-                # place them at ascending composite positions.
-                subsystem_dims = [self._subsystem_dimension(interaction.subsystem1)]
-                if interaction.subsystem2 is not None:
-                    subsystem_dims.append(self._subsystem_dimension(interaction.subsystem2))
-                expected_size = math.prod(subsystem_dims)
-
                 kind = "Hamiltonian" if interaction.interaction_type == InteractionType.CUSTOM_HAMILTONIAN else "Lindblad"
                 shape = tuple(interaction.custom_matrix.shape)
-                if shape != (expected_size, expected_size):
-                    raise ValueError(
-                        f"Custom {kind} matrix for {interaction._interaction_context()} has size {shape}, "
-                        f"but the involved subsystem(s) require a ({expected_size}, {expected_size}) operator "
-                        f"(per-subsystem dimensions {subsystem_dims})."
-                    )
+                if interaction.subsystem1 is None:
+                    # Full-space custom operator: its size must match the total composite Hilbert
+                    # dimension. It is used directly (no embedding); the builder only (re)assigns
+                    # the per-subsystem dims metadata.
+                    total = math.prod(list(self.cavity_levels) + list(self.field_levels) + list(self.qubit_levels))
+                    if shape != (total, total):
+                        raise ValueError(
+                            f"Full-space custom {kind} matrix for {interaction._interaction_context()} has size {shape}, "
+                            f"but the full composite space requires a ({total}, {total}) operator."
+                        )
+                else:
+                    # The custom operator acts only on the involved subsystem(s). We validate
+                    # its overall matrix size against the product of those subsystem
+                    # dimensions; the per-subsystem dims metadata and the embedding into the
+                    # full composite space are (re)assigned later by quantum_utils.embed_operator.
+                    #
+                    # Interaction.__post_init__ has already permuted the matrix legs into the
+                    # stored (canonical) (subsystem1, subsystem2) order, so embed_operator can
+                    # place them at ascending composite positions.
+                    subsystem_dims = [self._subsystem_dimension(interaction.subsystem1)]
+                    if interaction.subsystem2 is not None:
+                        subsystem_dims.append(self._subsystem_dimension(interaction.subsystem2))
+                    expected_size = math.prod(subsystem_dims)
+
+                    if shape != (expected_size, expected_size):
+                        raise ValueError(
+                            f"Custom {kind} matrix for {interaction._interaction_context()} has size {shape}, "
+                            f"but the involved subsystem(s) require a ({expected_size}, {expected_size}) operator "
+                            f"(per-subsystem dimensions {subsystem_dims})."
+                        )
                     
 
         
@@ -1018,42 +1139,47 @@ class PhysicalModel:
 
 
 @dataclass
-class MeasurementProtocol:
+class TimeProtocol:
     """
-    Measurement protocol configuration.
+    Time protocol configuration: simulation start and measurement timing.
 
     Two modes of operation:
     1. Mode A (explicit): give ``measurement_times`` (the measured times only; the unmeasured
-       simulation start is resolved separately as t_simulation_start).
-    2. Mode B (interval): give ``n_measurements`` and ``time_interval``.
+       simulation start is ``t_simulation_start``).
+    2. Mode B (interval): give ``n_measurements`` and ``time_interval`` (measurements run from
+       ``t_simulation_start``).
 
     All time parameters are stored and used as absolute times (no normalization).
 
     Attributes:
+        t_simulation_start: First, unmeasured, simulation timestamp (absolute time). Required.
         measurement_times: Mode A explicit list of measured times (absolute, ascending).
         n_measurements: Mode B number of measurements.
         time_interval: Mode B spacing between measurements (absolute time).
-        max_measurements_offset: Collective timing shift uniform(-Δt, 0) applied to all measurements
-                 (Δt = time_interval, else the first measurement gap). bool, or a callable sampled per
-                 realization. False disables it.
+        random_measurements_offset: Collective per-realization timing shift added to all measurements.
+                 True: uniform(-Δt, 0) with Δt = time_interval (interval mode only; raises with explicit
+                 measurement_times, where the interval is ill-defined). A positive number w: uniform(-w, 0).
+                 A callable f() -> float: custom shift sampled once per realization. False disables it.
         per_measurement_jitter: Independent per-measurement timing jitter: a Gaussian std (float) or a
                  sampler callable f() / f(t). None disables it.
         window_start: Start of the measurement window for the double-sigmoid weight (absolute time).
                      Must be given together with window_end (or both omitted for uniform weights).
         window_end: End of the measurement window (absolute time, must be > window_start).
         window_slope: Slope of the sigmoid edges; defaults to 30.0 / (window_end - window_start).
-        noisy_simulation_start: applies the noise also to the simulation start
+        noisy_simulation_start: apply the timing noise (offset + jitter) also to the simulation start.
+                 On by default.
     """
 
+    t_simulation_start: float                              # simulation start (required, absolute time)
     measurement_times: Optional[List[float]] = None        # mode A: explicit times
     n_measurements: Optional[int] = None                   # mode B: count ...
     time_interval: Optional[float] = None                  # ... and spacing
-    max_measurements_offset: bool = False                  # collective shift uniform(-Δt, 0) of all measurements
+    random_measurements_offset: Union[bool, int, float, Callable] = False  # True: uniform(-Δt, 0); number w: uniform(-w, 0); f() -> float
     per_measurement_jitter: Optional[Union[Callable, float]] = None  # Gaussian std (float) or sampler f() / f(t)
     window_start: Optional[float] = None
     window_end: Optional[float] = None
     window_slope: Optional[float] = None
-    noisy_simulation_start: bool = False
+    noisy_simulation_start: bool = True
 
     def __post_init__(self):
         """Validate the measurement-time spec (mode A or B), uncertainty and window settings."""
@@ -1073,6 +1199,30 @@ class MeasurementProtocol:
                 raise ValueError("n_measurements must be >= 1")
             if self.time_interval <= 0:
                 raise ValueError("time_interval must be positive")
+
+        # Collective offset: bool, a positive width, or a callable f() -> float. True needs a
+        # well-defined interval, so it is only allowed in interval mode.
+        offset = self.random_measurements_offset
+        if offset is False or offset is None:
+            pass
+        elif offset is True:
+            if explicit:
+                raise ValueError("random_measurements_offset=True requires interval mode (n_measurements + "
+                                 "time_interval); with explicit measurement_times give a width or a callable")
+        elif callable(offset):
+            if len(inspect.signature(offset).parameters) != 0:
+                raise TypeError("random_measurements_offset callable must take no argument (f())")
+            try:
+                float(offset())
+            except Exception as e:
+                raise TypeError("random_measurements_offset callable must be callable as f() and return a float") from e
+        elif isinstance(offset, (int, float)):
+            if offset <= 0:
+                raise ValueError("random_measurements_offset width must be positive")
+            self.random_measurements_offset = float(offset)
+        else:
+            raise TypeError("random_measurements_offset must be a bool, a positive number (distribution "
+                            "width), or a callable f() -> float")
 
         jitter = self.per_measurement_jitter
         if jitter is not None:
@@ -1142,6 +1292,14 @@ class MeasurementProtocol:
         """
         return self._jitter_time_dependent
 
+    def copy(self) -> "TimeProtocol":
+        """Return an independent copy (the mutable measurement-time list is deep-copied).
+
+        Returns:
+            - ``protocol`` (TimeProtocol): New instance with the same configuration.
+        """
+        return copy.deepcopy(self)
+
     @property
     def resolved_window_slope(self) -> Optional[float]:
         """Slope of the double-sigmoid window: ``window_slope`` if set, else auto from width.
@@ -1174,17 +1332,6 @@ class MeasurementProtocol:
         a, b, s = self.window_start, self.window_end, self.resolved_window_slope
         return 1.0 / (1.0 + jnp.exp(-s * (t - a))) * 1.0 / (1.0 + jnp.exp(s * (t - b)))
 
-    def collective_offset_width(self) -> float:
-        """Width Δt of the collective shift: ``time_interval`` (mode B), else the first measurement gap.
-
-        Returns:
-            - ``width`` (float): Δt used for the collective offset uniform(-Δt, 0).
-        """
-        if self.time_interval is not None:
-            return float(self.time_interval)
-        t = self.measurement_times
-        return float(t[1] - t[0]) if t is not None and len(t) >= 2 else 0.0
-
     def sample_jitter(self, batch_size: int, times: np.ndarray,
                       shift: Optional[np.ndarray] = None) -> np.ndarray:
         """Sample per-measurement timing offsets from ``per_measurement_jitter``.
@@ -1209,6 +1356,194 @@ class MeasurementProtocol:
         """
         shift = np.zeros(batch_size) if shift is None else np.asarray(shift, dtype=float)
         return self._jitter_sampler(batch_size, times, shift)
+
+    def cap_jitter(self, jit, interval: Optional[float] = None, xp=np):
+        """Clamp per-measurement jitter to ±interval/2 so the measurement train stays ordered.
+
+        Interval mode only: a jitter larger than half the spacing could push a measurement past its
+        neighbour, giving non-monotonic timestamps the ODE solver rejects. Clamping each offset to just
+        inside ±interval/2 keeps the train strictly increasing (the tiny 1e-6 shave stops neighbours
+        clipped to opposite bounds from landing on the exact same time). Explicit mode (no single
+        interval) is returned unchanged.
+
+        Args:
+            ``jit`` (array): Jitter offsets to clamp.
+            ``interval`` (Optional[float]): Spacing to cap against; defaults to ``time_interval``.
+            ``xp``: Array module (np or jnp).
+
+        Returns:
+            - ``jit`` (array): Clamped jitter (unchanged in explicit mode).
+        """
+        if self.time_interval is None:
+            return jit
+        half = 0.5 * (1.0 - 1e-6) * (float(self.time_interval) if interval is None else interval)
+        return xp.clip(jit, -half, half)
+
+    def sample_collective_offset(self, batch_size: int) -> Optional[np.ndarray]:
+        """Draw the per-realization collective time shift, or None when disabled.
+
+        Dispatches on ``random_measurements_offset``: True -> uniform(-time_interval, 0), tracking the
+        current interval spacing; a positive number w -> uniform(-w, 0) with a fixed absolute width; a
+        callable f() -> float sampled once per realization. False/None returns None.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+
+        Returns:
+            - ``shift`` (Optional[np.ndarray]): Shape (``batch_size``,) offsets, or None if disabled.
+        """
+        off = self.random_measurements_offset
+        if off is False or off is None:
+            return None
+        if callable(off):
+            return np.array([float(off()) for _ in range(batch_size)])
+        width = float(self.time_interval) if off is True else float(off)  # True tracks time_interval; numeric fixed
+        return np.random.uniform(-width, 0.0, size=(batch_size,))
+
+    def resolve_measurement_times(self) -> np.ndarray:
+        """Resolve the measured-only times (excludes the unmeasured ``t_simulation_start``).
+
+        Mode A returns the explicit ``measurement_times``; mode B generates
+        ``t_simulation_start`` + k*``time_interval`` for k=1..``n_measurements``.
+
+        Returns:
+            - ``times`` (np.ndarray): 1-D array of shape (M,) of absolute measured times.
+        """
+        t_start = float(self.t_simulation_start)
+        if self.measurement_times is not None:      # mode A
+            times = [float(t) for t in self.measurement_times]
+        else:                                        # mode B
+            times = [t_start + k * self.time_interval for k in range(1, self.n_measurements + 1)]
+        if times and times[0] < t_start:
+            raise ValueError(f"first measurement ({times[0]:.3g}) is before t_simulation_start ({t_start:.3g})")
+        return np.array(times)
+
+    @property
+    def timestamps(self) -> np.ndarray:
+        """Full solver sequence [``t_simulation_start``, *``measurement_times``] (start is unmeasured).
+
+        Returns:
+            - ``timestamps`` (np.ndarray): 1-D array of shape (M+1,).
+        """
+        return np.concatenate([[float(self.t_simulation_start)], self.resolve_measurement_times()])
+
+    def _before_start_correction(self, base_v, shift, meas_jit, start_jit, t0, interval, eps, xp=np):
+        """Before-start guard: bump measurements so none precede the (noisy) start; round onto the grid.
+
+        Split out so the sweep can recompute it at a swept interval (the collective offset scales, so the
+        guard must be re-derived rather than reused). ``xp`` is numpy or jax.numpy.
+
+        Args:
+            ``base_v`` (array): Measured times (length M) for the target interval.
+            ``shift`` (array): Per-realization collective offset (batch,), already scaled.
+            ``meas_jit`` (array): Per-measurement jitter (batch, M).
+            ``start_jit`` (array): Start jitter (batch,).
+            ``t0`` (float): Simulation start time.
+            ``interval`` (float): Current measurement spacing (for grid rounding).
+            ``eps`` (float): Small lower-bound tolerance.
+            ``xp``: Array module (np or jnp).
+
+        Returns:
+            - ``correction`` (array): Shape (batch,) forward bump for the measured columns.
+        """
+        start_noise = (shift + start_jit) if self.noisy_simulation_start else xp.zeros_like(shift)
+        out = shift[:, None] + meas_jit
+        corr = xp.maximum(0.0, (t0 + start_noise) + eps - xp.min(base_v[None, :] + out, axis=1))
+        if self.time_interval is not None:
+            corr = xp.ceil(corr / interval) * interval
+        return corr
+
+    def sample_noise_components(self, batch_size: int = 1, offset: bool = True, jitter: bool = True):
+        """Draw the timing-noise pieces: the collective shift, the before-start correction and the jitter.
+
+        These are the three additive components :meth:`combine_noise` sums into the (batch, M+1)
+        uncertainty. The jitter vector is (batch, M+1) with the start jitter in column 0. The correction
+        is computed at this protocol's own interval.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+            ``offset`` (bool): Include the collective offset (see ``random_measurements_offset``).
+            ``jitter`` (bool): Include per-measurement jitter from ``per_measurement_jitter``.
+
+        Returns:
+            - ``shift`` (np.ndarray): Collective offset (batch,), zeros when disabled.
+            - ``correction`` (np.ndarray): Before-start bump (batch,).
+            - ``jitter_vec`` (np.ndarray): Per-timestamp jitter (batch, M+1), column 0 is the start jitter.
+        """
+        base = self.resolve_measurement_times()
+        t0 = float(self.t_simulation_start)
+        shift = self.sample_collective_offset(batch_size) if offset else None
+        shift = np.zeros(batch_size) if shift is None else shift
+        # shift is folded into the time argument so a time-dependent f(t) jitter sees the shifted time.
+        # Cap jitter at ±interval/2 (interval mode) so measurements keep their order.
+        meas_jit = self.cap_jitter(self.sample_jitter(batch_size, base, shift)) if jitter \
+            else np.zeros((batch_size, base.size))
+        start_jit = (self.cap_jitter(self.sample_jitter(batch_size, np.array([t0]), shift)[:, 0])
+                     if (jitter and self.noisy_simulation_start) else np.zeros(batch_size))
+        # eps is a small guard scaled to the measurement grid (interval spacing, else the first gap).
+        if self.time_interval is not None:
+            interval = float(self.time_interval)
+            eps = interval * 1e-3
+        else:
+            interval = 0.0
+            eps = ((float(base[1] - base[0]) if base.size >= 2 else 0.0) or 1.0) * 1e-3
+        correction = self._before_start_correction(base, shift, meas_jit, start_jit, t0, interval, eps)
+        jitter_vec = np.concatenate([start_jit[:, None], meas_jit], axis=1)
+        return shift, correction, jitter_vec
+
+    def combine_noise(self, shift, correction, jitter_vec, xp=np) -> np.ndarray:
+        """Combine the shift, correction and jitter into the (batch, M+1) timing uncertainty.
+
+        Column 0 is the start offset (the shift is applied there only when ``noisy_simulation_start``);
+        columns 1..M add shift + jitter + correction. ``xp`` is numpy or jax.numpy.
+
+        Args:
+            ``shift`` (array): Collective offset (batch,).
+            ``correction`` (array): Before-start bump (batch,).
+            ``jitter_vec`` (array): Per-timestamp jitter (batch, M+1), column 0 is the start jitter.
+            ``xp``: Array module (np or jnp).
+
+        Returns:
+            - ``uncertainties`` (array): Shape (batch, M+1) timing offsets.
+        """
+        start_shift = shift if self.noisy_simulation_start else xp.zeros_like(shift)
+        start_col = start_shift + jitter_vec[:, 0]
+        meas = shift[:, None] + jitter_vec[:, 1:] + correction[:, None]
+        return xp.concatenate([start_col[:, None], meas], axis=1)
+
+    def get_measurement_uncertainties(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
+        """Sample stochastic timing uncertainties to add to ``timestamps``.
+
+        Returns a (``batch_size``, M+1) array: column 0 is the start-time offset (zero unless
+        ``noisy_simulation_start`` is True), columns 1..M are per-measurement offsets. Thin wrapper over
+        :meth:`sample_noise_components` + :meth:`combine_noise`.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+            ``offset`` (bool): Apply the collective offset (see ``random_measurements_offset``).
+            ``jitter`` (bool): Apply per-measurement jitter from ``per_measurement_jitter``.
+
+        Returns:
+            - ``uncertainties`` (np.ndarray): Shape (``batch_size``, M+1) timing offsets.
+        """
+        shift, correction, jitter_vec = self.sample_noise_components(batch_size, offset, jitter)
+        return self.combine_noise(shift, correction, jitter_vec)
+
+    def get_timestamps(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
+        """Return ``timestamps`` with stochastic uncertainties applied.
+
+        Shape (``batch_size``, M+1). ``offset=jitter=False`` gives deterministic timestamps.
+        Uncertainty (including before-start guard) comes from ``get_measurement_uncertainties``.
+
+        Args:
+            ``batch_size`` (int): Number of independent realizations.
+            ``offset`` (bool): Apply the collective offset.
+            ``jitter`` (bool): Apply per-measurement jitter.
+
+        Returns:
+            - ``timestamps`` (np.ndarray): Shape (``batch_size``, M+1).
+        """
+        return self.timestamps[None, :] + self.get_measurement_uncertainties(batch_size, offset, jitter)
 
 
 @dataclass
@@ -1323,6 +1658,46 @@ class NoiseModel:
                     raise ValueError(f"{attr} rate for qubit {i} must be >= 0, got {rate}")
 
             setattr(self, attr, values)
+
+    def to_interactions(self, n_qubits: int) -> List["Interaction"]:
+        """Expand the noise model into a list of interactions, built like any other interaction.
+
+        Each non-zero per-qubit rate becomes an :class:`Interaction` of the matching noise type on
+        that qubit (rate keys look like ``...<type>(qubitI)__<type>``), so noise rates are assembled
+        and swept through the exact same pipeline as every other interaction parameter. Zero rates are
+        skipped (no collapse operator and nothing to sweep). Each custom collapse operator becomes a
+        subsystem-less (full-space) ``custom_lindblad`` interaction, so they too flow through the
+        interaction pipeline instead of a separate noise route.
+
+        Args:
+            ``n_qubits`` (int): Number of qubits in the system.
+
+        Returns:
+            - ``interactions`` (List[Interaction]): One interaction per non-zero rate, plus one
+              full-space ``custom_lindblad`` per custom collapse operator.
+        """
+        specs = [
+            ("depolarizing", InteractionType.DEPOLARIZING),
+            ("dephasing", InteractionType.DEPHASING),
+            ("relaxation", InteractionType.RELAXATION),
+        ]
+        interactions: List["Interaction"] = []
+        for attr, interaction_type in specs:
+            rates = getattr(self, attr)
+            rate_list = rates if isinstance(rates, list) else [rates] * n_qubits
+            for i in range(n_qubits):
+                rate = rate_list[i] if i < len(rate_list) else 0.0
+                if rate != 0.0:
+                    interactions.append(
+                        Interaction(interaction_type, ("qubit", i), parameters={attr: float(rate)})
+                    )
+        for operator in (self.custom_operators or []):
+            interactions.append(
+                Interaction(InteractionType.CUSTOM_LINDBLAD, custom_matrix=operator)
+            )
+        for interaction in interactions:
+            interaction.generated_noise = True  # owned by _absorb_noise_into_interactions
+        return interactions
 
     def copy(self) -> "NoiseModel":
         """Return a copy with independent rate storage.
@@ -1447,6 +1822,7 @@ class SystemConfiguration:
             density_matrix=self.density_matrix.copy() if self.density_matrix is not None else None,
             noise_model=self.noise_model.copy() if self.noise_model is not None else None,
             interactions=[interaction.copy() for interaction in (self.interactions or [])],
+            is_ground=self.is_ground,
         )
         
 
@@ -1464,8 +1840,8 @@ class ExperimentalParameters:
 
     Args:
             physical_model: Physical model
-            noise_model: Noise model 
-            measurement: Measurement protocol 
+            noise_model: Noise model
+            time_protocol: Time protocol (simulation start + measurement timing)
             configuration_set: Set or list of system configurations to be simulated (e.g., different initial states, noise levels, interactions)
             random_seed: Random seed for reproducibility of uncertainty calculations
     """
@@ -1474,7 +1850,7 @@ class ExperimentalParameters:
         self,
         physical_model: Optional[PhysicalModel] = None,
         noise_model: Optional[NoiseModel] = None,
-        measurement: Optional[MeasurementProtocol] = None,
+        time_protocol: Optional[TimeProtocol] = None,
         configuration_set: Optional[Union[Set[SystemConfiguration], List[SystemConfiguration]]] = None,
         random_seed: Optional[int] = None,
     ):
@@ -1483,7 +1859,7 @@ class ExperimentalParameters:
         """
         self.physical_model = physical_model or PhysicalModel()
         self.noise_model = noise_model or NoiseModel()
-        self.measurement = measurement or MeasurementProtocol()
+        self.time_protocol = time_protocol or TimeProtocol()
 
         if configuration_set is None:
             raise NotImplementedError("Please provide a set or list of SystemConfiguration instances (Preset configuration set is not implemented yet).")
@@ -1492,6 +1868,10 @@ class ExperimentalParameters:
         # Normalize multi-qubit parameters based on n_qubits
         n_qubits = self.n_qubits
         self.noise_model._normalize_noise_rates(n_qubits)
+
+        # Expand the noise models into ordinary interactions so noise is stored, reported and swept
+        # like any other interaction (must run before validation so the overlap rules see them).
+        self._absorb_noise_into_interactions()
 
         # Random seed for uncertainty calculations
         self.random_seed = random_seed
@@ -1505,45 +1885,47 @@ class ExperimentalParameters:
         # Validation
         self._validate_experimental_parameters()
 
-    def _resolve_t_start(self) -> float:
-        """Simulation start: explicit ``PhysicalModel.t_simulation_start``, else one interval before the
-        first measurement (``time_interval`` in mode B, else the first measurement gap).
+    def _absorb_noise_into_interactions(self) -> None:
+        """Translate the noise models into interactions so noise is handled like any other interaction.
 
-        Returns:
-            - ``t_start`` (float): Resolved simulation start time.
+        If no configuration overrides the noise, the base noise applies uniformly and goes once into
+        ``physical_model.interactions``. Otherwise each configuration gets its effective noise (its own
+        ``noise_model``, else the base) in its own ``interactions``. Either way a noise channel is never
+        in both base and a configuration. The ``noise_model`` objects are kept (for representation);
+        previously generated noise interactions are stripped first, so re-running (e.g. on
+        :meth:`copy`) does not double the noise.
         """
-        explicit = self.physical_model.t_simulation_start
-        if explicit is not None:
-            return float(explicit)
-        mp = self.measurement
-        if mp.time_interval is not None:   # mode B: measurements are generated relative to start=0
-            return 0.0
-        times = mp.measurement_times       # mode A
-        if len(times) < 2:
-            raise ValueError("t_simulation_start must be set for a single-measurement explicit protocol")
-        return float(times[0] - (times[1] - times[0]))
+        n_qubits = self.n_qubits
+
+        # drop any noise interactions from a previous distribution so this is idempotent
+        self.physical_model.interactions = [i for i in self.physical_model.interactions if not i.generated_noise]
+        for config in self.configuration_set:
+            config.interactions = [i for i in config.interactions if not i.generated_noise]
+            if config.noise_model is not None:
+                config.noise_model._normalize_noise_rates(n_qubits)
+
+        if not any(config.noise_model is not None for config in self.configuration_set):
+            self.physical_model.interactions.extend(self.noise_model.to_interactions(n_qubits))
+        else:
+            for config in self.configuration_set:
+                effective_noise = config.noise_model if config.noise_model is not None else self.noise_model
+                config.interactions.extend(effective_noise.to_interactions(n_qubits))
 
     def _update_measurement_times(self) -> None:
         """Resolve and cache ``_t_start`` and ``_measurement_times_list``.
 
-        ``measurement_times`` are measured-only; the full solver sequence is
-        ``timestamps`` = [t_start] + measurement_times. Mode A uses the explicit list;
-        mode B generates t_start + k*``time_interval`` for k=1..``n_measurements``.
+        ``t_start`` is the required ``TimeProtocol.t_simulation_start``. ``measurement_times`` are
+        measured-only; the full solver sequence is ``timestamps`` = [t_start] + measurement_times.
+        Mode A uses the explicit list; mode B generates t_start + k*``time_interval`` for
+        k=1..``n_measurements``.
         """
-        mp = self.measurement
-        t_start = self._resolve_t_start()
-        if mp.measurement_times is not None:   # mode A
-            times = [float(t) for t in mp.measurement_times]
-        else:                                  # mode B
-            times = [t_start + k * mp.time_interval for k in range(1, mp.n_measurements + 1)]
-        if times and times[0] < t_start:
-            raise ValueError(f"first measurement ({times[0]:.3g}) is before t_simulation_start ({t_start:.3g})")
-        self._t_start = t_start
-        self._measurement_times_list = times
+        tp = self.time_protocol
+        self._t_start = float(tp.t_simulation_start)
+        self._measurement_times_list = [float(t) for t in tp.resolve_measurement_times()]
 
     @property
     def t_simulation_start(self) -> float:
-        """Resolved simulation start time (the first, unmeasured, timestamp).
+        """Simulation start time (the first, unmeasured, timestamp).
 
         Returns:
             - ``t_start`` (float): Start time of the simulation.
@@ -1552,65 +1934,46 @@ class ExperimentalParameters:
             self._update_measurement_times()
         return self._t_start
 
+    @t_simulation_start.setter
+    def t_simulation_start(self, value: float) -> None:
+        """Set the simulation start on the time protocol and recompute measurement times.
+
+        Args:
+            ``value`` (float): New simulation start time (absolute time).
+        """
+        self.time_protocol.t_simulation_start = float(value)
+        self._update_measurement_times()
+
     @property
     def timestamps(self) -> np.ndarray:
         """Full solver sequence [``t_simulation_start``, *``measurement_times``] (start is unmeasured).
 
+        Delegates to :attr:`TimeProtocol.timestamps`.
+
         Returns:
             - ``timestamps`` (np.ndarray): 1-D array of shape (M+1,).
         """
-        return np.concatenate([[self.t_simulation_start], self.measurement_times])
+        return self.time_protocol.timestamps
 
     def get_measurement_uncertainties(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
         """Sample stochastic timing uncertainties to add to ``timestamps``.
 
-        Returns a (``batch_size``, M+1) array: column 0 is the start-time offset (zero unless
-        ``noisy_simulation_start`` is True on the measurement protocol), columns 1..M are
-        per-measurement offsets. When ``noisy_simulation_start`` is True the same noise sources
-        (offset + jitter) are applied to the start column and the before-start guard uses the
-        noisy start as the lower bound.
+        Delegates to :meth:`TimeProtocol.get_measurement_uncertainties`.
 
         Args:
             ``batch_size`` (int): Number of independent realizations.
-            ``offset`` (bool): Apply the collective offset uniform(-Δt, 0).
+            ``offset`` (bool): Apply the collective offset (see ``random_measurements_offset``).
             ``jitter`` (bool): Apply per-measurement jitter from ``per_measurement_jitter``.
 
         Returns:
             - ``uncertainties`` (np.ndarray): Shape (``batch_size``, M+1) timing offsets.
         """
-        mp = self.measurement
-        base = self.measurement_times
-        t_start = self.t_simulation_start
-        out = np.zeros((batch_size, base.size))
-        start_noise = np.zeros((batch_size,))
-
-        # Draw collective shift once so it can be reused for the start column.
-        shift: Optional[np.ndarray] = None
-        if offset and mp.max_measurements_offset:
-            shift = np.random.uniform(-mp.collective_offset_width(), 0.0, size=(batch_size,))
-            out += shift[:, None]
-        if jitter:
-            # shift is folded into the time argument so a time-dependent f(t) sees the shifted time.
-            out = out + mp.sample_jitter(batch_size, base, shift)
-
-        if mp.noisy_simulation_start:
-            if shift is not None:
-                start_noise += shift
-            if jitter:
-                # Reuse sample_jitter with t_start as a single-element array to get (batch_size, 1).
-                start_noise += mp.sample_jitter(batch_size, np.array([t_start]), shift)[:, 0]
-
-        eps = (mp.collective_offset_width() or 1.0) * 1e-3
-        correction = np.maximum(0.0, (t_start + start_noise) + eps - np.min(base[None, :] + out, axis=1))
-        if mp.time_interval is not None:
-            correction = np.ceil(correction / mp.time_interval) * mp.time_interval
-        return np.concatenate([start_noise[:, None], out + correction[:, None]], axis=1)
+        return self.time_protocol.get_measurement_uncertainties(batch_size, offset, jitter)
 
     def get_timestamps(self, batch_size: int = 1, offset: bool = True, jitter: bool = True) -> np.ndarray:
         """Return ``timestamps`` with stochastic uncertainties applied.
 
-        Shape (``batch_size``, M+1). ``offset=jitter=False`` gives deterministic timestamps.
-        Uncertainty (including before-start guard) comes from ``get_measurement_uncertainties``.
+        Delegates to :meth:`TimeProtocol.get_timestamps`.
 
         Args:
             ``batch_size`` (int): Number of independent realizations.
@@ -1620,8 +1983,22 @@ class ExperimentalParameters:
         Returns:
             - ``timestamps`` (np.ndarray): Shape (``batch_size``, M+1).
         """
-        base_full = np.concatenate([[self.t_simulation_start], self.measurement_times])
-        return base_full[None, :] + self.get_measurement_uncertainties(batch_size, offset, jitter)
+        return self.time_protocol.get_timestamps(batch_size, offset, jitter)
+
+    def collective_offset_desc(self) -> str:
+        """Human-readable description of the collective offset distribution ('off' when disabled).
+
+        Returns:
+            - ``desc`` (str): 'off', 'custom' (callable), or 'uniform(-w, 0)' (True uses time_interval,
+              a numeric offset uses its fixed width).
+        """
+        off = self.time_protocol.random_measurements_offset
+        if not off:
+            return "off"
+        if callable(off):
+            return "custom"
+        width = float(self.time_protocol.time_interval) if off is True else float(off)
+        return f"uniform(-{width:.3g}, 0)"
 
 
     def _validate_experimental_parameters(self) -> None:
@@ -1900,29 +2277,43 @@ class ExperimentalParameters:
 
     @measurement_times.setter
     def measurement_times(self, value: Union[List[float], np.ndarray]) -> None:
-        """Set measurement times explicitly, switching to mode A (overrides interval mode).
+        """Update the explicit measurement times (explicit mode only; no mode switching).
 
         Args:
-            ``value`` (Union[List[float], np.ndarray]): Absolute measurement times.
+            ``value`` (Union[List[float], np.ndarray]): Absolute measurement times (ascending).
+
+        Raises:
+            ValueError: If the protocol uses interval mode (rebuild it to change timing spec).
         """
-        self.measurement.measurement_times = list(np.array(value))
+        tp = self.time_protocol
+        if tp.measurement_times is None:
+            raise ValueError("measurement_times is only settable in explicit mode; this protocol uses "
+                             "n_measurements + time_interval. Rebuild the protocol to change the timing spec.")
+        tp.measurement_times = [float(t) for t in np.array(value)]
+        tp.__post_init__()  # re-validate (ascending, before-start) and rebuild samplers
         self._update_measurement_times()
 
     @property
     def time_interval(self) -> float:
         """Direct access to time interval (absolute time)."""
-        return self.measurement.time_interval
+        return self.time_protocol.time_interval
 
     @time_interval.setter
     def time_interval(self, value: float) -> None:
-        """Set ``time_interval`` and recompute measurement times (switches to mode B).
+        """Update the measurement spacing (interval mode only; no mode switching).
 
         Args:
             ``value`` (float): New time interval (absolute time).
+
+        Raises:
+            ValueError: If the protocol uses explicit measurement_times (rebuild it to change timing spec).
         """
-        self.measurement.time_interval = value
-        # Clear explicit measurement times to use interval mode
-        self.measurement.measurement_times = None
+        tp = self.time_protocol
+        if tp.measurement_times is not None:
+            raise ValueError("time_interval is only settable in interval mode; this protocol uses explicit "
+                             "measurement_times. Rebuild the protocol to change the timing spec.")
+        tp.time_interval = float(value)
+        tp.__post_init__()  # re-validate (positive interval) and rebuild samplers
         self._update_measurement_times()
 
     @property
@@ -2001,13 +2392,13 @@ class ExperimentalParameters:
     def copy(self, **updates) -> "ExperimentalParameters":
         """Create a copy of ``ExperimentalParameters`` with optional updates.
 
-        All nested objects (``physical_model``, ``measurement``, ``noise_model``,
+        All nested objects (``physical_model``, ``time_protocol``, ``noise_model``,
         ``configuration_set``) are deep-copied to avoid sharing mutable state.
 
         Args:
             **updates (Any): Attributes to override. Valid keys: ``physical_model``
                 (``PhysicalModel`` instance or dict of kwargs), ``noise_model``,
-                ``measurement``, ``configuration_set``, ``random_seed``.
+                ``time_protocol``, ``configuration_set``, ``random_seed``.
 
         Returns:
             - ``copy`` (ExperimentalParameters): New instance with the updates applied.
@@ -2026,7 +2417,7 @@ class ExperimentalParameters:
         # Deep copy nested configurations
         new_phys_model = self.physical_model
         new_noise_model = self.noise_model
-        new_measurement = self.measurement
+        new_time_protocol = self.time_protocol
         new_random_seed = self.random_seed
         new_config_set = self.configuration_set 
 
@@ -2049,24 +2440,10 @@ class ExperimentalParameters:
             # Create new instance with same values
             new_noise_model = self.noise_model.copy()
 
-        if "measurement" in updates:
-            new_measurement = updates["measurement"]
+        if "time_protocol" in updates:
+            new_time_protocol = updates["time_protocol"]
         else:
-            # Create new instance with same values
-            new_measurement = MeasurementProtocol(
-                measurement_times=(
-                    self.measurement.measurement_times.copy()
-                    if self.measurement.measurement_times
-                    else None
-                ),
-                n_measurements=self.measurement.n_measurements,
-                time_interval=self.measurement.time_interval,
-                max_measurements_offset=self.measurement.max_measurements_offset,
-                per_measurement_jitter=self.measurement.per_measurement_jitter,
-                window_start=self.measurement.window_start,
-                window_end=self.measurement.window_end,
-                window_slope=self.measurement.window_slope,
-            )
+            new_time_protocol = self.time_protocol.copy()
 
         if "configuration_set" in updates:
             new_config_set = updates["configuration_set"]
@@ -2081,7 +2458,7 @@ class ExperimentalParameters:
         return ExperimentalParameters(
             physical_model=new_phys_model,
             noise_model=new_noise_model,
-            measurement=new_measurement,
+            time_protocol=new_time_protocol,
             configuration_set=new_config_set,
             random_seed=new_random_seed,
         )
@@ -2232,30 +2609,17 @@ class ExperimentalParameters:
                         by_field.setdefault(field_index, []).append((index, interaction))
                         assigned.add(index)
 
-            if by_cavity:
-                lines.append(f"{base_indent}By cavity:")
-                for cavity_index in sorted(by_cavity):
-                    lines.append(f"{base_indent}  Cavity {cavity_index}:")
-                    for _, interaction in by_cavity[cavity_index]:
-                        lines.append(f"{base_indent}    {format_interaction(interaction)}")
-
-            if by_qubit:
-                lines.append(f"{base_indent}By qubit:")
-                for qubit_index in sorted(by_qubit):
-                    lines.append(f"{base_indent}  Qubit {qubit_index}:")
-                    for _, interaction in by_qubit[qubit_index]:
-                        lines.append(f"{base_indent}    {format_interaction(interaction)}")
-
-            if by_field:
-                lines.append(f"{base_indent}By field:")
-                for field_index in sorted(by_field):
-                    lines.append(f"{base_indent}  Field {field_index}:")
-                    for _, interaction in by_field[field_index]:
-                        lines.append(f"{base_indent}    {format_interaction(interaction)}")
+            # Emit interactions in the cavity > qubit > field order (each bucket sorted by index),
+            # but without printing the grouping headers/subsystem labels -- the order alone reflects it.
+            for bucket in (by_cavity, by_qubit, by_field):
+                for index in sorted(bucket):
+                    for _, interaction in bucket[index]:
+                        lines.append(f"{base_indent}{format_interaction(interaction)}")
 
         # Physical Model Interactions
         lines.append("")
         lines.append("PHYSICAL MODEL")
+        lines.append(f"  Perturbation type:    {self.perturbation_type}")
         interactions = list(self.physical_model.interactions)
         if not interactions:
             lines.append("  Interactions:         None")
@@ -2278,30 +2642,31 @@ class ExperimentalParameters:
 
         # Measurement Protocol Group
         lines.append("")
-        lines.append("MEASUREMENT PROTOCOL")
+        lines.append("TIME PROTOCOL")
 
+        lines.append(f"  Start time:           {self.t_simulation_start:>8.4f}")
         # Determine mode (list or interval)
         times_list = (
             self._measurement_times_list if self._measurement_times_list is not None else []
         )
-        if self.measurement.measurement_times is not None:
+        if self.time_protocol.measurement_times is not None:
             lines.append("  Mode:                 Explicit list")
             n_measurements = len(times_list)
             lines.append(f"  Number of measurements: {n_measurements:>6}")
             lines.append(f"  Measurement times:    {times_list}")
         else:
             lines.append("  Mode:                 Interval-based")
-            lines.append(f"  Start time:           {self.t_simulation_start:>8.4f}")
-            lines.append(f"  Time interval:        {self.measurement.time_interval:>8.4f}")
+            lines.append(f"  Time interval:        {self.time_protocol.time_interval:>8.4f}")
             n_measurements = len(times_list)
             lines.append(f"  Number of measurements: {n_measurements:>6}")
             lines.append(f"  Computed times:       {times_list}")
 
-        lines.append(f"  Collective offset:    {'on (uniform(-Δt, 0))' if self.measurement.max_measurements_offset else 'off'}")
-        lines.append(f"  Per-measurement jitter: {describe_uncertainty(self.measurement.per_measurement_jitter)}")
-        if self.measurement.window_start is not None:
-            slope = self.measurement.resolved_window_slope
-            lines.append(f"  Measurement window:   [{self.measurement.window_start}, {self.measurement.window_end}]  slope={slope:.4g}")
+        lines.append(f"  Collective offset:    {self.collective_offset_desc()}")
+        lines.append(f"  Per-measurement jitter: {describe_uncertainty(self.time_protocol.per_measurement_jitter)}")
+        lines.append(f"  Noisy simulation start: {'on' if self.time_protocol.noisy_simulation_start else 'off'}")
+        if self.time_protocol.window_start is not None:
+            slope = self.time_protocol.resolved_window_slope
+            lines.append(f"  Measurement window:   [{self.time_protocol.window_start}, {self.time_protocol.window_end}]  slope={slope:.4g}")
         else:
             lines.append("  Measurement window:   None (uniform weights)")
         # Noise Configuration Group
@@ -2320,6 +2685,7 @@ class ExperimentalParameters:
         lines.append("")
         lines.append("CONFIGURATIONS")
         lines.append(f"  Count:                {len(self.configuration_set)}")
+        lines.append(f"  Ground configuration: {self.ground}")
         # Collect the set of distinct parameter signatures for each interaction type
         # across all configurations. Used below to show parameters only when different
         # configurations parameterize the same interaction type differently.
@@ -2334,9 +2700,10 @@ class ExperimentalParameters:
         for i, config in enumerate(self.configuration_set):
             has_noise = "yes" if config.noise_model is not None else "no"
             interactions = config.interactions or []
+            ground_tag = " (ground)" if config.is_ground else ""
 
             lines.append(
-                f"    [{i}] {config.name}: noise_override={has_noise}, interactions={len(interactions)}"
+                f"    [{i}] {config.name}{ground_tag}: noise_override={has_noise}, interactions={len(interactions)}"
             )
 
             # A configuration is initialised either from a custom density matrix or from

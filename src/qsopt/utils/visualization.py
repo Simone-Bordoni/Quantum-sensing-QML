@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 
 from qsopt.core.callback import OptimizationCallback
@@ -752,15 +753,15 @@ def plot_pulse_shape_with_measurements(
 
     Note:
         - Pulse shape is computed using the u0() function from quantum_utils
-        - Measurement times are extracted from exp_params.measurement
+        - Measurement times are extracted from exp_params.time_protocol
         - The plot window extends beyond the measurement range to show pulse decay
     """
     from ..core.experiment.quantum_utils import u0
 
     # Extract measurement protocol information
-    initial_time = exp_params.measurement.initial_time
-    final_time = exp_params.measurement.final_time
-    interval = exp_params.measurement.time_interval
+    initial_time = exp_params.time_protocol.initial_time
+    final_time = exp_params.time_protocol.final_time
+    interval = exp_params.time_protocol.time_interval
 
     # Generate measurement times using ExperimentalParameters helper
     measurement_times = exp_params.get_measurement_times_with_uncertainty(batch_size)
@@ -815,7 +816,7 @@ def plot_pulse_shape_with_measurements(
 
 Physical Parameters:
   • Pulse width (σ):        {1/exp_params.inverse_pulse_width:.6f}
-  • Uncertainty:    {exp_params.measurement.initial_time_uncertainty:.6f}
+  • Uncertainty:    {exp_params.time_protocol.initial_time_uncertainty:.6f}
 
 Measurement Protocol:
   • Initial time:       {initial_time:.6f}
@@ -926,7 +927,7 @@ def plot_time_evolution(
         >>> # With measurement markers and cavity population
         >>> fig = plot_time_evolution(
         ...     evolution_data=results,
-        ...     measurement_times=experiment.experimental_params.measurement.measurement_times,
+        ...     measurement_times=experiment.experimental_params.time_protocol.measurement_times,
         ...     show_cavity_population=True,
         ...     title='Single Qubit Evolution'
         ... )
@@ -1110,6 +1111,39 @@ _PROB_LABEL_LEVELS = [0, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99, 1.0]
 _PROB_CBAR_TICKS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 
 
+def _white_capped_cmap(name: str = "viridis", white_frac: float = 0.12) -> LinearSegmentedColormap:
+    """Colormap that appends a white cap above `name`'s full range, so best values pop.
+
+    The base colormap's entire gradient (e.g. viridis's dark purple through its true yellow
+    endpoint) is compressed into the lower `1 - white_frac` of the scale so none of it is lost;
+    the top `white_frac` is new space added on top, fading from that yellow into white with a
+    smoothstep ease (zero derivative at both ends) so it joins with no visible kink.
+
+    Args:
+        name: Base colormap to sample.
+        white_frac: Fraction of new space added above the base colormap's range, fading to white.
+
+    Returns:
+        LinearSegmentedColormap: 'name'-derived map with a white cap added above its high end.
+    """
+    n = 256
+    n_white = int(n * white_frac)
+    n_base = n - n_white
+    base_colors = plt.get_cmap(name)(np.linspace(0.0, 1.0, n_base))
+    yellow = base_colors[-1]
+    white = np.array([1.0, 1.0, 1.0, 1.0])
+    white_colors = np.empty((n_white, 4))
+    for k in range(n_white):
+        t = k / max(n_white - 1, 1)
+        ease = t * t * (3 - 2 * t)  # smoothstep: zero slope at t=0 and t=1
+        white_colors[k] = (1 - ease) * yellow + ease * white
+    colors = np.vstack([base_colors, white_colors])
+    return LinearSegmentedColormap.from_list(f"{name}_white", colors)
+
+
+_RESULT_CMAP = _white_capped_cmap("viridis")
+
+
 def _pretty_axis(name: str) -> str:
     """Human/greek-friendly axis label.
 
@@ -1265,9 +1299,9 @@ def _result_title(key: str) -> str:
     return key
 
 
-def _result_cmap(key: str) -> str:
-    """Colormap for a result key; one shared 'viridis' scale for every quantity."""
-    return "viridis"
+def _result_cmap(key: str) -> LinearSegmentedColormap:
+    """Colormap for a result key; one shared viridis-with-white-cap scale for every quantity."""
+    return _RESULT_CMAP
 
 
 def _is_probability_like(key: str) -> bool:

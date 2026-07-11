@@ -65,9 +65,22 @@ class OptimizationCallback:
         self.best_validation: float = -float("inf")
         self.best_metrics: Optional[Dict[str, Union[int, float, Dict[str, float]]]] = None
 
+        # Per-precision-band best-validation checkpoints, kept across hot-start calls so a
+        # multi-run optimization can select over the whole run. Maps band index -> winner dict
+        # {validation, params (initial, final), epoch, metric, detection_dict}.
+        self.precision_band_winners: Dict[int, Dict[str, Any]] = {}
+
         # Optimization completion info
         self.converged: bool = False
         self.final_grad_norm: Optional[float] = None
+
+        # Explicit origin of this callback ('simulation', 'optimization' or None), set by the
+        # producing method and used by __repr__ instead of guessing the mode from the epoch count.
+        self.mode: Optional[str] = None
+
+        # Optional experiment metadata snapshot (see initialize_metadata). A callback works with or
+        # without it; when absent it stays an empty dict.
+        self.metadata: Dict[str, Any] = {}
 
         # Per-run detection artifacts produced by the experiment (via set_measurement_protocol).
         self.probability_tree: Optional[Dict[str, Dict[tuple, float]]] = None
@@ -226,6 +239,74 @@ class OptimizationCallback:
         """
         return self.best_metrics
 
+    def update_precision_band(
+        self,
+        band_index: int,
+        validation: float,
+        trainable_params: Tuple[list, list],
+        epoch: int,
+        metric: float,
+        detection_dict: Dict[str, float],
+    ) -> None:
+        """
+        Record a candidate for a precision band, keeping the best validation seen in that band.
+
+        Args:
+            band_index: Index of the precision band (int).
+            validation: Validation value at this step (float).
+            trainable_params: (initial_params, final_params) tuple of parameter lists.
+            epoch: Epoch at which this candidate was seen (int).
+            metric: Metric value at this step (float).
+            detection_dict: Detection measures per configuration (Dict[str, float]).
+        """
+        current = self.precision_band_winners.get(band_index)
+        if current is not None and current["validation"] >= float(validation):
+            return
+        self.precision_band_winners[band_index] = {
+            "validation": float(validation),
+            "params": copy.deepcopy(trainable_params),
+            "epoch": int(epoch),
+            "metric": float(metric),
+            "detection_dict": copy.deepcopy(detection_dict),
+        }
+
+    def get_precision_band_winners(self) -> Dict[int, Dict[str, Any]]:
+        """
+        Get the per-band best-validation checkpoints accumulated across the run.
+
+        Returns:
+            Dict mapping band index to a winner dict with keys ``validation``, ``params``
+            (initial, final), ``epoch``, ``metric`` and ``detection_dict``.
+        """
+        return self.precision_band_winners
+
+    def set_best(
+        self,
+        trainable_params: Tuple[list, list],
+        validation: float,
+        epoch: int,
+        metric: float,
+        detection_dict: Dict[str, float],
+    ) -> None:
+        """
+        Overwrite the tracked best parameters, e.g. after precision-band selection.
+
+        Args:
+            trainable_params: (initial_params, final_params) tuple of parameter lists.
+            validation: Validation value of the chosen parameters (float).
+            epoch: Epoch the chosen parameters originated from (int).
+            metric: Metric value of the chosen parameters (float).
+            detection_dict: Detection measures per configuration (Dict[str, float]).
+        """
+        self.best_trainable_params = copy.deepcopy(trainable_params)
+        self.best_validation = float(validation)
+        self.best_metrics = {
+            "epoch": int(epoch),
+            "metric": float(metric),
+            "validation": float(validation),
+            "detection_dict": copy.deepcopy(detection_dict),
+        }
+
     def get_history(self) -> Dict[str, List[Any]]:
         """
         Get the complete optimization history.
@@ -302,6 +383,36 @@ class OptimizationCallback:
         grads = copy.deepcopy(grads_history[idx]) if len(grads_history) > idx else None
         return optimizer_state, grads
 
+    def initialize_metadata(self, metadata: Optional[Dict[str, Any]] = None, **extra: Any) -> None:
+        """Store (or overwrite) the experiment metadata snapshot on this callback.
+
+        Metadata is a free-form description of the experiment that produced the callback (e.g.
+        perturbation type, system dimensions, configuration names). It is purely informational: a
+        callback works with or without it. Calling this again fully overwrites any previous metadata.
+
+        Args:
+            - ``metadata`` (Optional[Dict[str, Any]]): metadata mapping to store.
+            - ``**extra`` (Any): additional metadata entries, merged over ``metadata``.
+        """
+        merged: Dict[str, Any] = {}
+        if metadata:
+            merged.update(metadata)
+        merged.update(extra)
+        self.metadata = merged
+
+    def print_metadata(self) -> None:
+        """Print the stored experiment metadata as aligned key/value lines.
+
+        Prints a short notice when no metadata has been set (the callback is still valid without it).
+        """
+        if not self.metadata:
+            print("No experiment metadata stored on this callback.")
+            return
+        label_width = max(len(str(key)) for key in self.metadata)
+        print("Experiment metadata:")
+        for key, value in self.metadata.items():
+            print(f"  {str(key):<{label_width}} : {value}")
+
     def set_convergence_info(self, converged: bool, final_grad_norm: float) -> None:
         """
         Set convergence information at the end of optimization.
@@ -355,7 +466,12 @@ class OptimizationCallback:
             "epoch": np.array(self.epoch),
             "converged": np.array(self.converged),
             "final_grad_norm": np.array(final_grad_norm_value),
+            "mode": np.array("" if self.mode is None else self.mode),
         }
+
+        # Save the experiment metadata snapshot only when present (it is optional).
+        if self.metadata:
+            save_dict["metadata"] = np.array(self.metadata, dtype=object)
 
         # Save per-run detection artifacts only when present (absent during plain optimization).
         if self.probability_tree is not None:
@@ -378,6 +494,10 @@ class OptimizationCallback:
                 save_dict["best_epoch"] = np.array(self.best_metrics["epoch"])
                 save_dict["best_metric"] = np.array(self.best_metrics["metric"])
                 save_dict["best_detection"] = np.array(self.best_metrics["detection_dict"], dtype=object)
+
+        # Persist per-band checkpoints so hot-start continuation keeps prior-call winners.
+        if self.precision_band_winners:
+            save_dict["precision_band_winners"] = np.array(self.precision_band_winners, dtype=object)
 
         # Save to NPZ file
         np.savez(filepath, **save_dict)
@@ -459,6 +579,9 @@ class OptimizationCallback:
         )
         callback.converged = bool(np.asarray(data.get("converged", np.array(False))).item())
 
+        mode_value = str(np.asarray(data.get("mode", np.array(""))).item())
+        callback.mode = mode_value if mode_value else None
+
         final_grad_norm_value = float(np.asarray(data.get("final_grad_norm", np.array(np.nan))).item())
         callback.final_grad_norm = None if np.isnan(final_grad_norm_value) else final_grad_norm_value
 
@@ -483,6 +606,16 @@ class OptimizationCallback:
                 "validation": float(np.asarray(data["best_validation"]).item()),
                 "detection_dict": data["best_detection"].item(),
             }
+
+        # Restore the per-band checkpoints so hot-start continuation keeps prior-call winners.
+        if "precision_band_winners" in data:
+            callback.precision_band_winners = {
+                int(k): v for k, v in data["precision_band_winners"].item().items()
+            }
+
+        # Restore the optional experiment metadata snapshot if present.
+        if "metadata" in data:
+            callback.metadata = data["metadata"].item()
 
         # Restore optional per-run detection artifacts if present.
         if "probability_tree" in data:
@@ -524,12 +657,15 @@ class OptimizationCallback:
         if isinstance(self.best_metrics, dict):
             self.best_metrics.clear()
 
+        self.precision_band_winners.clear()
+
         self.epoch = 0
         self.best_trainable_params = None
         self.best_validation = -float("inf")
         self.best_metrics = None
         self.converged = False
         self.final_grad_norm = None
+        self.mode = None
         self.probability_tree = None
         self.states_map = {}
         self.confusion_matrix = {}
@@ -544,8 +680,12 @@ class OptimizationCallback:
         """
         lines = []
 
-        # Determine if this is from run_simulation (1 epoch) or optimization (>1 epoch)
-        is_simulation = self.epoch == 1 and self.converged is False and self.final_grad_norm is None
+        # Prefer the explicit origin marker; fall back to the epoch heuristic for callbacks that
+        # predate it (e.g. loaded from an older NPZ) so run_simulation still reads as a simulation.
+        if self.mode is not None:
+            is_simulation = self.mode == "simulation"
+        else:
+            is_simulation = self.epoch == 1 and self.converged is False and self.final_grad_norm is None
 
         if is_simulation:
             lines.append("MODE: Single Simulation")
@@ -557,6 +697,9 @@ class OptimizationCallback:
             lines.append(f"     Converged: {self.converged}")
             if self.final_grad_norm is not None:
                 lines.append(f"     Final gradient norm: {self.final_grad_norm:.6e}")
+
+        # Only flag whether the experiment metadata snapshot is present; print_metadata() shows it.
+        lines.append(f"  Experiment metadata:  {'present (use print_metadata())' if self.metadata else 'absent'}")
 
         # Show angles (best for optimization, current for simulation)
         if self.best_trainable_params is not None:

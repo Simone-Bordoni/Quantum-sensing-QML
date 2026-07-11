@@ -14,7 +14,7 @@ from .experiment.quantum_utils import (
 )
 from .experimental_parameters import (
     ExperimentalParameters,
-    MeasurementProtocol,
+    TimeProtocol,
     NoiseModel,
     PhysicalModel,
     SystemConfiguration,

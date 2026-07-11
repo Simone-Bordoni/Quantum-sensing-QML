@@ -1,155 +1,87 @@
 #!/bin/bash
+# Adapted from a colleague's PyTorch/DDP script on the SAME cluster.
+# Submit: sbatch job.sbatch | Status: squeue --me | Log: tail -f logs/qsopt_<id>.log
+# NOTE: run `mkdir -p logs` once before the first submit (SLURM opens the log below).
 
-#SBATCH --job-name=train_lfr0        # Job name
-#SBATCH --account=phocqal          # Account name
-# una cosa che sto levando        #SBATCH --chdir=home/e/emurano/comm_det_snap
-#SBATCH --output=/home/e/emurano/comm_det_snap/logs/training_%j.log
-#SBATCH --error=/home/e/emurano/comm_det_snap/logs/training_%j.err
-#SBATCH --nodes=1                        # Single node
-#SBATCH --ntasks-per-node=1            # One task per GPU  (4 H100s)
-#SBATCH --partition=bare-metal-GPU        # GPU partition
-#SBATCH --gres=gpu:tesla:1              # 4 Tesla GPUs
-#SBATCH --cpus-per-task=48              # 192 cores / 4 tasks
-#SBATCH --time=6-23:59:00               # Max wall time
-#SBATCH --export=ALL
-#SBATCH --mem=0                         # Use all available RAM
+#SBATCH --job-name=qsopt                 # name shown in squeue
+#SBATCH --account=phocqal                # billing/allocation account (unchanged: same cluster)
+# #SBATCH --chdir=...                     # left off: we cd into $SLURM_SUBMIT_DIR below instead
+#SBATCH --output=logs/qsopt_%j.log       # stdout -> logs/ (%j = job id)
+#SBATCH --error=logs/qsopt_%j.err        # stderr
+#SBATCH --nodes=1                        # single node
+#SBATCH --ntasks-per-node=1              # ONE process: qsopt/JAX is single-process (no DDP)
+#SBATCH --partition=bare-metal-GPU       # GPU partition (unchanged)
+#SBATCH --gres=gpu:tesla:1               # ONE GPU is enough for a single JAX process
+#SBATCH --cpus-per-task=48               # CPU cores for host-side work (lower if you want to queue faster)
+#SBATCH --time=6-23:59:00                # max wall time D-HH:MM:SS (lower = schedules sooner)
+#SBATCH --export=ALL                     # export current env into the job
+#SBATCH --mem=0                          # use all RAM on the node
 
+# ── Job info banner ──────────────────────────────────────────────────────────
 echo "=========================================="
-echo "SLURM Job Information"
-echo "=========================================="
-echo "Job ID       : $SLURM_JOB_ID"
+echo "Job ID       : $SLURM_JOB_ID"          # unique id, also in the log filename
 echo "Job Name     : $SLURM_JOB_NAME"
-echo "Node         : $SLURM_NODELIST"
-echo "Nodes        : $SLURM_NNODES"
-echo "Tasks        : $SLURM_NTASKS"
-echo "Tasks/Node   : $SLURM_NTASKS_PER_NODE"
-echo "GPUs on node : $SLURM_GPUS_ON_NODE"
+echo "Node         : $SLURM_NODELIST"        # which physical node we landed on
 echo "CPUs/Task    : $SLURM_CPUS_PER_TASK"
 echo "Start        : $(date)"
 echo "=========================================="
 
+# ── Working directory ─────────────────────────────────────────────────────────
+cd "$SLURM_SUBMIT_DIR" || exit 1            # run from wherever you submitted (your repo checkout)
+mkdir -p logs                                # ensure logs/ exists for later runs
+echo "Working directory: $(pwd)"
 
-# ── LCG environment ──────────────────────────────────────────────────────────
+# ── LCG environment (same cluster: provides Python + toolchain) ──────────────
 source /cvmfs/sft.cern.ch/lcg/views/LCG_108_cuda/x86_64-el9-gcc13-opt/setup.sh
 
 # ── Virtual environment ──────────────────────────────────────────────────────
-VENV_DIR="$HOME/comm_det_snap/venvs/myenv"
-echo "Activating virtual environment: $VENV_DIR"
-export PYTHONPATH="$VENV_DIR/lib/python3.12/site-packages:$PYTHONPATH"
-export PATH="$VENV_DIR/bin:$PATH"
-
-
-
+# One-time setup on the cluster (from repo root, after sourcing LCG above):
+#   python3 -m venv venvs/qsopt && pip install -e '.[cuda12]'   # jax[cuda12] + qsopt
+# qsopt needs Python >=3.13 (see pyproject.toml) -> check the LCG view's version matches.
+VENV_DIR="$SLURM_SUBMIT_DIR/venvs/qsopt"                                    # your qsopt venv
+PYVER="$(python3 -c 'import sys;print(f"python{sys.version_info[0]}.{sys.version_info[1]}")')"  # e.g. python3.13
+export PYTHONPATH="$VENV_DIR/lib/$PYVER/site-packages:$PYTHONPATH"          # make the venv importable
+export PATH="$VENV_DIR/bin:$PATH"                                           # prefer venv executables
+echo "Activating virtual environment: $VENV_DIR ($PYVER)"
 
 # ── CPU threading ────────────────────────────────────────────────────────────
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK   # cap OpenMP threads to allocated cores
+export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK   # same for MKL (numpy/scipy backends)
 
+# ── JAX / GPU settings (replaces the PyTorch allocator block) ────────────────
+export XLA_PYTHON_CLIENT_PREALLOCATE=false    # don't grab the whole GPU at startup
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9     # cap JAX at 90% of GPU RAM
+export PYTHONUNBUFFERED=1                      # stream prints into the log immediately
+# export JAX_TRACEBACK_FILTERING=off           # uncomment for full tracebacks when debugging
 
+# ── PyTorch/DDP settings from the original: NOT needed for single-GPU JAX ─────
+# Kept commented for reference in case you ever run a multi-GPU / multi-node job.
+# export NCCL_DEBUG=WARN                       # inter-GPU comm logging
+# export NCCL_IB_DISABLE=0                      # InfiniBand for multi-node
+# export NCCL_P2P_LEVEL=NVL                     # prefer NVLink for intra-node P2P
+# export NCCL_SOCKET_IFNAME=^lo,docker          # exclude loopback/docker interfaces
+# export MASTER_ADDR=$(hostname -s)             # DDP rendezvous host
+# export MASTER_PORT=29500                       # DDP rendezvous port
+# export WORLD_SIZE=$SLURM_NTASKS                # number of DDP ranks
+# export CUDA_LAUNCH_BLOCKING=0                  # set 1 to serialize CUDA launches when debugging
+# export RESUME_CKPT=""                          # checkpoint resume (their app only)
 
-
-# ── NCCL / networking (H100 NVLink + optional InfiniBand) ────────────────────
-export NCCL_DEBUG=WARN                  # INFO for verbose inter-GPU logging
-export NCCL_IB_DISABLE=0               # Keep InfiniBand enabled (multi-node)
-export NCCL_P2P_LEVEL=NVL              # Prefer NVLink for intra-node P2P (H100)
-export NCCL_SOCKET_IFNAME=^lo,docker   # Exclude loopback / docker interfaces
-export NCCL_NSOCKS_PERTHREAD=4
-export NCCL_SOCKET_NTHREADS=2
-
-
-
-
-# ── DDP rendezvous ────────────────────────────────────────────────────────────
-export MASTER_ADDR=$(hostname -s)
-export MASTER_PORT=29500
-export WORLD_SIZE=$SLURM_NTASKS
-export PYTHONUNBUFFERED=1
-
-
-
-
-# ── PyTorch memory allocator (reduces fragmentation) ─────────────────────────
-export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512,expandable_segments:True"
-
-
-
-
-# ── CUDA launch flags ─────────────────────────────────────────────────────────
-export CUDA_LAUNCH_BLOCKING=0   # Set to 1 only for debugging
-
-
-
-
-# -- Resume checkpoint --------------------------------------------------------
-# Leave empty to start from scratch.
-#export RESUME_CKPT="Logs_SATQML_0605/trial0_L10_MOE10_E4_PQC16_lat256_lr1e-04_20260508-101041/checkpoints/last.ckpt"
-#export RESUME_CKPT="Logs_SATQML_1405/trial0_mmpn_L10_MOE10_E4_mlp_silu_PQC16_lat128_lr1e-06_20260516-083604/checkpoints/last.ckpt"
-#export RESUME_CKPT=" "
-#export RESUME_USE_CKPT_HPARAMS=0
-
-
-
-
-# ── GPU information ───────────────────────────────────────────────────────────
+# ── GPU + runtime info (sanity check before the real run) ────────────────────
 echo ""
 echo "GPU Information:"
 nvidia-smi --query-gpu=index,name,memory.total,memory.free,driver_version \
-           --format=csv,noheader
+           --format=csv,noheader                                    # confirm a GPU was allocated
+echo ""
+echo "Python: $(which python3) $(python3 --version)"                 # confirm venv python is first on PATH
+python3 -c "import jax; print('JAX', jax.__version__, '- devices:', jax.devices())"  # confirm JAX sees the GPU
 echo ""
 
-
-
-
-# ── Working directory ─────────────────────────────────────────────────────────
-cd /home/e/emurano/comm_det_snap || exit 1
-echo "Working directory: $(pwd)"
-echo ""
-
-
-
-
-# ── Runtime / library info ────────────────────────────────────────────────────
-echo "Python version:"
-python3 --version
-which python3
-echo ""
-
-echo "PyTorch info:"
-python3 -c "
-import torch
-print(f'PyTorch       : {torch.__version__}')
-print(f'CUDA available: {torch.cuda.is_available()}')
-print(f'CUDA devices  : {torch.cuda.device_count()}')
-if torch.cuda.is_available():
-    for i in range(torch.cuda.device_count()):
-        p = torch.cuda.get_device_properties(i)
-        print(f'  GPU {i}: {p.name}  ({p.total_memory/1024**3:.1f} GB)')
-    print(f'BF16 supported: {torch.cuda.is_bf16_supported()}')
-"
-echo ""
-
-echo "Required packages:"
-python3 -c "import pytorch_lightning as pl; print(f'✓ PyTorch Lightning : {pl.__version__}')" \
-    || echo "✗ pytorch_lightning not found"
-python3 -c "import torch_geometric as pyg; print(f'✓ PyTorch Geometric : {pyg.__version__}')" \
-    || echo "✗ torch_geometric not found"
-python3 -c "import torch_scatter; print('✓ torch_scatter')"   \
-    || echo "✗ torch_scatter not found"
-python3 -c "import torchdiffeq;   print('✓ torchdiffeq')"    \
-    || echo "  (optional) torchdiffeq not found – RK4 fallback will be used"
-echo ""
-
-
-
-# ── Training ──────────────────────────────────────────────────────────────────
-echo "Starting MMNPN training on H100 ..."
-echo "Resume checkpoint: ${RESUME_CKPT:-<none>}"
+# ── Run the experiment ───────────────────────────────────────────────────────
+SCRIPT="experiments/Nathan_experiments/studio_entanglement.py"       # <-- change per run
+echo "Running: $SCRIPT"
 echo "=========================================="
-
-# srun spawns one task per GPU; Lightning DDP detects SLURM_NTASKS_PER_NODE
-# automatically and assigns one GPU per rank.
-export SATQML_PQC10_REAL_BACKEND=triton
-srun python3 -u training.py
+python3 -u "$SCRIPT"                                                  # -u = unbuffered output
+# srun python3 -u "$SCRIPT"                                           # original used srun (only needed for multi-task/DDP)
 
 echo ""
 echo "=========================================="

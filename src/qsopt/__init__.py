@@ -21,7 +21,7 @@ from .core.experimental_parameters import (
     ExperimentalParameters,
     State,
     InteractionType,
-    MeasurementProtocol,
+    TimeProtocol,
     NoiseModel,
     PhysicalModel,
     Interaction,

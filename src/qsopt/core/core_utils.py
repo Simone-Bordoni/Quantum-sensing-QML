@@ -60,6 +60,84 @@ def annealing_weight(
     a = -(k / 2.0) * jnp.log(f / (1.0 - f))
     return (jnp.tanh(a) + 1.0) / 2.0
 
+
+def select_best_params(callback, jitted_value, jitted_grad, timestamps_arg,
+                       noise_batch, optimizer, n_initial, n_bands, tot_steps, polish):
+    """
+    Pick deployable parameters from per-band checkpoints at final precision.
+
+    Re-evaluates every band-winner at the (already set) tight-tolerance precision, short-polishes
+    the most promising subset (top floor(n_bands/3) by re-evaluation plus the last band), keeps a
+    polish only when it improves validation, and returns the best. Overwrites the callback's best.
+
+    Args:
+        callback (OptimizationCallback): holds the per-band winners; its best is overwritten.
+        jitted_value (Callable): value-only objective -> (-metric, (detection, metric, validation)).
+        jitted_grad (Callable): gradient objective -> (grads, (detection, metric, validation)).
+        timestamps_arg (Union[tuple, Array]): base timestamps argument for the objective.
+        noise_batch (Union[float, Array]): fixed uncertainty batch reused for every candidate.
+        optimizer (optax.GradientTransformation): base optimizer, scaled by 0.1 for polishing.
+        n_initial (int): number of initial-circuit trainable parameters.
+        n_bands (int): number of precision bands.
+        tot_steps (int): total planned steps (sets the polish budget).
+        polish (bool): if True, short-polish the selected subset before choosing.
+
+    Returns:
+        Optional[Tuple[np.ndarray, float, float]]: (best parameter vector, validation, metric),
+            or None when there are no band-winners to select from.
+    """
+    import optax
+
+    winners = callback.get_precision_band_winners()
+    band_indices = sorted(winners)
+    if not band_indices:
+        return None
+
+    def evaluate(param_vec):
+        """Validation, metric and detection dict of a parameter vector at final precision."""
+        _, (detection, metric, validation) = jitted_value(
+            jnp.asarray(param_vec, dtype=float), timestamps_arg, noise_batch, 1.0
+        )
+        return float(validation), float(metric), {name: float(d) for name, d in detection.items()}
+
+    # Re-evaluate every band-winner at final precision (unbiased comparison across bands).
+    candidates = {}
+    for band in band_indices:
+        initial_p, final_p = winners[band]["params"]
+        param_vec = np.asarray(list(initial_p) + list(final_p), dtype=float)
+        validation, metric, detection = evaluate(param_vec)
+        candidates[band] = {"params": param_vec, "validation": validation, "metric": metric,
+                            "detection": detection, "epoch": winners[band]["epoch"]}
+
+    # Short-polish the most promising subset: top floor(n_bands/3) plus the last band (which still
+    # saw a precision change near the end). Keep a polish only if it improved validation.
+    if polish:
+        ranked = sorted(band_indices, key=lambda b: candidates[b]["validation"], reverse=True)
+        polish_set = set(ranked[: max(1, n_bands // 3)]) | {band_indices[-1]}
+        polish_optimizer = optax.chain(optimizer, optax.scale(0.1))
+        polish_steps = int(np.ceil(0.01 * tot_steps))
+        for band in polish_set:
+            param_vec = jnp.asarray(candidates[band]["params"], dtype=float)
+            opt_state = polish_optimizer.init(param_vec)
+            for _ in range(polish_steps):
+                grads, _ = jitted_grad(param_vec, timestamps_arg, noise_batch, 1.0)
+                updates, opt_state = polish_optimizer.update(grads, opt_state, param_vec)
+                param_vec = optax.apply_updates(param_vec, updates)
+            validation, metric, detection = evaluate(np.asarray(param_vec, dtype=float))
+            if validation > candidates[band]["validation"]:
+                candidates[band] = {"params": np.asarray(param_vec, dtype=float),
+                                    "validation": validation, "metric": metric,
+                                    "detection": detection, "epoch": candidates[band]["epoch"]}
+
+    best_band = max(band_indices, key=lambda b: candidates[b]["validation"])
+    chosen = candidates[best_band]
+    best_values = np.asarray(chosen["params"], dtype=float)
+    callback.set_best(
+        (best_values[:n_initial].tolist(), best_values[n_initial:].tolist()),
+        chosen["validation"], chosen["epoch"], chosen["metric"], chosen["detection"],
+    )
+    return best_values, chosen["validation"], chosen["metric"]
+
 def state_probs_to_dict(probs: np.ndarray, config_names: Optional[List[str]] = None) -> Dict[str, Dict[str, float]]:
     """
     Convert a (n_configs, n_states) probability array to the native per-config state-probability dict.
@@ -420,7 +498,11 @@ def derive_detection_map(leaf_data_per_config: Dict[str, Dict[tuple, float]], co
 
 
 def sweep_key_types(exp) -> Dict[str, Any]:
-    """Map every global-arg key of ``exp`` to its interaction type."""
+    """Map every global-arg key of ``exp`` to its interaction type.
+
+    Noise rates are included automatically: the experimental parameters absorb each noise model into
+    the base or per-configuration interaction lists, so noise appears here like any other interaction.
+    """
     types: Dict[str, Any] = {}
 
     def add(interactions, prefix):
@@ -512,15 +594,19 @@ def collapse_unsafe_keys(exp) -> set:
 
     def scan(interactions, prefix):
         for inter in interactions:
-            l_terms = [t for t in _build_hamiltonian_term(inter, exp.operators, exp.n_cavities, exp.n_fields)
-                       if t.kind == 'L']
-            n_modulated = sum(1 for t in l_terms if t.modulated)
-            for term in l_terms:
-                other_modulated = n_modulated - (1 if term.modulated else 0)
-                other_promotable = any(other is not term and other.params for other in l_terms)
-                if other_modulated >= 1 or (not term.modulated and other_promotable):
-                    for name in term.params:
-                        unsafe.add(f"{prefix}{inter._interaction_context()}__{name}")
+            all_l = [t for t in _build_hamiltonian_term(inter, exp.operators, exp.n_cavities, exp.n_fields)
+                     if t.kind == 'L']
+            # only terms of the SAME collapse_group are summed into one operator, so the "other
+            # summand" check is per group (depolarizing's three Pauli channels are separate operators)
+            groups = {g: [t for t in all_l if t.collapse_group == g] for g in {t.collapse_group for t in all_l}}
+            for l_terms in groups.values():
+                n_modulated = sum(1 for t in l_terms if t.modulated)
+                for term in l_terms:
+                    other_modulated = n_modulated - (1 if term.modulated else 0)
+                    other_promotable = any(other is not term and other.params for other in l_terms)
+                    if other_modulated >= 1 or (not term.modulated and other_promotable):
+                        for name in term.params:
+                            unsafe.add(f"{prefix}{inter._interaction_context()}__{name}")
 
     scan(exp.experimental_params.interactions, "BaseModel_")
     for cfg in exp.experimental_params.configuration_set:

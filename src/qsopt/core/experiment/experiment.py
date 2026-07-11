@@ -20,7 +20,7 @@ from qsopt.core.callback import OptimizationCallback
 from qsopt.core.circuit import QuantumCircuit, create_ry_circuit
 from qsopt.core.experimental_parameters import (
     ExperimentalParameters,
-    MeasurementProtocol,
+    TimeProtocol,
     SystemConfiguration,
 )
 from qsopt.core.loss_functions import DetectionMetric
@@ -31,6 +31,7 @@ from qsopt.core.core_utils import (
     sweep_key_types,
     derive_detection_map,
     branching_paths,
+    select_best_params,
 )
 from qsopt.utils.results import SweepResults
 
@@ -54,7 +55,7 @@ warnings.filterwarnings("ignore", message="Complex dtype support in Diffrax is a
 # loosens these by _TOL_ANNEAL_FACTOR early in training and tightens back to them by the end.
 _SOLVER_ATOL = 1e-8
 _SOLVER_RTOL = 1e-6
-_TOL_ANNEAL_FACTOR = 100.0  # start 100x (2 decades) looser than the tight tolerances
+_TOL_ANNEAL_FACTOR = 500.0  # start 500x looser than the tight tolerances
 
 
 class Experiment:
@@ -164,6 +165,10 @@ class Experiment:
         # Initialize quantum objects
         self.__post_init__()
 
+        # Snapshot the experiment metadata onto the default callback (global_args is available only
+        # after __post_init__). Purely informational -- the callback works with or without it.
+        self.callback.initialize_metadata(self._collect_metadata())
+
     def __post_init__(self):
         """Post-initialization to set up operators and hamiltonian."""
         # Disable auto_real_casting to avoid TracerBoolConversionError with JAX
@@ -212,7 +217,45 @@ class Experiment:
     def ground_config(self) -> int:
         """Get the name of the ground config in the experiment."""
         return self.experimental_params.ground
-    
+
+    def _collect_metadata(self) -> Dict[str, Any]:
+        """Snapshot the experiment's defining values for storage on a callback.
+
+        Returns:
+            - ``metadata`` (Dict[str, Any]): perturbation type, system dimensions, configuration
+              names, ground config, interaction summaries, detection metric name, resolved global
+              args and random seed.
+        """
+        ep = self.experimental_params
+        interactions = [
+            interaction._interaction_context(include_parameters=True)
+            for interaction in ep.physical_model.interactions
+        ]
+        # Per-configuration interaction summaries (in addition to the shared physical-model ones).
+        config_interactions = {
+            config.name: [
+                interaction._interaction_context(include_parameters=True)
+                for interaction in (config.interactions or [])
+            ]
+            for config in ep.configuration_set
+        }
+        return {
+            "perturbation_type": ep.perturbation_type,
+            "n_qubits": ep.n_qubits,
+            "n_cavities": ep.n_cavities,
+            "n_fields": ep.n_fields,
+            "qubit_levels": list(ep.qubit_levels),
+            "cavity_levels": list(ep.cavity_levels),
+            "field_levels": list(ep.field_levels),
+            "config_names": list(self.config_names),
+            "ground_config": ep.ground,
+            "interactions": interactions,
+            "config_interactions": config_interactions,
+            "detection_metric": getattr(self.detection_metric, "name", None),
+            "global_args": dict(self.global_args),
+            "random_seed": ep.random_seed,
+        }
+
 
 
     def _generate_operators(self) -> None:
@@ -637,7 +680,7 @@ class Experiment:
                 self.debug_times.append({ f'calculate_detection_metric{self.step}' : t.time()})
 
 
-            weights = self.experimental_params.measurement.measurement_weights(measurement_times[1:])
+            weights = self.experimental_params.time_protocol.measurement_weights(measurement_times[1:])
             metric_value, (detection_dict, validation_value) = self.detection_metric(rho_lists, weights=weights)
 
             batch_metric.append(metric_value)
@@ -671,6 +714,7 @@ class Experiment:
             metric=float(mean_metric),
             validation=float(mean_validation),
         )
+        callback.mode = "simulation"
 
         if debug:
             self.debug_times.append({ f'end_time' : t.time()})
@@ -744,6 +788,9 @@ class Experiment:
                 self.final_circuit.set_trainable_parameters(list(best_final))
         else:
             callback = OptimizationCallback(save_every=1, save_best=True)
+            # Fresh callback: params are a single-shot evaluation of the current circuits, so it
+            # reads as a simulation rather than an optimization. A passed callback keeps its own mode.
+            callback.mode = "simulation"
 
         init_states = self._cached_initial_states
         if init_states is None:
@@ -753,8 +800,8 @@ class Experiment:
 
         # Timestamps: explicit override or no timing uncertainty -> a single 1D sequence (no vmap);
         # otherwise a 2D (batch, M+1) stack that gets vmapped and averaged.
-        mp = self.experimental_params.measurement
-        has_uncertainty = bool(mp.max_measurements_offset) or (mp.per_measurement_jitter is not None)
+        tp = self.experimental_params.time_protocol
+        has_uncertainty = bool(tp.random_measurements_offset) or (tp.per_measurement_jitter is not None)
         if measurement_times is not None:
             timestamps = jnp.asarray(measurement_times, dtype=float)
         elif has_uncertainty:
@@ -788,7 +835,7 @@ class Experiment:
     def time_evolution(
         self,
         n_points: int = 200,
-        measurement_protocol: Optional[MeasurementProtocol] = None,
+        time_protocol: Optional[TimeProtocol] = None,
         callback: Optional[OptimizationCallback] = None,
         partial_configs: Optional[List[str]] = None
     ) -> "TimeEvolutionResults":
@@ -802,7 +849,7 @@ class Experiment:
 
         Args:
             n_points: Number of time points to sample (default: 200)
-            measurement_protocol: Optional custom measurement protocol to use instead of
+            time_protocol: Optional custom time protocol to use instead of
                     the experiment's default protocol (default: None)
             callback: Optional OptimizationCallback to determine detection states
                     If None, a new one will be created with detection_states=True (default: None)
@@ -847,9 +894,9 @@ class Experiment:
         >>> fig = plot_time_evolution(evolution, show_cavity_population=False)
         """
 
-        # Use provided measurement protocol or default from experimental parameters
-        if measurement_protocol is None:
-            measurement_protocol = self.experimental_params.measurement
+        # Use provided time protocol or default from experimental parameters
+        if time_protocol is None:
+            time_protocol = self.experimental_params.time_protocol
 
         # Deterministic full timestamp sequence [t_start, *measurements] (no offset, no jitter:
         # time evolution never uses noise). t_start is the unmeasured simulation start.
@@ -945,7 +992,7 @@ class Experiment:
                 # Measure detection with the configured metric
                 epoch_fraction = (seg_times[i] - t_start) / (t_end - t_start)
 
-                weights = self.experimental_params.measurement.measurement_weights(seg_times[i:i + 1])
+                weights = self.experimental_params.time_protocol.measurement_weights(seg_times[i:i + 1])
                 metric_value, (detect_dict, _) = self.detection_metric(rho_meas, epoch_fraction, weights=weights)
 
                 detection_lists.update((name, list + [float(detect_dict[name])]) for name, list in detection_lists.items())
@@ -999,6 +1046,8 @@ class Experiment:
         hot_start: bool = False,
         tot_steps: Optional[int] = None,
         anneal_tolerances: Union[bool, float] = True,
+        n_precision_bands: Optional[int] = None,
+        polish: bool = True,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -1034,6 +1083,16 @@ class Experiment:
                     convergence), following annealing_weight(epoch_fraction). Costs no recompilation.
                     True uses the default 100x loosening at the start; pass a float > 1 to set a
                     custom starting loosening factor; False disables annealing. (default: True)
+            n_precision_bands: Number of epoch bands used for precision-band checkpoint selection.
+                    The run is split into this many bands; the best-validation epoch per band is
+                    kept, then all band-winners are re-evaluated at final precision and the most
+                    promising subset is short-polished, avoiding picking a low-precision epoch.
+                    Only active when anneal_tolerances is on. If None, defaults to 10 (or 1 when
+                    tot_steps < 10); if set explicitly and tot_steps < n_precision_bands, raises.
+                    (default: None)
+            polish: If True, the selected band-winners are short-polished (a few gradient steps at
+                    final precision, learning rate /10) before choosing the best; if False they are
+                    only re-evaluated. (default: True)
 
         Returns:
             OptimizationCallback with full optimization history, including
@@ -1055,10 +1114,13 @@ class Experiment:
 
         start_time = t.time()
 
-        # Use provided callback or default
+        # Use provided callback or default. The default already carries the experiment metadata
+        # (set at construction); an input callback is (re)initialized with it here.
         if callback is None:
             callback = self.callback
-        
+        else:
+            callback.initialize_metadata(self._collect_metadata())
+
         loaded_grads = None
 
         # Reset callback only at start of new optimizations
@@ -1103,6 +1165,27 @@ class Experiment:
             tot_steps = num_steps
         elif tot_steps < num_steps:
             raise ValueError(f"tot_steps should be greater than or equal to num_steps+start_step, got tot_steps={tot_steps} and num_steps={num_steps-start_step}, start_step={start_step}")
+
+        # Resolve precision-band checkpoint selection. Only meaningful when the ODE-solver
+        # precision is actually annealed; otherwise validation is comparable across epochs.
+        annealing = bool(anneal_tolerances)
+        if n_precision_bands is None:
+            n_bands = max(1, min(10, tot_steps))
+        else:
+            if not isinstance(n_precision_bands, int) or n_precision_bands < 1:
+                raise ValueError(f"n_precision_bands must be a positive integer or None, got {n_precision_bands}")
+            if tot_steps < n_precision_bands:
+                raise ValueError(f"n_precision_bands={n_precision_bands} exceeds tot_steps={tot_steps}; use fewer bands.")
+            n_bands = n_precision_bands
+        # Bands span [0, tot_steps); the remainder of an uneven split goes into the first band.
+        band_size = tot_steps // n_bands
+        first_band_end = band_size + (tot_steps - band_size * n_bands)
+
+        def band_of(step: int) -> int:
+            """Global epoch-band index of a step (fat first band absorbs the remainder)."""
+            if step < first_band_end:
+                return 0
+            return min(n_bands - 1, 1 + (step - first_band_end) // band_size)
 
         if isinstance(noisy_training, (int, float)) and noisy_training > 0.01:
             raise ValueError(f"noisy_training should be a boolean or a float representing the standard deviation of the noise relative to the gradient norm. It shouldn't exceed 1% Got value: {noisy_training}")
@@ -1180,14 +1263,14 @@ class Experiment:
                 precomputed_unitaries=circuit_unitaries,
             ) for config in self.config_names}
 
-            weights = self.experimental_params.measurement.measurement_weights(noisy_timestamps[1:])
+            weights = self.experimental_params.time_protocol.measurement_weights(noisy_timestamps[1:])
             metric_value, (detection_dict, validation_value) = self.detection_metric(rho_dict, epoch_fraction, weights=weights)
 
             return metric_value, detection_dict, validation_value
 
         static_args = []  # initialize objective_function static args list
-        mp = self.experimental_params.measurement
-        has_uncertainty = bool(mp.max_measurements_offset) or (mp.per_measurement_jitter is not None)
+        tp = self.experimental_params.time_protocol
+        has_uncertainty = bool(tp.random_measurements_offset) or (tp.per_measurement_jitter is not None)
         # deterministic base timestamps [t_start, *measurements]; uncertainty enters only as the noise.
         base_timestamps = np.asarray(self.experimental_params.get_timestamps(1, offset=False, jitter=False)[0], dtype=float)
 
@@ -1259,6 +1342,9 @@ class Experiment:
             static_argnums=tuple(static_args),
         )
 
+        # Value-only counterpart, used to re-evaluate band-winners at final precision.
+        jitted_value = jax.jit(objective_function, static_argnums=tuple(static_args))
+
 
         # Get detection description for verbose output
         detection_metric_name = detection_metric.name
@@ -1285,9 +1371,8 @@ class Experiment:
                     print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
 
             if has_uncertainty:
-                offset_desc = "off" if not mp.max_measurements_offset else (
-                    "custom" if callable(mp.max_measurements_offset) else f"uniform(-{mp.collective_offset_width():.3g}, 0)")
-                jitter = mp.per_measurement_jitter
+                offset_desc = self.experimental_params.collective_offset_desc()
+                jitter = tp.per_measurement_jitter
                 jit_desc = "off" if jitter is None else ("custom" if callable(jitter) else f"Gaussian std {float(jitter):.3g}")
                 print(f"    Measurement uncertainty: collective offset {offset_desc}, per-measurement jitter {jit_desc}")
 
@@ -1314,6 +1399,7 @@ class Experiment:
         step = start_step
         grad_norm = float("inf")
         scaling_speedup = 1.0
+        early_stop = False
 
         for step in range(start_step, num_steps):
 
@@ -1340,6 +1426,19 @@ class Experiment:
                 best_validation = step_validation_value
                 best_metric = step_metric_value
                 best_params = jnp.array(params)
+
+            # Keep the best-validation epoch of this step's precision band (for final-precision
+            # selection). Winners persist on the callback across hot-start calls.
+            if annealing:
+                param_vec = np.asarray(params, dtype=float)
+                callback.update_precision_band(
+                    band_of(step),
+                    step_validation_value,
+                    (param_vec[:n_initial].tolist(), param_vec[n_initial:].tolist()),
+                    step,
+                    step_metric_value,
+                    {name: float(detection) for name, detection in detection_dict.items()},
+                )
 
             #Renormalize gradient inside a set interval, to avoid too large steps in the limited (2pi)^n_params parameter space.
             grad_norm = float(jnp.linalg.norm(grads))
@@ -1382,9 +1481,10 @@ class Experiment:
 
             # Convergence check
             if grad_norm < tolerance:
-                if epoch_fraction*scaling_speedup <= 8: # se è la terza volta che triggero questa condizione al massimo dell'apprendimento
+                if epoch_fraction*scaling_speedup <= 2**(2*np.log2(tot_steps)): # se è la decima volta che triggero questa condizione al massimo dell'apprendimento
                     scaling_speedup *= 2
                 else:
+                    early_stop = True
                     break
 
             # Update parameters
@@ -1393,17 +1493,32 @@ class Experiment:
             if noisy_training!= 0:
                 params += jnp.asarray(np.random.normal(0, noisy_training*grad_norm, size=params.shape), dtype=float)
 
-        # Ensure best parameters are set at the end
-        best_values = np.asarray(best_params, dtype=float)
+        # Restore concrete tight tolerances on the cached solvers: annealing left their controllers
+        # holding (now dead) traced tolerances, and any later reuse (including the final-precision
+        # re-evaluations below) wants full accuracy.
+        if anneal_tolerances:
+            self._set_solver_tolerances(solvers)
+
+        # Choose the deployable parameters. With precision annealing, select across the per-band
+        # best-validation checkpoints re-evaluated (and optionally polished) at final precision,
+        # once the run is finished (early stop, or this call reached tot_steps). Otherwise keep the
+        # running best validation.
+        run_finished = early_stop or num_steps >= tot_steps
+        winner = None
+        if annealing and run_finished:
+            winner = select_best_params(
+                callback, jitted_value, jitted_grad, timestamps_arg,
+                get_noise_batch(), optimizer, n_initial, n_bands, tot_steps, polish,
+            )
+        if winner is not None:
+            best_values, best_validation, best_metric = winner
+        else:
+            best_values = np.asarray(best_params, dtype=float)
+
         best_initial = [best_values[i] for i in range(n_initial)]
         best_final = [best_values[i] for i in range(n_initial, n_total)]
         self.initial_circuit.set_trainable_parameters(best_initial)
         self.final_circuit.set_trainable_parameters(best_final)
-
-        # Restore concrete tight tolerances on the cached solvers: annealing left their controllers
-        # holding (now dead) traced tolerances, and any later reuse of these solvers wants full accuracy.
-        if anneal_tolerances:
-            self._set_solver_tolerances(solvers)
 
         # The best parameters are now set on the circuits; the deployable detection protocol is built
         # separately (and explicitly) via make_protocol, so optimize_rotations stays pure optimization.
@@ -1427,6 +1542,7 @@ class Experiment:
         callback.set_convergence_info(
             converged=float(grad_norm) < tolerance, final_grad_norm=float(grad_norm)
         )
+        callback.mode = "optimization"
 
 
         return callback
@@ -1434,7 +1550,7 @@ class Experiment:
 
     # ---------------------------- generic N-dimensional sweep ----------------------------
 
-    def sweep(self, param_grid: Dict[str, Any], *, measurement_protocol=None, batch_size: int = 1,
+    def sweep(self, param_grid: Dict[str, Any], *, time_protocol=None, batch_size: int = 1,
               verbose: bool = True) -> SweepResults:
         """N-dimensional sweep over global-arg parameters and/or the measurement ``time_interval``.
 
@@ -1454,8 +1570,8 @@ class Experiment:
 
         names = list(param_grid)
         vals = [np.asarray(param_grid[n], dtype=float).reshape(-1) for n in names]
-        protocol = measurement_protocol if measurement_protocol is not None else self.experimental_params.measurement
-        has_uncertainty = bool(protocol.max_measurements_offset) or (protocol.per_measurement_jitter is not None)
+        protocol = time_protocol if time_protocol is not None else self.experimental_params.time_protocol
+        has_uncertainty = bool(protocol.random_measurements_offset) or (protocol.per_measurement_jitter is not None)
         if has_uncertainty and protocol.jitter_is_time_dependent:
             raise ValueError("per_measurement_jitter as a time-dependent f(t) is not supported in sweeps "
                              "(swept times make a pre-drawn noise batch inconsistent);"
@@ -1483,8 +1599,10 @@ class Experiment:
                 print(f"  - {n}: {len(v)} pts in [{v.min():.3g}, {v.max():.3g}]  lane={lane}  ({tgt})")
 
         # measurement lane (time_interval): M measurements fixed, with the unmeasured sim start first.
-        M = len(self.experimental_params.measurement_times)
-        t0 = float(self.experimental_params.t_simulation_start)
+        # Timing comes from the swept ``protocol`` (which may be an override), not self.experimental_params.
+        base_measurement_times = protocol.resolve_measurement_times()
+        M = int(base_measurement_times.size)
+        t0 = float(protocol.t_simulation_start)
         meas_axes = [i for i, l in enumerate(lanes) if l == "measurement"]
         if meas_axes and protocol.window_start is not None:
             need = float(protocol.window_end - t0)  # lead + window_length
@@ -1507,9 +1625,21 @@ class Experiment:
             fast_grid = np.zeros((1, 0))
             fast_shape = ()
 
-        base_meas = jnp.asarray(self.experimental_params.timestamps, dtype=float)  # [t0, *measurements]
-        noise_batch = (jnp.asarray(self.experimental_params.get_measurement_uncertainties(batch_size), dtype=float)
-                       if has_uncertainty else None)
+        base_meas = jnp.asarray(protocol.timestamps, dtype=float)  # [t0, *measurements]
+        # Draw the noise components once (shift + jitter, per batch element). In the measurement lane the
+        # collective offset scales with the swept interval (True); jitter stays absolute and the before-
+        # start correction is recomputed per interval, so it stays correct even when the start is fixed.
+        round_to_grid = protocol.time_interval is not None               # mode B rounds onto the grid
+        offset_scales = protocol.random_measurements_offset is True      # True: width = current interval
+        base_interval = float(protocol.time_interval) if round_to_grid else 1.0
+        if has_uncertainty:
+            shift0, _corr0, jitter_vec = protocol.sample_noise_components(batch_size)
+            shift0 = jnp.asarray(shift0, dtype=float)
+            jitter_vec = jnp.asarray(jitter_vec, dtype=float)
+            # eps guards the before-start bump; mode A (no grid) uses the fixed first measurement gap.
+            mode_a_eps = 0.0 if round_to_grid else (
+                (float(base_measurement_times[1] - base_measurement_times[0])
+                 if base_measurement_times.size >= 2 else 0.0) or 1.0) * 1e-3
         rho0 = self._cached_initial_states
         unis = self._prepare_circuit_unitaries()
         opts = {"method": "diffrax", "progress_bar": False, "normalize_output": False,
@@ -1538,10 +1668,19 @@ class Experiment:
                     else:
                         for kk in keys_per[i]:
                             args[kk] = v
-                if noise_batch is None:
+                if not has_uncertainty:
                     return evaluate_at(meas_t, args)
-                # average over the pre-drawn jittered realizations
-                m, det, val = jax.vmap(lambda nz: evaluate_at(meas_t + nz, args))(noise_batch)
+                # Rebuild the noise for this point's interval: the collective offset scales (True) while
+                # jitter stays absolute; the before-start correction is recomputed at the swept interval.
+                interval = meas_t[1] - meas_t[0]
+                shift = shift0 * (interval / base_interval) if offset_scales else shift0
+                capped_jitter = protocol.cap_jitter(jitter_vec, interval, xp=jnp)  # re-cap at the swept interval
+                eps = interval * 1e-3 if round_to_grid else mode_a_eps
+                corr = protocol._before_start_correction(
+                    meas_t[1:], shift, capped_jitter[:, 1:], capped_jitter[:, 0], t0, interval, eps, xp=jnp)
+                noise = protocol.combine_noise(shift, corr, capped_jitter, xp=jnp)
+                # average over the pre-drawn realizations
+                m, det, val = jax.vmap(lambda nz: evaluate_at(meas_t + nz, args))(noise)
                 return jnp.mean(m), jnp.mean(det, axis=0), jnp.mean(val)
             return evaluate
 
