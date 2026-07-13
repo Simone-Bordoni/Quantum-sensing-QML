@@ -28,7 +28,9 @@ def plot_optimization_dashboard(
     show_parameters: bool = True,
     show_trajectory: bool = True,
     show_detection_measures: bool = True,
-    show_confusion_matrix_summary: bool = False,
+    show_confusion_matrix: bool = False,
+    show_state_map_summary: bool = True,
+    show_mixed_column: bool = True,
     figsize: Tuple[int, int] = (16, 18),
     save_path: Optional[str] = None,
     dpi: int = 300,
@@ -51,8 +53,13 @@ def plot_optimization_dashboard(
         show_gradients: Display gradient magnitude evolution plot when True
         show_parameters: Display parameter evolution plot when True
         show_detection_measures: Display detection measures plot
-        show_confusion_matrix_summary: Display confusion matrix and protocol/state summary
-            when True and callback values are available
+        show_confusion_matrix: Display the confusion matrix panel when True and the
+            callback carries confusion values. This is the master toggle for the panel;
+            ``show_state_map_summary`` and ``show_mixed_column`` have no effect when False
+        show_state_map_summary: Overlay the protocol/state map and false-signal summary on
+            the confusion matrix panel (only applies when ``show_confusion_matrix`` is True)
+        show_mixed_column: Include prediction-only ``mixed`` columns in the confusion matrix
+            (only applies when ``show_confusion_matrix`` is True)
         figsize: Figure size as ``(width, height)`` in inches (default: 16x18)
         save_path: Optional path to save the figure (e.g., ``'dashboard.pdf'``)
             If None, figure is displayed but not saved
@@ -77,17 +84,18 @@ def plot_optimization_dashboard(
         ...                                   show_gradients=False,
         ...                                   show_detection_measures=False)
     """
-    # Confusion-matrix summary panel is shown only if explicitly requested and the callback carries all
-    # three plotted artifacts: confusion_matrix ((true, predicted) -> detection prob/rate) as a heatmap,
-    # states_map (config -> classified states) and false_signal (per config) as text summaries.
+    # The confusion-matrix panel is shown only if requested and the callback carries confusion values.
+    # states_map (config -> classified states) and false_signal (per config) drive the text summary that
+    # is optionally overlaid on that panel; the summary and mixed column only apply when the panel is on.
     has_detection_protocol = bool(getattr(optimization_callback, "states_map", None))
     has_confusion_values = any(
         float(value) > 0.0
         for value in (getattr(optimization_callback, "confusion_matrix", {}) or {}).values()
     )
     has_false_signal = bool(getattr(optimization_callback, "false_signal", None))
-    show_confusion_summary_panel = show_confusion_matrix_summary and (
-        has_detection_protocol and has_confusion_values and has_false_signal
+    show_confusion_panel = show_confusion_matrix and has_confusion_values
+    show_summary_overlay = show_confusion_panel and show_state_map_summary and (
+        has_detection_protocol or has_false_signal
     )
 
     # Count active plots to determine layout
@@ -97,7 +105,7 @@ def plot_optimization_dashboard(
         show_trajectory,
         show_parameters,
         show_detection_measures,
-        show_confusion_summary_panel,
+        show_confusion_panel,
     ]
     n_plots = sum(active_plots)
 
@@ -415,7 +423,7 @@ def plot_optimization_dashboard(
         cbar.set_label("Epoch", fontsize=10)
 
     # Plot 6: Confusion Matrix + Protocol/Probabilities Summary
-    if show_confusion_summary_panel:
+    if show_confusion_panel:
         ax = plt.subplot(n_rows, n_cols, plot_idx + 1)
         axes.append(ax)
         plot_idx += 1
@@ -438,6 +446,9 @@ def plot_optimization_dashboard(
         for _, pred_name in confusion_matrix:
             if pred_name not in col_names:
                 col_names.append(pred_name)
+        # Prediction-only 'mixed' columns can be dropped via the toggle.
+        if not show_mixed_column:
+            col_names = [name for name in col_names if name != "mixed"]
 
         n_rows, n_cols = len(row_names), len(col_names)
         # confusion_matrix[(true, predicted)] = mass; rows are the true config, columns the predicted one.
@@ -470,13 +481,13 @@ def plot_optimization_dashboard(
                 )
 
         summary_lines = []
-        if has_detection_protocol:
+        if show_summary_overlay and has_detection_protocol:
             summary_lines.append("Protocol (states per configuration):")
             for name in row_names:
                 if name in states_map:
                     summary_lines.append(f"  {name}: {list(states_map[name])}")
 
-        if has_false_signal and isinstance(false_signal, dict):
+        if show_summary_overlay and has_false_signal and isinstance(false_signal, dict):
             summary_lines.append("False signal (joint, per configuration):")
             for name in row_names:
                 if name in false_signal:

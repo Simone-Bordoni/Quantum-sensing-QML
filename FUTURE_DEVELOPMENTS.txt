@@ -21,6 +21,9 @@ Generale:
 + permettere di avere rumore anche su inizio sim
 + selezionare ground state
 - Change readme fix documentation and tests
+- aggiungere interazione james-cummings
+- inserire errore di misura (bitflip o una mappa non simmetrica tra vari stati per errori di misura personalizzati), introdurre nel calcolo della mappa degli stati e nell'ottimizzazione (computational distance in particolare)
+- per sweep ed ottimizzazione avere parametri vincolati, per esempio rumore è uguale su ogni qubit/angoli di ogni gate uguali.
 
 Sweep:
 + test
@@ -51,4 +54,9 @@ DetectionMetric:
 - rielaborare il MeasurementAggregator per poter avere metriche che massimizzano ottenere risultati positivi su k misure su n oppure k misure consecutive. 
     Serve tener conto di un vettore di k successi e non basta un float.
     Per k successi creare vettore di tutti i possibili gruppi di k successi differenti non ordinati (o solo quelli consecutivi) e fare una softmin tra quei k e poi una softmax su tutti i gruppi di k.
+- per persistent (e forse non solo) aggiungere una metrica che paragona il rate di misura
+su misure multiple con una quantità continua (permetterebbe di misurare quantità continue), permettere anche di addestrare questa quantità continua (leggere articolo MacLellan).
+- forse mettere possibilità di non usare tutti i qubit per misurare.
 
+Make_protocol:
+- aggiungere calcolo dell'helstrom bound o comunque di un limite dell'efficienza (pensare al fatto che c'è)
