@@ -1040,7 +1040,7 @@ class Experiment:
         initial_values: Optional[List[float]] = None,
         optimizer = None,
         optimize_measurement_times: bool = False,
-        renormalize_grad: Optional[Union[bool,float]] = False,
+        normalize_theta_step: Optional[Union[bool,float]] = False,
         noisy_training: Optional[float] = None,
         final_results: bool = True,
         hot_start: bool = False,
@@ -1068,8 +1068,8 @@ class Experiment:
             optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
                     If None, uses SGD.
             optimize_measurement_times: If True, also optimizes the measurement times along with the circuit parameters. (default: False)
-            renormalize_grad: Renormalizes the gradients to be within a certain radius. (default: 1)
-                    If False (0), does not renormalize the gradients.
+            normalize_theta_steps: Remaps the steps of the angle parameters to suppress steps of the order of pi. (default: False)
+                    If float, uses that number as the upper bound of the step.
             noisy_training: float, adds noise to the gradients during optimization.
                     If a float is given, it is used as the standard deviation relative to the average gradient. (default: None)
             final_results: If True, stores the final optimization results in the callback. (default: True)
@@ -1148,6 +1148,9 @@ class Experiment:
         else:
             start_step = 0
             callback.reset()
+
+        if isinstance(normalize_theta_step, bool) and normalize_theta_step is True:
+            normalize_theta_step = np.pi/10
 
         if isinstance(anneal_tolerances, bool):
             tolerance_scale = _TOL_ANNEAL_FACTOR if anneal_tolerances else 1.0
@@ -1440,13 +1443,6 @@ class Experiment:
                     {name: float(detection) for name, detection in detection_dict.items()},
                 )
 
-            #Renormalize gradient inside a set interval, to avoid too large steps in the limited (2pi)^n_params parameter space.
-            grad_norm = float(jnp.linalg.norm(grads))
-            if renormalize_grad and grad_norm > 0:
-                new_norm = jnp.tanh(grad_norm/renormalize_grad) * renormalize_grad
-                grads = grads * new_norm/grad_norm
-                grad_norm = new_norm
-
             # Call callback to track progress
             callback(
                 trainable_params_initial=params[:n_initial],
@@ -1457,6 +1453,9 @@ class Experiment:
                 optimizer_state=opt_state,
                 grads=grads,
             )
+
+            # Calculate gradient norm
+            grad_norm = float(jnp.linalg.norm(grads))
 
             # Progress output
             if verbose and (step % verbose_step == 0 or grad_norm < tolerance or step-start_step <3):
@@ -1488,8 +1487,13 @@ class Experiment:
                     break
 
             # Update parameters
+            old_params = params
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
+            if normalize_theta_step:   # FOR NON THETA TRAINING LIMIT THIS OPERATION AT THETA PARAMETERS
+                delta = params - old_params
+                new_delta = jnp.clip(delta, -normalize_theta_step, normalize_theta_step)
+                params = old_params + new_delta
             if noisy_training!= 0:
                 params += jnp.asarray(np.random.normal(0, noisy_training*grad_norm, size=params.shape), dtype=float)
 
