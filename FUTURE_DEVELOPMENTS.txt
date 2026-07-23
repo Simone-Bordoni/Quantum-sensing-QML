@@ -39,6 +39,7 @@ Optimization:
 - optimize measurement time
 - optimize promotable parameters
 - speedup??
+- rendere possibile inserire un batching pure su altri valori (es. larghezza degli impulsi e frequenze differenti)
 
 TimeEvolution:
 - tiene traccia di operatore personalizzato

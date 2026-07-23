@@ -3,6 +3,7 @@ personal_test.py
 personal_text.txt
 *personal_results/
 experiments/Nathan_experiments/
+job.sbatch
 
 
 # Byte-compiled / optimized / DLL files

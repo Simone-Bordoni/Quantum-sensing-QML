@@ -1,6 +1,7 @@
 #!/bin/bash
 # Adapted from a colleague's PyTorch/DDP script on the SAME cluster.
-# Submit: sbatch job.sbatch | Status: squeue --me | Log: tail -f logs/qsopt_<id>.log
+# Submit: sbatch job.sbatch <path-to-script.py> | Status: squeue --me | Log: tail -f logs/qsopt_<id>.log
+#   e.g.  sbatch job.sbatch examples/articolo/coherent_drive_2qb_corner_sweep.py
 # NOTE: run `mkdir -p logs` once before the first submit (SLURM opens the log below).
 
 #SBATCH --job-name=qsopt                 # name shown in squeue
@@ -77,11 +78,11 @@ python3 -c "import jax; print('JAX', jax.__version__, '- devices:', jax.devices(
 echo ""
 
 # ── Run the experiment ───────────────────────────────────────────────────────
-SCRIPT="experiments/Nathan_experiments/studio_entanglement.py"       # <-- change per run
-echo "Running: $SCRIPT"
+SCRIPT="${1:?Usage: sbatch job.sbatch <path-to-script.py> [script-args...]}"  # script path passed as an argument
+echo "Running: $SCRIPT ${*:2}"
 echo "=========================================="
-python3 -u "$SCRIPT"                                                  # -u = unbuffered output
-# srun python3 -u "$SCRIPT"                                           # original used srun (only needed for multi-task/DDP)
+python3 -u "$SCRIPT" "${@:2}"                                         # -u = unbuffered output; forward any extra args to the script
+# srun python3 -u "$SCRIPT" "${@:2}"                                  # original used srun (only needed for multi-task/DDP)
 
 echo ""
 echo "=========================================="
