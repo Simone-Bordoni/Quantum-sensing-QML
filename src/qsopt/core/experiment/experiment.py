@@ -784,8 +784,12 @@ class Experiment:
             best = callback.get_best_trainable_params()
             if best is not None:
                 best_initial, best_final = best
+                # An optimize_measurement_times run stores the trained interval as a trailing entry
+                # of the final params (it is already written back onto the protocol), so trim to the
+                # circuit's own parameter count.
                 self.initial_circuit.set_trainable_parameters(list(best_initial))
-                self.final_circuit.set_trainable_parameters(list(best_final))
+                self.final_circuit.set_trainable_parameters(
+                    list(best_final)[: self.final_circuit.count_trainable_parameters()])
         else:
             callback = OptimizationCallback(save_every=1, save_best=True)
             # Fresh callback: params are a single-shot evaluation of the current circuits, so it
@@ -1040,14 +1044,15 @@ class Experiment:
         initial_values: Optional[List[float]] = None,
         optimizer = None,
         optimize_measurement_times: bool = False,
-        normalize_theta_step: Optional[Union[bool,float]] = False,
+        normalize_theta_step: Optional[Union[bool,float]] = True,
+        normalize_time_step: Optional[Union[bool,float]] = True,
         noisy_training: Optional[float] = None,
         final_results: bool = True,
         hot_start: bool = False,
         tot_steps: Optional[int] = None,
         anneal_tolerances: Union[bool, float] = True,
         n_precision_bands: Optional[int] = None,
-        polish: bool = True,
+        polish: Union[bool, float] = True,
     ) -> OptimizationCallback:
         """
         Optimize rotation angles to maximize the detection metric.
@@ -1067,9 +1072,19 @@ class Experiment:
                     If None, uses current values from circuits.
             optimizer: Optional optax optimizer (e.g., optax.adam(0.01), optax.sgd(0.5)).
                     If None, uses SGD.
-            optimize_measurement_times: If True, also optimizes the measurement times along with the circuit parameters. (default: False)
+            optimize_measurement_times: If True, also optimizes the measurement times along with the
+                    circuit parameters, by gradient descent on the time protocol's time_interval (the
+                    measurements stay the grid t_simulation_start + k*interval). Requires interval mode
+                    and a measurement window (window_start/window_end), which bounds the interval: the
+                    train is kept inside the window after every step. The optimized interval is written
+                    back onto the protocol at the end. (default: False)
             normalize_theta_steps: Remaps the steps of the angle parameters to suppress steps of the order of pi. (default: False)
                     If float, uses that number as the upper bound of the step.
+                    Never applies to the measurement interval (see normalize_time_step).
+            normalize_time_step: Caps the per-step change of the measurement interval when
+                    optimize_measurement_times is on. True uses 5% of the interval range allowed by the
+                    window; a float sets that cap directly; False leaves the optimizer step uncapped
+                    (the window clip still applies). (default: True)
             noisy_training: float, adds noise to the gradients during optimization.
                     If a float is given, it is used as the standard deviation relative to the average gradient. (default: None)
             final_results: If True, stores the final optimization results in the callback. (default: True)
@@ -1090,9 +1105,12 @@ class Experiment:
                     Only active when anneal_tolerances is on. If None, defaults to 10 (or 1 when
                     tot_steps < 10); if set explicitly and tot_steps < n_precision_bands, raises.
                     (default: None)
-            polish: If True, the selected band-winners are short-polished (a few gradient steps at
-                    final precision, learning rate /10) before choosing the best; if False they are
-                    only re-evaluated. (default: True)
+            polish: Whether to short-polish the selected band-winners (a few gradient steps at final
+                    precision) before choosing the best; polished results are only kept if they
+                    improve validation. Polishing uses a dedicated constant-LR Adam, independent of
+                    the training optimizer's schedule. True enables it with the default polish LR;
+                    False disables it; a nonzero float enables it and sets the polish LR to that
+                    value (0 is equivalent to False). (default: True)
 
         Returns:
             OptimizationCallback with full optimization history, including
@@ -1164,6 +1182,17 @@ class Experiment:
                              f"or a float > 1 to toggle it on with a custom starting loosening factor. "
                              f"Value given: {anneal_tolerances}")
 
+        # Resolve polish: bool toggles with the default polish LR; a nonzero float enables polishing
+        # with that constant LR (0 disables, like False). polish_lr=None -> select_best_params default.
+        if isinstance(polish, bool):
+            do_polish, polish_lr = polish, None
+        elif isinstance(polish, (int, float)):
+            do_polish = polish != 0
+            polish_lr = float(polish) if do_polish else None
+        else:
+            raise ValueError("polish must be a bool, or a nonzero float setting the polish learning "
+                             f"rate. Value given: {polish}")
+
         if tot_steps is None:
             tot_steps = num_steps
         elif tot_steps < num_steps:
@@ -1206,19 +1235,46 @@ class Experiment:
         if self.experimental_params.measurement_times.ndim != 1 or self.experimental_params.measurement_times.size < 2:
             raise ValueError("measurement_times must be a 1D array with at least 2 time points")
 
+        # Measurement-time optimization: the protocol's time_interval becomes one extra trainable
+        # parameter (index n_total), the measurements staying the grid t_start + k*interval. It needs
+        # interval mode (an explicit list has no single interval to descend on) and a measurement
+        # window: the window weight w(t) is what makes the interval a bounded optimum, and its edges
+        # give the hard clip applied to the interval after every step.
+        tp = self.experimental_params.time_protocol
+        n_params = n_total
+        if optimize_measurement_times:
+            if tp.time_interval is None:
+                raise ValueError("optimize_measurement_times requires interval mode (n_measurements + "
+                                 "time_interval); with explicit measurement_times there is no interval to optimize")
+            if tp.window_start is None:
+                raise ValueError("optimize_measurement_times requires a measurement window "
+                                 "(window_start/window_end on the TimeProtocol) to bound the interval")
+            n_params = n_total + 1
+            t_start = float(tp.t_simulation_start)
+            n_measurements = int(self.experimental_params.measurement_times.size)
+            # Interval bounds: the last measurement t_start + M*interval must land inside the window.
+            interval_max = (float(tp.window_end) - t_start) / n_measurements
+            interval_min = max((float(tp.window_start) - t_start) / n_measurements, 0.01 * interval_max)
+            if isinstance(normalize_time_step, bool) and normalize_time_step is True:
+                normalize_time_step = 0.05 * (interval_max - interval_min)
+
         # Initialize parameter vector
         if initial_values is not None:
-            if len(initial_values) != n_total:
+            if len(initial_values) not in (n_total, n_params):
                 raise ValueError(
-                    f"initial_values must contain exactly {n_total} angles, got {len(initial_values)}"
+                    f"initial_values must contain exactly {n_params} values, got {len(initial_values)}"
                 )
             self.initial_circuit.set_trainable_parameters(initial_values[:n_initial])
-            self.final_circuit.set_trainable_parameters(initial_values[n_initial:])
+            self.final_circuit.set_trainable_parameters(initial_values[n_initial:n_total])
         else:
             # Get current values from circuits
             initial_params = self.initial_circuit.get_trainable_parameters()
             final_params = self.final_circuit.get_trainable_parameters()
             initial_values = [float(p) for p in initial_params] + [float(p) for p in final_params]
+
+        # Append the current interval, unless a hot start already carried it over.
+        if optimize_measurement_times and len(initial_values) == n_total:
+            initial_values = list(initial_values) + [float(tp.time_interval)]
 
         params = jnp.array(initial_values, dtype=float)
             
@@ -1252,6 +1308,20 @@ class Experiment:
         solvers = self.get_solvers()
         detection_metric = self.detection_metric
 
+        def _install_solver_tolerance(precision):
+            """Install the diffrax step-size controller on every cached solver at the given
+            ``precision`` in [0, 1]: ``precision=0`` is the loosest tolerance (base tolerances times
+            ``tolerance_scale`` -- fast, approximate early-training gradients) and ``precision=1`` is
+            the tight base tolerance (``_SOLVER_ATOL``/``_SOLVER_RTOL`` -- accurate, for convergence),
+            interpolated geometrically. ``precision`` is a DYNAMIC (possibly traced) input threaded
+            through the jitted objective, so the per-step tolerance actually takes effect without
+            recompilation -- unlike mutating the closed-over solvers from the loop, which the compiled
+            graph bakes in at the first trace and never re-reads."""
+            scale = tolerance_scale ** (1.0 - precision)   # precision 0 -> tolerance_scale (loose), 1 -> 1 (tight)
+            for _solver in solvers.values():
+                _solver._integrator._options["stepsize_controller"] = diffrax.PIDController(
+                    atol=_SOLVER_ATOL * scale, rtol=_SOLVER_RTOL * scale)
+
         # Define objective function with explicit uncertainty input.
         # Signature order is kept future-proof for optional optimization over times.
         def parallel_simulations(circuit_unitaries, timestamps, noise, epoch_fraction: float):
@@ -1272,16 +1342,23 @@ class Experiment:
             return metric_value, detection_dict, validation_value
 
         static_args = []  # initialize objective_function static args list
-        tp = self.experimental_params.time_protocol
         has_uncertainty = bool(tp.random_measurements_offset) or (tp.per_measurement_jitter is not None)
         # deterministic base timestamps [t_start, *measurements]; uncertainty enters only as the noise.
         base_timestamps = np.asarray(self.experimental_params.get_timestamps(1, offset=False, jitter=False)[0], dtype=float)
 
+        static_args.append(1)  # add objective_function static arg: timestamps
+        timestamps_arg = tuple(float(x) for x in base_timestamps)
+
         if not optimize_measurement_times:
-            static_args.append(1)  # add objective_function static arg: timestamps
-            timestamps_arg = tuple(float(x) for x in base_timestamps)
+            def build_timestamps(circuit_params, timestamps):
+                """Fixed protocol timestamps."""
+                return jnp.asarray(timestamps, dtype=float)
         else:
-            timestamps_arg = jnp.asarray(base_timestamps, dtype=float)
+            grid = jnp.arange(len(base_timestamps), dtype=float)  # k = 0 (start) .. M
+
+            def build_timestamps(circuit_params, timestamps):
+                """Timestamps rebuilt from the trainable interval, so the gradient reaches it."""
+                return t_start + circuit_params[n_total] * grid
 
         if not has_uncertainty:
 
@@ -1296,14 +1373,18 @@ class Experiment:
             def get_noise_batch():
                     return zero_uncertainty_batch
 
-            def objective_function(circuit_params, timestamps, noise_batch, epoch_fraction: float):
+            def objective_function(circuit_params, timestamps, noise_batch, epoch_fraction: float,
+                                   precision=1.0):
                 """Objective with no uncertainty."""
 
-                timestamps = np.asarray(timestamps, dtype=float)
+                # Set the (dynamic) ODE-solver precision (0=loose .. 1=tight) for this call.
+                _install_solver_tolerance(precision)
+
+                timestamps = build_timestamps(circuit_params, timestamps)
 
                 # Compute circuit unitaries
                 self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
-                self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
+                self.final_circuit.set_trainable_parameters(circuit_params[n_initial:n_total])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
                 metric, detect_dict, validation = parallel_simulations(circuit_unitaries, timestamps, noise_batch, epoch_fraction)
@@ -1322,14 +1403,19 @@ class Experiment:
 
             vmapped_simulations = jax.vmap(parallel_simulations, in_axes=(None, None, 0, None))
 
-            def objective_function(circuit_params, timestamps, noise_batch, epoch_fraction: float):
+            def objective_function(circuit_params, timestamps, noise_batch, epoch_fraction: float,
+                                   precision=1.0):
                 """Batch vmapped objective where vectorization happens only over uncertainty."""
 
-                timestamps = jnp.asarray(timestamps, dtype=float)
+                # Set the (dynamic) ODE-solver precision (0=loose .. 1=tight) for this call. Done once,
+                # outside the vmap over uncertainty realizations (precision is not batched).
+                _install_solver_tolerance(precision)
+
+                timestamps = build_timestamps(circuit_params, timestamps)
 
                 # Compute circuit unitaries
                 self.initial_circuit.set_trainable_parameters(circuit_params[:n_initial])
-                self.final_circuit.set_trainable_parameters(circuit_params[n_initial:])
+                self.final_circuit.set_trainable_parameters(circuit_params[n_initial:n_total])
                 circuit_unitaries = self._prepare_circuit_unitaries()
 
                 batch_metric, batch_detect_dict, batch_validation = vmapped_simulations(circuit_unitaries, timestamps, noise_batch, epoch_fraction)
@@ -1365,13 +1451,17 @@ class Experiment:
             setup_gates = [gate for gate in self.initial_circuit._gates if gate.has_parameter() and gate._parameter.trainable]
             reset_gates = [gate for gate in self.final_circuit._gates if gate.has_parameter() and gate._parameter.trainable]
             
-            for i, val in enumerate(initial_vals):
+            for i, val in enumerate(initial_vals[:n_total]):
                 if i < n_initial :
                     circuit_type = "setup" 
-                    print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{setup_gates[i].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
+                    print(f"        param{(f'{i}'+'.'):<3} {(f'{circuit_type}_{setup_gates[i].__repr__(params=False)}'):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
                 else:
                     circuit_type = "reset"
-                    print(f"        param{(f"{i}"+"."):<3} {(f"{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}"):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
+                    print(f"        param{(f'{i}'+'.'):<3} {(f'{circuit_type}_{reset_gates[i-n_initial].__repr__(params=False)}'):<13}= {val:<6.3f} rad ({np.rad2deg(val):.1f}°)")
+
+            if optimize_measurement_times:
+                print(f"        param{(f'{n_total}'+'.'):<3} {'time_interval':<13}= {initial_vals[n_total]:<6.3f} "
+                      f"(window-bounded to [{interval_min:.3f}, {interval_max:.3f}])")
 
             if has_uncertainty:
                 offset_desc = self.experimental_params.collective_offset_desc()
@@ -1387,6 +1477,8 @@ class Experiment:
                 header_parts.append(f"setup{i}_{setup_gates[i].__repr__(params=False):<8}")
             for i in range(n_final_show):
                 header_parts.append(f"reset{i}_{reset_gates[i].__repr__(params=False):<8}")
+            if optimize_measurement_times:
+                header_parts.append(f"{'Interval':<15}")
             header_parts.extend([f"{'Metric':<12}", f"{'Validation':<12}", f"{'Grad Norm':<12}", "Time"])
 
             header = "".join(header_parts)
@@ -1408,17 +1500,27 @@ class Experiment:
 
             epoch_fraction = step / tot_steps
 
-            # Anneal ODE-solver tolerances loose -> tight over training (epoch_fraction is
-            # unbatched here, so this sets one scalar tolerance per step; no recompilation).
-            if anneal_tolerances:                
-                scale = tolerance_scale ** annealing_weight(epoch_fraction*scaling_speedup)
-                self._set_solver_tolerances(solvers, _SOLVER_ATOL * scale, _SOLVER_RTOL * scale)
+            # Anneal ODE-solver precision loose -> tight over training. `precision` in [0, 1]
+            # (0 early = loose/fast, 1 late = tight/accurate) is passed as a DYNAMIC argument of
+            # jitted_grad (installed on the solvers inside the objective), so the per-step tolerance
+            # actually takes effect without recompilation. (Mutating the closed-over solvers here
+            # instead would be baked in at the first trace and silently ignored.) annealing_weight
+            # runs 1->0 over training, so precision = 1 - annealing_weight runs 0->1.
+            if anneal_tolerances:
+                precision = float(1.0 - annealing_weight(epoch_fraction * scaling_speedup))
+            else:
+                precision = 1.0
+
+            # Keep the protocol on the current interval, so the sampled timing uncertainty (whose
+            # width and before-start guard track time_interval) matches the times being trained.
+            if optimize_measurement_times:
+                self.experimental_params.time_interval = float(params[n_total])
 
             noise_batch = get_noise_batch()
 
             # Compute gradients using JAX autodiff
             grads, (detection_dict, step_metric, step_validation) = jitted_grad(
-                params, timestamps_arg, noise_batch, epoch_fraction
+                params, timestamps_arg, noise_batch, epoch_fraction, precision
             )
 
             step_metric_value = float(step_metric)
@@ -1470,11 +1572,13 @@ class Experiment:
                     output_parts.append(f"{param_vals[i]:<15.6f}")
                 for i in range(n_final_show):
                     output_parts.append(f"{param_vals[n_initial + i]:<15.6f}")
+                if optimize_measurement_times:
+                    output_parts.append(f"{param_vals[n_total]:<15.6f}")
                 output_parts.extend([
                     f"{step_metric_value:<12.6f}",
                     f"{step_validation_value:<12.6f}",
                     f"{grad_norm:<12.2e}",
-                    f"{t.strftime("%Hh%Mm%Ss", t.gmtime(new_time))}",
+                    f"{t.strftime('%Hh%Mm%Ss', t.gmtime(new_time))}",
                 ])
                 print("".join(output_parts))
 
@@ -1490,18 +1594,21 @@ class Experiment:
             old_params = params
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-            if normalize_theta_step:   # FOR NON THETA TRAINING LIMIT THIS OPERATION AT THETA PARAMETERS
-                delta = params - old_params
+            if normalize_theta_step:   # angles only: the interval is a time, capped separately below
+                delta = params[:n_total] - old_params[:n_total]
                 new_delta = jnp.clip(delta, -normalize_theta_step, normalize_theta_step)
-                params = old_params + new_delta
+                params = params.at[:n_total].set(old_params[:n_total] + new_delta)
             if noisy_training!= 0:
-                params += jnp.asarray(np.random.normal(0, noisy_training*grad_norm, size=params.shape), dtype=float)
-
-        # Restore concrete tight tolerances on the cached solvers: annealing left their controllers
-        # holding (now dead) traced tolerances, and any later reuse (including the final-precision
-        # re-evaluations below) wants full accuracy.
-        if anneal_tolerances:
-            self._set_solver_tolerances(solvers)
+                params = params.at[:n_total].add(
+                    jnp.asarray(np.random.normal(0, noisy_training*grad_norm, size=(n_total,)), dtype=float))
+            if optimize_measurement_times:
+                # Cap the interval step (normalize_time_step), then hold the measurement train
+                # inside the time window.
+                interval = params[n_total]
+                if normalize_time_step:
+                    interval = old_params[n_total] + jnp.clip(
+                        interval - old_params[n_total], -normalize_time_step, normalize_time_step)
+                params = params.at[n_total].set(jnp.clip(interval, interval_min, interval_max))
 
         # Choose the deployable parameters. With precision annealing, select across the per-band
         # best-validation checkpoints re-evaluated (and optionally polished) at final precision,
@@ -1512,17 +1619,27 @@ class Experiment:
         if annealing and run_finished:
             winner = select_best_params(
                 callback, jitted_value, jitted_grad, timestamps_arg,
-                get_noise_batch(), optimizer, n_initial, n_bands, tot_steps, polish,
+                get_noise_batch(), n_initial, n_bands, tot_steps, do_polish, polish_lr,
             )
         if winner is not None:
             best_values, best_validation, best_metric = winner
         else:
             best_values = np.asarray(best_params, dtype=float)
 
+        # Reset solvers to concrete tight tolerances: the objective installs the controller from the
+        # traced `precision` every call (even anneal_tolerances=False passes precision=1.0), leaving
+        # dead tracers that would otherwise break later reuse such as make_protocol.
+        self._set_solver_tolerances(solvers)
+
         best_initial = [best_values[i] for i in range(n_initial)]
         best_final = [best_values[i] for i in range(n_initial, n_total)]
         self.initial_circuit.set_trainable_parameters(best_initial)
         self.final_circuit.set_trainable_parameters(best_final)
+
+        # Write the best interval back onto the protocol, so every later use of the experiment
+        # (run_simulation, make_protocol, time_evolution) runs on the optimized measurement times.
+        if optimize_measurement_times:
+            self.experimental_params.time_interval = float(best_values[n_total])
 
         # The best parameters are now set on the circuits; the deployable detection protocol is built
         # separately (and explicitly) via make_protocol, so optimize_rotations stays pure optimization.
@@ -1534,13 +1651,16 @@ class Experiment:
             print(f"Best validation: {best_validation:.6f}")
             print(f"Best metric (at best validation): {best_metric:.6f}")
             print(f"Best parameters:")
-            for i, val in enumerate(best_values):
+            for i, val in enumerate(best_values[:n_total]):
                 if i < n_initial:
                     circuit_type = "setup"  
                     print(f"    param{i}. {circuit_type}_{setup_gates[i]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
                 else:
                     circuit_type = "reset"
                     print(f"    param{i}. {circuit_type}_{reset_gates[i-n_initial]}={val:.3f} rad ({np.rad2deg(val):.1f}°)")
+            if optimize_measurement_times:
+                print(f"    param{n_total}. time_interval={best_values[n_total]:.4f} "
+                      f"(was {float(base_timestamps[1] - base_timestamps[0]):.4f})")
 
         # Set convergence information in callback
         callback.set_convergence_info(

@@ -61,8 +61,11 @@ def annealing_weight(
     return (jnp.tanh(a) + 1.0) / 2.0
 
 
+_POLISH_LR_DEFAULT = 1e-2  # constant learning rate used for polishing when none is supplied
+
+
 def select_best_params(callback, jitted_value, jitted_grad, timestamps_arg,
-                       noise_batch, optimizer, n_initial, n_bands, tot_steps, polish):
+                       noise_batch, n_initial, n_bands, tot_steps, polish=True, polish_lr=None):
     """
     Pick deployable parameters from per-band checkpoints at final precision.
 
@@ -70,17 +73,24 @@ def select_best_params(callback, jitted_value, jitted_grad, timestamps_arg,
     the most promising subset (top floor(n_bands/3) by re-evaluation plus the last band), keeps a
     polish only when it improves validation, and returns the best. Overwrites the callback's best.
 
+    Polishing uses a dedicated Adam with a constant ``polish_lr``, deliberately independent of the
+    training optimizer. Reusing the training optimizer here is unsafe: its state is re-initialized,
+    so any embedded learning-rate schedule restarts from step 0 -- a warmup longer than the polish
+    budget would run the whole polish at ~zero LR (no-op), while a decay schedule would restart at
+    its peak LR instead of the small end-of-training LR. A constant LR sidesteps both.
+
     Args:
         callback (OptimizationCallback): holds the per-band winners; its best is overwritten.
         jitted_value (Callable): value-only objective -> (-metric, (detection, metric, validation)).
         jitted_grad (Callable): gradient objective -> (grads, (detection, metric, validation)).
         timestamps_arg (Union[tuple, Array]): base timestamps argument for the objective.
         noise_batch (Union[float, Array]): fixed uncertainty batch reused for every candidate.
-        optimizer (optax.GradientTransformation): base optimizer, scaled by 0.1 for polishing.
         n_initial (int): number of initial-circuit trainable parameters.
         n_bands (int): number of precision bands.
         tot_steps (int): total planned steps (sets the polish budget).
         polish (bool): if True, short-polish the selected subset before choosing.
+        polish_lr (Optional[float]): constant Adam learning rate for polishing; if None, uses
+            ``_POLISH_LR_DEFAULT``.
 
     Returns:
         Optional[Tuple[np.ndarray, float, float]]: (best parameter vector, validation, metric),
@@ -95,8 +105,10 @@ def select_best_params(callback, jitted_value, jitted_grad, timestamps_arg,
 
     def evaluate(param_vec):
         """Validation, metric and detection dict of a parameter vector at final precision."""
+        # epoch_fraction=1.0 (end of training) and precision=1.0 (tight ODE-solver tolerance): this
+        # re-evaluation is deliberately at full final precision.
         _, (detection, metric, validation) = jitted_value(
-            jnp.asarray(param_vec, dtype=float), timestamps_arg, noise_batch, 1.0
+            jnp.asarray(param_vec, dtype=float), timestamps_arg, noise_batch, 1.0, 1.0
         )
         return float(validation), float(metric), {name: float(d) for name, d in detection.items()}
 
@@ -114,13 +126,15 @@ def select_best_params(callback, jitted_value, jitted_grad, timestamps_arg,
     if polish:
         ranked = sorted(band_indices, key=lambda b: candidates[b]["validation"], reverse=True)
         polish_set = set(ranked[: max(1, n_bands // 3)]) | {band_indices[-1]}
-        polish_optimizer = optax.chain(optimizer, optax.scale(0.1))
+        # Dedicated constant-LR polisher (see docstring): independent of the training schedule.
+        polish_optimizer = optax.adam(_POLISH_LR_DEFAULT if polish_lr is None else polish_lr)
         polish_steps = int(np.ceil(0.01 * tot_steps))
         for band in polish_set:
             param_vec = jnp.asarray(candidates[band]["params"], dtype=float)
             opt_state = polish_optimizer.init(param_vec)
             for _ in range(polish_steps):
-                grads, _ = jitted_grad(param_vec, timestamps_arg, noise_batch, 1.0)
+                # Polish at full final precision: epoch_fraction=1.0, precision=1.0 (tight tolerance).
+                grads, _ = jitted_grad(param_vec, timestamps_arg, noise_batch, 1.0, 1.0)
                 updates, opt_state = polish_optimizer.update(grads, opt_state, param_vec)
                 param_vec = optax.apply_updates(param_vec, updates)
             validation, metric, detection = evaluate(np.asarray(param_vec, dtype=float))

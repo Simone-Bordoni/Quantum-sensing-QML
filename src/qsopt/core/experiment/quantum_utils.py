@@ -234,9 +234,9 @@ def build_qubit_noise_operators(
     sigma_y: qt.Qobj,
     sigma_z: qt.Qobj,
     sigma_minus: qt.Qobj,
-    depolarizing_rate: float,
-    dephasing_rate: float,
     relaxation_rate: float,
+    dephasing_rate: float,
+    depolarizing_rate: float,
 ) -> List[qt.Qobj]:
     """
     Build Lindblad noise operators for a single qubit.

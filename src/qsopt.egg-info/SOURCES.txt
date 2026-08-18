@@ -10,7 +10,7 @@ src/qsopt.egg-info/top_level.txt
 src/qsopt/core/__init__.py
 src/qsopt/core/callback.py
 src/qsopt/core/circuit.py
-src/qsopt/core/copia_loss_function.py
+src/qsopt/core/core_utils.py
 src/qsopt/core/experimental_parameters.py
 src/qsopt/core/gates.py
 src/qsopt/core/loss_functions.py
@@ -39,6 +39,5 @@ src/qsopt/tests/test_two_qubit_experiment.py
 src/qsopt/tests/test_visualization.py
 src/qsopt/utils/__init__.py
 src/qsopt/utils/experiment_loader.py
-src/qsopt/utils/landscape_analysis.py
 src/qsopt/utils/results.py
 src/qsopt/utils/visualization.py

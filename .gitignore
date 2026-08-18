@@ -4,6 +4,8 @@ personal_text.txt
 *personal_results/
 experiments/Nathan_experiments/
 job.sbatch
+examples/articolo/
+logs/
 
 
 # Byte-compiled / optimized / DLL files

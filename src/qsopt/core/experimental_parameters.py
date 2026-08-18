@@ -1618,20 +1618,78 @@ class NoiseModel:
     """
     Noise model configuration.
 
+    The qubit channels can be specified either as Lindblad rates (``relaxation``, ``dephasing``)
+    or as coherence times (``t1``, ``t2``); when times are given the matching rates are derived
+    at construction. Times are in the model's time units, i.e. the same axis as ``TimeProtocol``
+    (divide a physical T1/T2 by the time unit, so a T1 in seconds becomes ``chi * T1`` with
+    ``chi`` the anchoring angular frequency in rad/s).
+
     Attributes:
-        depolarizing: Depolarization rate. Can be a float (same for all qubits)
-                     or a list of floats (individual rate per qubit).
-        dephasing: Dephasing rate. Can be a float (same for all qubits)
-                  or a list of floats (individual rate per qubit).
         relaxation: Relaxation rate. Can be a float (same for all qubits)
                    or a list of floats (individual rate per qubit).
+        dephasing: Dephasing rate. Can be a float (same for all qubits)
+                  or a list of floats (individual rate per qubit).
+        depolarizing: Depolarization rate. Can be a float (same for all qubits)
+                     or a list of floats (individual rate per qubit).
+        t1: Energy relaxation time, as an alternative to ``relaxation``. Float or one per qubit.
+            default None
+        t2: Coherence time, as an alternative to ``dephasing``. Float or one per qubit.
+            Bounded by ``t2 <= 2 * t1``; omitting ``t1`` treats relaxation as absent.
+            default None
         custom_operators: Custom Lindblad operators
     """
 
-    depolarizing: Union[float, List[float]] = 0.0  # Depolarization rate
-    dephasing: Union[float, List[float]] = 0.0  # Dephasing rate
     relaxation: Union[float, List[float]] = 0.0  # Relaxation rate
+    dephasing: Union[float, List[float]] = 0.0  # Dephasing rate
+    depolarizing: Union[float, List[float]] = 0.0  # Depolarization rate
+    t1: Union[float, List[float]] = None # Longitudinal relaxation time
+    t2: Union[float, List[float]] = None # Trasversal relaxation time
     custom_operators: Optional[List[Any]] = None  # Custom Lindblad operators
+
+    def __post_init__(self) -> None:
+        """Derive ``relaxation`` and ``dephasing`` from ``t1``/``t2`` when those are given.
+
+        The collapse operators are ``sqrt(relaxation) * sigma_minus`` and
+        ``sqrt(dephasing) * sigma_z``, so populations decay at ``relaxation`` while coherences
+        decay at ``relaxation / 2 + 2 * dephasing``. Matching that to ``1/t1`` and ``1/t2`` gives
+        ``relaxation = 1/t1`` and ``dephasing = (1/t2 - 1/(2*t1)) / 2``.
+
+        Times broadcast against each other, and a scalar time gives a scalar rate. A missing
+        ``t1`` means no relaxation, a missing ``t2`` no pure dephasing.
+
+        Raises:
+            ValueError: If a time is paired with a non-zero rate for the same channel, if a time
+                is non-positive, if the ``t1``/``t2`` shapes do not broadcast, or if
+                ``t2 > 2 * t1`` (which would need a negative dephasing rate).
+        """
+        # Reject a channel given twice, and unphysical times. None means "use the rate".
+        for attr, rate_attr in (("t1", "relaxation"), ("t2", "dephasing")):
+            time = getattr(self, attr)
+            if time is None:
+                continue
+            rate = getattr(self, rate_attr)
+            if np.any(np.asarray(rate, dtype=float) != 0.0):
+                raise ValueError(
+                    f"NoiseModel takes either {attr} or {rate_attr}, not both "
+                    f"(got {attr}={time}, {rate_attr}={rate})"
+                )
+            if np.any(np.asarray(time, dtype=float) <= 0.0):
+                raise ValueError(f"{attr} must be > 0, got {time}")
+
+        # An infinite t1 stands in for an absent one: zeroes gamma_1 and its share of gamma_phi.
+        t1 = np.asarray(np.inf if self.t1 is None else self.t1, dtype=float)
+
+        # sigma_minus decays populations at its rate, so gamma_1 = 1/t1 goes in unchanged.
+        if self.t1 is not None:
+            self.relaxation = (1.0 / t1).tolist()
+
+        # gamma_phi = 1/t2 - gamma_1/2 drops the relaxation share; sigma_z decays coherences at
+        # twice its rate, hence the /2. Negative gamma_phi means t2 broke the 2*t1 ceiling.
+        if self.t2 is not None:
+            gamma_phi = 1.0 / np.asarray(self.t2, dtype=float) - 0.5 / t1
+            if np.any(gamma_phi < 0.0):
+                raise ValueError(f"t2 must be <= 2*t1, got t1={self.t1}, t2={self.t2}")
+            self.dephasing = (gamma_phi / 2.0).tolist()
 
     def _normalize_noise_rates(self, n_qubits: int):
         """Normalize ``depolarizing``, ``dephasing``, ``relaxation`` to per-qubit lists.

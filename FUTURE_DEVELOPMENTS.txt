@@ -26,12 +26,10 @@ Generale:
 - per sweep ed ottimizzazione avere parametri vincolati, per esempio rumore è uguale su ogni qubit/angoli di ogni gate uguali.
 
 Sweep:
-+ test
 + rendere possibile sul rumore
 - auto-resolution
 
 Optimization:
-+ TEST
 + riparare metriche finali matrici di confusione
 + run experiment alla fine non usa rumore, correggere le simulazioni per usare qualsiasi measurement protocol
 + custom precision annealing
