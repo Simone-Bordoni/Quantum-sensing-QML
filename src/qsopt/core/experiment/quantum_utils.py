@@ -26,7 +26,8 @@ from qsopt.core.experimental_parameters import (
 # Types one parameter can be factored out of into an args-coefficient, so a sweep varies it
 # via args without rebuilding (kappa enters as √kappa via the per-contribution transform).
 PROMOTABLE_TYPES = frozenset({
-    InteractionType.DISPERSIVE, InteractionType.DETUNING, InteractionType.COUPLING,
+    InteractionType.DISPERSIVE, InteractionType.JAYNES_CUMMINGS,
+    InteractionType.DETUNING, InteractionType.COUPLING,
     InteractionType.XX, InteractionType.YY, InteractionType.ZZ,
     InteractionType.DISSIPATION, InteractionType.INPUT_OUTPUT,
     InteractionType.DEPOLARIZING, InteractionType.DEPHASING, InteractionType.RELAXATION,
@@ -746,7 +747,9 @@ def _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
     if int_type == InteractionType.COUPLING:
         a1, a1_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
         a2, a2_dag = operators["a_c"][index2], operators["a_c_dag"][index2]
-        add('H', a1_dag * a2 + a1 * a2_dag, params={'gamma': _ID})
+        # gamma*a1†a2 + conj(gamma)*a1a2†: two terms so a complex gamma (a coupling phase) stays Hermitian
+        add('H', a1_dag * a2, params={'gamma': _ID})
+        add('H', a1 * a2_dag, params={'gamma': jnp.conj})
 
     if int_type == InteractionType.INPUT_OUTPUT:
         if system2 == 'cavity':
@@ -764,6 +767,20 @@ def _build_hamiltonian_term(interaction, operators, n_cavities, n_fields):
         ac, ac_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
         sz = operators["sigma_z"][index2]
         add('H', ac_dag * ac * sz, const=-1.0, params={'chi': _ID})
+
+    if int_type == InteractionType.JAYNES_CUMMINGS:
+        # canonical order already puts the bosonic mode first (cavity < field < qubit); swap defensively
+        if system1 == 'qubit':
+            system1, index1, system2, index2 = system2, index2, system1, index1
+        if system1 == 'cavity':
+            a, a_dag = operators["a_c"][index1], operators["a_c_dag"][index1]
+        else:
+            a, a_dag = operators["a_f"][index1], operators["a_f_dag"][index1]
+        sigma_minus, sigma_plus = operators["sigma_minus"][index2], operators["sigma_plus"][index2]
+        # excitation exchange g*a†σ₋ + conj(g)*aσ₊; the phase of a complex g is the qubit-mode
+        # phase reference, so the two terms are kept separate to stay Hermitian
+        add('H', a_dag * sigma_minus, params={'g': _ID})
+        add('H', a * sigma_plus, params={'g': jnp.conj})
 
     if int_type in [InteractionType.XX, InteractionType.YY, InteractionType.ZZ]:
         if system1 != 'qubit' or system2 != 'qubit':

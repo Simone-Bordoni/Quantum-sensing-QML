@@ -74,7 +74,7 @@ class InteractionType(Enum):
 
     # qubit-cavity, qubit-field
     DISPERSIVE = "dispersive" # dispersive coupling between qubits and cavities/fields
-    JAYNES_CUMMINGS = "jaynes-cummings" # Jaynes-Cummings interaction between qubits and cavities/fields (not implemented yet)
+    JAYNES_CUMMINGS = "jaynes-cummings" # Jaynes-Cummings (excitation-exchange) interaction between qubits and cavities/fields
 
     # qubit-qubit interactions
     ZZ = "sz-sz"  # σz ⊗ σz interaction
@@ -147,7 +147,7 @@ class Interaction:
     | input_output      | cav + fld     | kappa : float >= 0     |
     |                   |               | gamma : float >= 0 (*1)|
     | dispersive        | qb + cav      | chi : float            |
-    | jaynes-cummings   | qb + cav/fld  | (not implemented)      |
+    | jaynes-cummings   | qb + cav/fld  | g : complex            |
     +-------------------+---------------+------------------------+
     | Qubit-qubit  (both qubit)                                  |
     +-------------------+---------------+------------------------+
@@ -350,12 +350,7 @@ class Interaction:
             self._validate_dispersive()
         
         elif self.interaction_type == InteractionType.JAYNES_CUMMINGS:
-            raise NotImplementedError(
-                self._with_context(
-                    "Jaynes-Cummings interaction is not implemented yet. "
-                    "Please use supported interactions or implement JC interaction validation and parameter handling."
-                )
-            )
+            self._validate_jaynes_cummings()
         
         elif self.interaction_type in {InteractionType.ZZ, InteractionType.XX, InteractionType.YY}:
             self._validate_qubit_qubit()
@@ -688,6 +683,60 @@ class Interaction:
                 self._with_context(
                     "Dispersive shift (chi) is zero. This means no dispersive coupling between these subsystems, "
                     "which may be intentional but should be double-checked."
+                ),
+                UserWarning,
+            )
+
+    def _validate_jaynes_cummings(self):
+        """Validate parameters for Jaynes-Cummings interactions (qubit-cavity or qubit-field).
+
+        A complex g carries the qubit-mode coupling phase; H keeps it Hermitian as
+        g*a†σ₋ + conj(g)*aσ₊.
+        """
+
+        if self.subsystem1 is None or self.subsystem2 is None:
+            raise ValueError(
+                self._with_context(
+                    "Jaynes-Cummings interaction must involve a qubit and a cavity or a field"
+                )
+            )
+        subsystem_types = {self.subsystem1[0], self.subsystem2[0]}
+        if 'qubit' not in subsystem_types or not (subsystem_types & {'cavity', 'field'}):
+            raise ValueError(
+                self._with_context(
+                    "Jaynes-Cummings interaction must involve a qubit and a cavity or a field"
+                )
+            )
+
+        if isinstance(self.parameters, (int, float, complex)):
+            self.parameters = {"g": self.parameters}
+        elif not isinstance(self.parameters, dict):
+            raise TypeError(
+                self._with_context(
+                    "Parameters for Jaynes-Cummings interaction must be a float, a complex or a dict with 'g' key "
+                    "for coupling strength"
+                )
+            )
+        elif "g" not in self.parameters:
+            raise ValueError(
+                self._with_context(
+                    "Parameters for Jaynes-Cummings interaction must include 'g' key for coupling strength"
+                )
+            )
+        elif not isinstance(self.parameters["g"], (int, float, complex)):
+            raise TypeError(
+                self._with_context(
+                    "Jaynes-Cummings coupling strength (g) must be a numeric value, float, int or complex"
+                )
+            )
+
+        self.parameters["g"] = complex(self.parameters["g"])
+
+        if self.parameters["g"] == 0:
+            warnings.warn(
+                self._with_context(
+                    "Jaynes-Cummings coupling strength (g) is zero. This means no excitation exchange between "
+                    "these subsystems, which may be intentional but should be double-checked."
                 ),
                 UserWarning,
             )
